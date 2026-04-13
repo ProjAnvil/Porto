@@ -1,0 +1,58 @@
+{
+  "workflow_id": "test-wf-complete",
+  "project_name": "Complete Project",
+  "created_at": "2025-01-02T00:00:00+00:00",
+  "updated_at": "2025-01-02T01:00:00+00:00",
+  "status": "completed",
+  "current_step": 4,
+  "input_files": [
+    {
+      "original_path": "/tmp/requirements.md",
+      "name": "requirements.md",
+      "copied_to": "inputs/requirements.md"
+    }
+  ],
+  "steps": {
+    "1": {
+      "name": "understanding",
+      "description": "Business requirements understanding",
+      "status": "completed",
+      "output": "md/step1_understanding.md",
+      "started_at": "2025-01-02T00:00:00+00:00",
+      "completed_at": "2025-01-02T00:10:00+00:00",
+      "summary": {}
+    },
+    "2": {
+      "name": "subsystem_identification",
+      "description": "Subsystem identification",
+      "status": "completed",
+      "output": "md/step2_subsystems.md",
+      "started_at": "2025-01-02T00:10:00+00:00",
+      "completed_at": "2025-01-02T00:20:00+00:00",
+      "summary": {}
+    },
+    "3": {
+      "name": "subsystem_context_generation",
+      "description": "Subsystem context generation (Mermaid diagrams)",
+      "status": "completed",
+      "output": "md/step3_context.md",
+      "started_at": "2025-01-02T00:20:00+00:00",
+      "completed_at": "2025-01-02T00:30:00+00:00",
+      "summary": {}
+    },
+    "4": {
+      "name": "subsystem_specification",
+      "description": "Subsystem specification generation",
+      "status": "completed",
+      "output": "md/step4",
+      "started_at": "2025-01-02T00:30:00+00:00",
+      "completed_at": "2025-01-02T01:00:00+00:00",
+      "summary": {}
+    }
+  },
+  "subsystems": [
+    {"name": "order-service", "type": "new"},
+    {"name": "payment-gateway", "type": "extend"}
+  ],
+  "completed_at": "2025-01-02T01:00:00+00:00"
+}

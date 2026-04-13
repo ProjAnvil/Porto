@@ -1,0 +1,53 @@
+{
+  "porto_home": "~/.porto",
+  "workflows_dir": "~/.porto/workflows",
+  "language": "en",
+  "knowledge_bases": [
+    {
+      "name": "scv",
+      "type": "directory",
+      "path": "~/.scv/analysis",
+      "repos_path": "~/.scv/repos",
+      "description": "SCV codebase analysis knowledge base",
+      "enabled": true
+    }
+  ],
+  "knowledge_retrieval": {
+    "enabled": true,
+    "match_strategy": "hybrid",
+    "similarity_threshold": 0.6,
+    "max_references": 5
+  },
+  "workflow": {
+    "steps": [
+      {
+        "id": 1,
+        "name": "understanding",
+        "description": "Read and understand business requirements",
+        "output_file": "md/step1_understanding.md",
+        "skill": "prd-decomposition"
+      },
+      {
+        "id": 2,
+        "name": "subsystem_identification",
+        "description": "Identify subsystems and their responsibilities",
+        "output_file": "md/step2_subsystems.md",
+        "skill": "subsystem-identification"
+      },
+      {
+        "id": 3,
+        "name": "subsystem_context_generation",
+        "description": "Generate context diagrams for subsystems",
+        "output_file": "md/step3_context.md",
+        "skill": "subsystem-context-generation"
+      },
+      {
+        "id": 4,
+        "name": "subsystem_spec_generation",
+        "description": "Generate detailed specifications for each subsystem",
+        "output_dir": "md/step4",
+        "skill": "subsystem-specification"
+      }
+    ]
+  }
+}

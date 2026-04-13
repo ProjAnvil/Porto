@@ -1,0 +1,76 @@
+{
+  "workflow_id": "test-wf-payment",
+  "project_name": "互联网支付交易平台",
+  "created_at": "2026-04-10T09:00:00+00:00",
+  "updated_at": "2026-04-10T12:30:00+00:00",
+  "status": "completed",
+  "current_step": 4,
+  "input_files": [
+    {
+      "original_path": "/tmp/payment-prd.md",
+      "name": "payment-prd.md",
+      "copied_to": "inputs/payment-prd.md"
+    }
+  ],
+  "steps": {
+    "1": {
+      "name": "understanding",
+      "description": "Business requirements understanding",
+      "status": "completed",
+      "output": "md/step1_understanding.md",
+      "started_at": "2026-04-10T09:00:00+00:00",
+      "completed_at": "2026-04-10T09:25:00+00:00",
+      "summary": {
+        "business_objectives": 4,
+        "core_processes": 6,
+        "features": 18,
+        "domain_entities": 12
+      }
+    },
+    "2": {
+      "name": "subsystem_identification",
+      "description": "Subsystem identification",
+      "status": "completed",
+      "output": "md/step2_subsystems.md",
+      "started_at": "2026-04-10T09:30:00+00:00",
+      "completed_at": "2026-04-10T10:00:00+00:00",
+      "summary": {
+        "subsystems": ["payment-core", "risk-engine", "settlement-service", "merchant-portal", "notification-service"],
+        "total": 5
+      }
+    },
+    "3": {
+      "name": "subsystem_context_generation",
+      "description": "Subsystem context generation (Mermaid diagrams)",
+      "status": "completed",
+      "output": "md/step3_context.md",
+      "started_at": "2026-04-10T10:05:00+00:00",
+      "completed_at": "2026-04-10T11:00:00+00:00",
+      "summary": {
+        "diagrams": 6,
+        "types": ["sequence", "state", "flowchart", "er", "component"]
+      }
+    },
+    "4": {
+      "name": "subsystem_specification",
+      "description": "Subsystem specification generation",
+      "status": "completed",
+      "output": "md/step4",
+      "started_at": "2026-04-10T11:05:00+00:00",
+      "completed_at": "2026-04-10T12:30:00+00:00",
+      "summary": {
+        "specs_generated": 5,
+        "total_apis": 24,
+        "total_entities": 15
+      }
+    }
+  },
+  "subsystems": [
+    {"name": "payment-core", "type": "new"},
+    {"name": "risk-engine", "type": "new"},
+    {"name": "settlement-service", "type": "new"},
+    {"name": "merchant-portal", "type": "new"},
+    {"name": "notification-service", "type": "extend"}
+  ],
+  "completed_at": "2026-04-10T12:30:00+00:00"
+}
