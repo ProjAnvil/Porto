@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     vector_backend: Literal["chroma"] = "chroma"
     vector_collection: str = "porto_kb"
     memory_collection: str = "porto_memory"
+    memory_compact_threshold: int = Field(default=20, ge=4)
+    memory_recent_keep: int = Field(default=8, ge=1)
     max_chunk_chars: int = 1400
     chunk_overlap: int = 180
     top_k: int = 6

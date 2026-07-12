@@ -10,6 +10,7 @@ from ...evaluation import evaluate_rag_cases
 from ...intent import IntentDecision, route_chat_intent
 from ...llm import LLMClient, format_sources
 from ...logging_utils import get_component_logger
+from ...memory import get_compacted_history
 from ...models import ChatRequest, ChatResponse, EvalCase
 from ..deps import apply_rag_settings, effective_rag_settings, get_memory, get_store
 from ..sse import _ai_sdk_sse, _chat_request_from_stream_body, _text_chunks
@@ -82,21 +83,21 @@ def chat(req: ChatRequest):
     store.ensure_index()
     sources = store.search(req.message, top_k=top_k)
     memories = memory.search(req.message, session_id=req.session_id, top_k=5)
-    previous = memory.list_session(req.session_id, limit=8)
+    llm = LLMClient(runtime_settings)
+    summary, recent = get_compacted_history(req.session_id, memory, llm)
     memory.add(session_id=req.session_id, role="user", content=req.message)
 
-    llm = LLMClient(runtime_settings)
+    prompt_parts = [f"用户问题:\n{req.message}"]
+    if summary:
+        prompt_parts.append(f"会话历史摘要:\n{summary}")
+    prompt_parts.append(
+        "最近会话:\n" + "\n".join(f"{m.role}: {m.content}" for m in recent)
+    )
+    prompt_parts.append(f"记忆检索:\n{format_sources(memories)}")
+    prompt_parts.append(f"知识库片段:\n{format_sources(sources)}")
     answer = llm.complete(
         "你是 Porto 知识库问答助手。优先基于知识库片段回答，也可引用会话记忆；不确定时说明缺口。",
-        "\n\n".join(
-            [
-                f"用户问题:\n{req.message}",
-                "最近会话:\n"
-                + "\n".join(f"{m.role}: {m.content}" for m in reversed(previous[:6])),
-                f"记忆检索:\n{format_sources(memories)}",
-                f"知识库片段:\n{format_sources(sources)}",
-            ]
-        ),
+        "\n\n".join(prompt_parts),
     )
     if not answer:
         if sources:
@@ -140,8 +141,9 @@ def chat(req: ChatRequest):
             {
                 "name": "retrieve_memory",
                 "status": "completed",
-                "summary": f"检索到 {len(memories)} 条记忆",
-                "data": {},
+                "summary": f"检索到 {len(memories)} 条记忆，近期 {len(recent)} 条"
+                + ("（含历史摘要）" if summary else ""),
+                "data": {"compacted": bool(summary), "recent": len(recent), "memory_hits": len(memories)},
             },
             {
                 "name": "retrieve_knowledge",
