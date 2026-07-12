@@ -1,279 +1,339 @@
-# Porto Chatbot 后端 Agent 系统 · 小白导览
+# Porto Chatbot 后端 · Agent 架构运作机制
 
-> 写给第一次接触这套后端的同学。假设你懂一点 Python，但没碰过 LLM agent。
-> 读完你能知道：这套东西在干嘛、一个请求是怎么从头跑到尾的、每一层（layer）是做什么的、想改代码该去哪里找。
-
----
-
-## 1. 这系统到底是干嘛的？
-
-一句话：**你丢给它一份 PRD（产品需求文档），它给你吐回一堆「子系统规格说明书」。**
-
-比如你贴一段"我要做个支付平台，要支付、退款、风控、通知……"，它会：
-
-1. 读懂这份需求
-2. 拆成几个子系统（支付服务、风控服务、通知服务……）
-3. 给每个子系统写一份规格文档（API 需求、数据模型、验收标准……）
-
-中间这个过程是**固定流程**（永远是 理解→拆分→写规格→检查 这几步），但每一步内部是**LLM 在干活**，而且写规格那一步还会"写完自己审、审完自己改"循环好几轮。
+> 受众：会写代码、刚接触 LLM agent 的开发者。
+> 本文不讲"怎么用"，讲**每个 layer 背后在怎么运转、为什么这么设计**，以及它对应业界哪些 agent 概念。读完你能理解这套系统是怎么把"固定流程"和"LLM 自主性"焊在一起的。
 
 ---
 
-## 2. 一张图看懂：一个请求的旅程
+## 0. 先定位：这是个什么类型的 agent？
 
-用户在前端点一下"分解 PRD" →
+业界（参考 [Anthropic — Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)）把 LLM 系统分两类：
+
+- **Workflow**：路径预先编排好，LLM 在固定位置被调用。可预测、好调试。
+- **Agent**：LLM 自己决定下一步做什么（调什么工具、何时停）。灵活、但不可控。
+
+这套系统是两者的混合：**固定 workflow 骨架 + 节点内部 agentic**。
+
+```
+骨架（workflow，固定）：retrieve → understand → identify → generate → evaluate
+                                              ↑                          │
+                                              └── 不达标回边（条件）──────┘
+
+每个节点内部（agentic）：LLM 用 tool-calling loop 自主取数、用 evaluator-optimizer loop 自我精修
+```
+
+为什么这么选？产品需求是"把 PRD 分解成规格"——**步骤必须可预测**（用户要确定的分解过程），但每一步的**内容生成**又需要 LLM 的灵活。所以骨架锁死、节点内放开。
+
+---
+
+## 1. 分层全景
+
+```mermaid
+graph TB
+    subgraph API["API 层 (api/)"]
+        R[routes: chat / workflow / settings / kb]
+        SSE[SSE 流式协议]
+    end
+    subgraph ORCH["编排层 (agent/)"]
+        G[PortoAgent<br/>LangGraph 状态图]
+        N1[retrieve] --> N2[understand] --> N3[identify] --> N4[generate] --> N5[evaluate]
+        N5 -.不达标.-> N3
+    end
+    subgraph CAP["能力层"]
+        L[LLM 客户端<br/>complete / with_tools / structured / stream]
+        T[Tools 工具集]
+        SP[Specs loop<br/>evaluator-optimizer]
+        MM[Memory + compaction]
+        IT[Intent router]
+    end
+    subgraph INFRA["基础设施"]
+        VS[VectorStore<br/>ChromaDB]
+        DB[(SQLite<br/>对话/配置/摘要)]
+    end
+    R --> G
+    R --> IT
+    R --> MM
+    G --> L
+    L --> T
+    N4 --> SP
+    SP --> L
+    MM --> DB
+    N1 --> VS
+```
+
+数据流：**API → 编排层（跑 graph）→ 能力层（调 LLM/工具/记忆）→ 基础设施**。回边在编排层内闭环。
+
+---
+
+## 2. LLM 客户端层：一个客户端，四种调用模式
+
+[llm/client.py](../backend/src/porto_chatbot/llm/client.py) 把 OpenAI / Anthropic 两套 SDK 抽象成统一接口，提供**四种语义不同的调用**——这四种覆盖了 agent 开发里几乎所有 LLM 用法：
+
+| 方法 | 机制 | 用在哪 | 对应概念 |
+|------|------|--------|----------|
+| `complete` | 单轮 `system + user` → 文本 | refine、摘要、direct 回答 | 最朴素的补全 |
+| `complete_with_tools` | **agent loop**：LLM 反复选工具→执行→回填→再思考 | understand、generate_initial | tool use / function calling |
+| `complete_structured` | 强制 JSON 输出 + 解析重试 | identify（拆子系统）、critique（打分） | structured output |
+| `stream` | 原生 token 级迭代器 | chat_stream 流式回答 | streaming |
+
+**关键设计：四种方法在 LLM 未配置时全部安全返回空/空迭代器**。这让上层可以用同一个调用写法，`if 返回空: 走降级`。这是"无 key 也能跑"的地基。
+
+---
+
+## 3. Tool calling loop：让 LLM 长出手脚
+
+这是"agentic"的核心机制。`complete_with_tools` 内部跑一个循环：
+
+```mermaid
+sequenceDiagram
+    participant Node as Agent 节点
+    participant Loop as tool-loop (LLMClient)
+    participant LLM as 大模型
+    participant Exec as 本地 tool 执行器
+    Node->>Loop: system + user + tools(schema)
+    loop 直到 LLM 不再要工具 或 达到 max_turns
+        Loop->>LLM: 当前对话 + 可用工具
+        LLM-->>Loop: tool_call(name, args) 或 最终文本
+        alt 返回 tool_call
+            Loop->>Exec: 调对应 handler(args)
+            Exec-->>Loop: 执行结果(字符串)
+            Loop->>Loop: 把结果作为 tool_result 回填对话
+        else 返回文本
+            Loop-->>Node: 最终答案 (退出循环)
+        end
+    end
+```
+
+**运作要点**：
+
+- **工具是给 LLM 的 schema + 给本地的 handler**（[tools/registry.py](../backend/src/porto_chatbot/tools/registry.py)）。LLM 看到 schema 决定调哪个、传什么参数；本地执行 handler 拿到真实数据，再喂回 LLM。
+- **LLM 自主决定取数顺序**（just-in-time retrieval）。比如 `understand_prd` 节点不硬编码"先查知识库再读 PRD"，而是把 `get_prd_text` / `search_knowledgebase` 等工具丢给 LLM，它自己判断"这次需要查吗？查什么？"。
+- **终止保护**：达到 `max_turns`（默认 4）还在要工具，就强制再调一次无工具的 `complete` 收尾，标 `truncated=True`。防止 LLM 无限调工具。
+- **双 provider 适配**：OpenAI 的 `tool_calls` 和 Anthropic 的 `tool_use` block 格式不同，client 内部各有一套解析/回填逻辑，对上层透明。
+
+> 对 agent 新手：这就是"function calling"的工程化实现。所有"LLM 能查数据库/调 API"的能力，本质都是这个循环。
+
+---
+
+## 4. Agent 编排：LangGraph 状态机
+
+[agent/graph.py](../backend/src/porto_chatbot/agent/graph.py) 用 LangGraph 的 `StateGraph` 把 5 个节点串成图。核心机制是 **state 在节点间流转**：
+
+```mermaid
+stateDiagram-v2
+    [*] --> retrieve: PRD 文本
+    retrieve --> understand: + sources
+    understand --> identify: + understanding
+    identify --> generate: + subsystems
+    generate --> evaluate: + specs, spec_results
+    evaluate --> identify: needs_rework=true 且 rework_passes < max
+    evaluate --> [*]: 达标 / 超上限
+```
+
+**运作要点**：
+
+- **共享 state**（`PortoAgentState`，TypedDict）：每个节点读 state、算东西、返回**更新后的 state**。LangGraph 负责合并、传给下一节点。`understanding`、`subsystems`、`specs`、`spec_results`、`evaluation`、`rework_passes` 等都在 state 里流转。
+- **节点是函数** `(agent, state) -> state`（[agent/nodes/](../backend/src/porto_chatbot/agent/nodes/)），不是方法。graph 用 lambda 绑定 agent 实例后注册。
+- **条件回边**：`evaluate` 节点算出 `needs_rework`，`add_conditional_edges` 的 router 读它决定去 `identify` 还是 `END`。`rework_passes` 计数器防止无限回边（默认最多返工 1 次）。
+- **每个步骤都写 `AgentStep` 进 state**，最终落到 `WorkflowResponse.steps`，前端 inspector 能还原整个决策链。
+
+> 为什么用 LangGraph 而不是手写循环？因为条件回边、状态合并、节点重试这些自己写又脏又容易错。LangGraph 把"状态机"这件事做对了。
+
+---
+
+## 5. Spec evaluator-optimizer loop：自我精修
+
+这是整套系统**最值得学的设计**，位于 [specs/loop.py](../backend/src/porto_chatbot/specs/loop.py)。`generate` 节点内部，对每个子系统跑：
+
+```mermaid
+flowchart TD
+    S([开始]) --> G[generator: 生成 spec v0]
+    G --> C{"critic: 按 rubric 打分<br/>(独立模型)"}
+    C -->|verdict=PASS 或 score≥阈值| F([接受当前版本])
+    C -->|score ≤ 历史最高分| RB[回退到 best 版本]
+    RB --> F
+    C -->|达 max_iter| TR[标记 truncated]
+    TR --> F
+    C -->|token 预算超| TR
+    C -->|NEEDS_IMPROVEMENT| RF[refiner: 按 feedback 改一版]
+    RF --> C
+```
+
+**运作要点（每个都对应一个工程教训）**：
+
+1. **critic 和 generator 分离**。critic 的 prompt 强制"只评审、不重写"——防止 LLM 自己写的东西自己审时"自吹自擂"。它们甚至可以用不同模型（`critic_*` 配置，让便宜快速的模型当评审）。
+
+2. **rubric 是结构化的**（[specs/rubric.py](../backend/src/porto_chatbot/specs/rubric.py)）：6 个维度（覆盖度/API 规范/数据模型/依赖/可验证性/一致性），每维 0-2 分，满分 12。critic 用 `complete_structured` 输出 `{verdict, score, feedback, per_dimension}`。结构化让分数可比较、可终止判断。
+
+3. **四重终止**（参考 [Anthropic evaluator-optimizer](https://platform.claude.com/cookbook/patterns-agents-evaluator-optimizer)，官方示例只有"PASS 才停"会死循环）：
+   - PASS（达标）
+   - `max_iter`（默认 3 轮）
+   - **分数不升回退**（本次分数 ≤ 历史最高 → 越改越差，立刻停，用 best 版本）← 防震荡
+   - token 预算（防失控烧钱）
+
+4. **per-subsystem 并行**。子系统间相互独立，用 `ThreadPoolExecutor` 并行跑各自的 loop。
+
+5. **context 不堆历史**。每次 refine 只传「最新 spec + 结构化 feedback + rubric」，不把所有历史版本塞进 prompt（那会撑爆窗口且干扰）。
+
+**实测效果**（deepseek）：模板拼接 spec 打 3.2/12，loop 后 11.4/12。这就是 evaluator-optimizer 模式的价值。
+
+---
+
+## 6. Intent router：LLM-as-router
+
+[intent.py](../backend/src/porto_chatbot/intent.py)。聊天入口先判断"这句话要不要走 RAG"：
 
 ```mermaid
 flowchart LR
-    U[前端] -->|POST PRD| API[API 层<br/>api/routes]
-    API --> AGENT[PortoAgent<br/>流水线主管]
-    AGENT --> R1[① 查资料<br/>retrieve_knowledge]
-    R1 --> R2[② 读 PRD<br/>understand_prd]
-    R2 --> R3[③ 拆子系统<br/>identify_subsystems]
-    R3 --> R4[④ 写规格<br/>generate_specs<br/>内部 critique↔refine 循环]
-    R4 --> R5[⑤ 质检打分<br/>evaluate]
-    R5 -->|不达标| R3
-    R5 -->|达标| OUT[落盘 + 返回前端]
+    M[用户消息] --> Q{LLM 可用?}
+    Q -->|是| LS[LLM complete_structured<br/>输出 intent: direct/rag]
+    LS --> D[用 LLM 判断结果]
+    Q -->|否| RS[规则: 正则 + 关键词]
+    RS --> D
 ```
 
-注意 ⑤ 那条"不达标→回到③"的回箭头：这是这套系统的一个关键设计——**质检不过就返工重拆**，不是一条道跑到黑。
+**运作要点**：
+- 用 `complete_structured` 让 LLM 输出 `{intent, reason}`，本质是**用 LLM 当分类器**（LLM-as-a-judge 的一种）。
+- 降级是规则（正则匹配寒暄词、关键词触发 rag）。规则的好处是确定性、零成本；LLM 的好处是泛化（"帮我瞅瞅这方案靠谱不"这种没关键词的也能判）。
+- 两级 fallback：LLM 输出无效（解析失败/枚举外的值）→ 也退回规则。
+
+> 这是"小模型/规则做大决策、LLM 做边缘情况"的典型用法。不是所有判断都要 LLM。
 
 ---
 
-## 3. 各层（layer）逐个讲
+## 7. Memory：三层存储 + compaction
 
-把整个系统想象成一家"PRD 分解公司"，每个 layer 是一个岗位。
+[memory/](../backend/src/porto_chatbot/memory/)。聊天场景的记忆，解决"会话长了 context 装不下"的问题。
 
-### 🏢 API 层 — 前台接单（[api/](../backend/src/porto_chatbot/api/)）
-
-**是谁**：FastAPI 写的 HTTP 接口，前端唯一打交道的地方。
-**干啥**：接前端的请求（聊天 / 跑 PRD 工作流 / 改设置 / 索引知识库），调后面的 agent，把结果包成 JSON 吐回去。
-**怎么玩**：
-- 聊天：`POST /api/chat`（一次性返回）、`POST /api/chat/stream`（流式，一字一字吐）
-- 跑 PRD：`POST /api/porto/workflows`
-- 看日志：所有请求都有结构化日志（带 `workflow_id`，能串起来追）
-**代码**：[api/routes/](../backend/src/porto_chatbot/api/routes/) 按业务分文件（chat/workflow/knowledge/memory/settings/eval）。
-
-> 小白重点：前端发的所有东西都从这儿进。要加新接口，在 `api/routes/` 建个文件，挂个 `router`，到 `app.py` 里 `include_router`。
-
----
-
-### 🛎️ 意图路由 — 分诊台（[intent.py](../backend/src/porto_chatbot/intent.py)）
-
-**是谁**：判断用户这句话到底想干嘛。
-**干啥**：聊天时（不是跑 PRD 时），把用户消息分成两类——
-- `direct`：寒暄/闲聊（"你好"、"谢谢"）→ 直接回，不查知识库
-- `rag`：真问题（"支付怎么拆"、"查一下风控"）→ 走完整 RAG 流程
-
-**怎么玩**：优先用 **LLM 判断**（更准）；LLM 没配 key 时退回**关键词规则**（"支付""风控"这些词触发 rag）。
-**为什么这样**：闲聊也去查知识库又慢又蠢。先分诊，省事。
-
-> 小白重点：加新的"闲聊词"不用改代码——只要 LLM 配了，它会自己判断。没配 LLM 才需要改 `RAG_HINTS` 关键词。
-
----
-
-### 📞 LLM 客户端 — 和大模型打电话（[llm/](../backend/src/porto_chatbot/llm/)）
-
-**是谁**：封装 OpenAI / Anthropic SDK 的统一客户端。
-**干啥**：后面所有 layer 想用大模型，都通过它。它提供四种打牌方式：
-- `complete(system, user)` — 最朴素，一问一答
-- `complete_with_tools(...)` — **带工具的 agent loop**（大模型可以自己决定调哪个工具，调完再思考，循环到它不再要工具为止）← 这是"agentic"的核心
-- `complete_structured(...)` — 让大模型严格吐 JSON（解析失败自动重试一次）
-- `stream(...)` — 原生流式，一个字一个字 yield
-
-**怎么玩**：在 `.env` / `.env.test` 配 `LANGCHAIN_API_KEY` / `LANGCHAIN_MODEL` / `LANGCHAIN_BASE_URL`。**没配 key 时所有方法安全返回空**——后面 layer 会自动走降级路径，系统照样跑（只是用规则/模板代替 LLM）。
-**代码**：[llm/client.py](../backend/src/porto_chatbot/llm/client.py)。
-
-> 小白重点：这套系统**没配 key 也能跑**（用降级逻辑），这是测试能确定性的关键。你本地没 key 不影响开发。
-
----
-
-### 🧰 工具层 — agent 的手脚（[tools/](../backend/src/porto_chatbot/tools/)）
-
-**是谁**：大模型在 agent loop 里**能调用的函数**。
-**干啥**：大模型本身只会说话，不会查数据库。工具就是给它装的"手"。我们有 6 个：
-- `get_prd_text` — 读当前 PRD 原文
-- `get_understanding` — 读已生成的业务理解报告
-- `list_subsystems` / `get_subsystem` — 看已识别的子系统
-- `search_knowledgebase` — 检索知识库
-- `get_sources` — 看已检索到的资料
-
-**怎么玩**：每个工具有 JSON schema（告诉大模型怎么调）+ handler（真正执行的函数）。大模型在 `complete_with_tools` 里自己选调哪个、调几次。
-**代码**：[tools/registry.py](../backend/src/porto_chatbot/tools/registry.py)（注册）/ [tools/handlers.py](../backend/src/porto_chatbot/tools/handlers.py)（实现）。
-
-> 小白重点：想让 agent 能"看"到新东西？在这里加个工具。比如想让它查数据库，加个 `query_db` 工具。
-
----
-
-### 🏭 Agent 编排 — 流水线主管（[agent/](../backend/src/porto_chatbot/agent/)）
-
-**是谁**：`PortoAgent`，整个 5 步流水线的指挥。用 LangGraph 把 5 个节点串成图。
-**干啥**：一次 `agent.run(prd)` 会依次跑：
-
-| 步骤 | 节点 | 干啥 | 降级（无 LLM 时） |
-|------|------|------|------------------|
-| ① | `retrieve_knowledge` | 向量检索知识库，捞相关片段 | 仍然检索（不依赖 LLM） |
-| ② | `understand_prd` | LLM 读 PRD，写业务理解报告 | 正则抽取关键词拼报告 |
-| ③ | `identify_subsystems` | LLM 按领域驱动设计拆子系统 | 关键词字典（`DOMAIN_HINTS`）匹配 |
-| ④ | `generate_specs` | LLM 给每个子系统写规格 + **自我循环精修** | f-string 模板拼接 |
-| ⑤ | `evaluate` | 结构检查 + spec rubric 打分；**不达标回 ③ 重做** | 只做结构检查 |
-
-**怎么玩**：回边（⑤→③）的次数由 `workflow_rework_max_passes` 控制（默认 1，即最多返工一次）。
-**代码**：[agent/graph.py](../backend/src/porto_chatbot/agent/graph.py)（PortoAgent 主体）/ [agent/nodes/](../backend/src/porto_chatbot/agent/nodes/)（5 个节点各一个文件）/ [agent/heuristics.py](../backend/src/porto_chatbot/agent/heuristics.py)（降级用的关键词/正则）。
-
-> 小白重点：流程是**固定的**（业务要求可预测），但每个节点内部是 agentic 的。想改"拆子系统"的逻辑，去 `nodes/identify.py`。
-
----
-
-### 🔄 规格生成 loop — 写完自己审、审完自己改（[specs/](../backend/src/porto_chatbot/specs/)）
-
-这是整套系统**最核心的创新点**，单独拎出来讲。
-
-**是谁**：④ `generate_specs` 节点内部的一个迷你循环。
-**干啥**：对每个子系统，跑这个循环：
-
-```
-生成首版 spec
-  ↓
-┌→ critic 按 6 维 rubric 打分（满分 12）
-│   ↓
-│  PASS？→ 是 → 接受，结束
-│   ↓ 否
-│  按 feedback 改一版（refine）
-└── 回去再打分
+```mermaid
+flowchart TB
+    subgraph 存储
+        A[(SQLite<br/>每条消息原文)]
+        B[(ChromaDB<br/>消息向量, 语义检索)]
+        C[(SQLite<br/>session 摘要缓存)]
+    end
+    Msg[新消息] --> A
+    Msg --> B
+    Query[检索] --> B
+    Query --> Hist[历史]
+    Hist --> Check{条数 > 阈值?}
+    Check -->|否| Out1[全部原文]
+    Check -->|是| Split[旧消息 + 近期N条]
+    Split --> Cache{摘要已缓存?<br/>by last_message_id}
+    Cache -->|是| Reuse[复用摘要]
+    Cache -->|否| Sum[LLM 摘要旧消息]
+    Sum --> C
+    Reuse --> Out2[摘要 + 近期原文]
+    Sum --> Out2
 ```
 
-**四个终止条件**（防止死循环）：
-1. critic 给 PASS（分数 ≥ 10）→ 结束
-2. 改到 `max_iter` 次（默认 3）→ 结束
-3. **分数不升反降**（越改越差）→ 回退到最好的那版，结束
-4. token 预算花光 → 结束
+**运作要点**：
 
-**效果**（实测，deepseek）：模板拼接的 spec 打分 **3.2/12**，这个 loop 后 **11.4/12**——质量地板从"不可用"抬到"接近满分"。
+- **三路存储**：原文（按 session 列出）、向量（语义检索相关历史）、摘要缓存（旧消息的压缩态）。
+- **compaction 是核心**（[memory/compaction.py](../backend/src/porto_chatbot/memory/compaction.py)）：会话超阈值（默认 20 条）时，把旧消息让 LLM 摘要成一段，只保留近期（默认 8 条）原文。拼 prompt 时用「摘要 + 近期原文」。这是 Anthropic context engineering 里的 **compaction 策略**——避免 `n²` 复杂度的 context 把窗口撑爆。
+- **缓存键是 `last_message_id`**：如果旧消息集合没变（没新消息进来），复用上次摘要，不重复调 LLM。新消息进来使旧集合扩大，`last_message_id` 变了，才重新摘要。
+- **降级**：LLM 不可用时不压缩，只返回近期原文（信息少但不崩）。
 
-**怎么玩**：
-- `spec_refine_enabled` — 总开关
-- `spec_refine_max_iter` — 每个子系统最多改几轮
-- `spec_refine_pass_score` — 多少分算 PASS
-- `spec_refine_budget_tokens` — token 预算上限
-
-**代码**：[specs/loop.py](../backend/src/porto_chatbot/specs/loop.py)（主循环）/ [specs/steps.py](../backend/src/porto_chatbot/specs/steps.py)（生成/评审/修订三步）/ [specs/rubric.py](../backend/src/porto_chatbot/specs/rubric.py)（6 维评分标准）。
-
-> 小白重点：rubric 那 6 个维度（覆盖度/API 规范/数据模型/依赖/可验证性/一致性）是 critic 打分的尺子。想改评判标准，改 `rubric.py`。
+> 对 agent 新手：长会话 agent 必须有 compaction，否则迟早 context 爆。这版是简易实现（按消息数触发、整段摘要），更进阶的可以按 token 数、滑动窗口、分层摘要。
 
 ---
 
-### 🧠 记忆层 — 会话记忆 + 自动压缩（[memory/](../backend/src/porto_chatbot/memory/)）
+## 8. Context engineering：怎么拼 prompt
 
-**是谁**：聊天场景下的对话记忆。
-**干啥**：两路存储——
-- SQLite：存每条对话原文（按 session）
-- ChromaDB：把对话向量化，能按语义检索相关历史
+这套系统在拼接 LLM 输入时遵循一个原则：**只传最小高信号 token**（参考 [Anthropic — Effective Context Engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)）。
 
-**关键招式 · compaction（压缩）**：会话一长，把所有历史塞进 prompt 会撑爆 context 窗口。所以超过阈值（默认 20 条）时：
-- 把**旧消息**让 LLM 摘要成一段（缓存到 db，下次复用）
-- 只把**最近几条**（默认 8）保留原文
-- 拼 prompt 时：摘要 + 近期原文
+聊天 prompt 的拼法（[api/routes/chat.py](../backend/src/porto_chatbot/api/routes/chat.py)）：
 
-**怎么玩**：
-- `memory_compact_threshold` — 多少条消息触发压缩
-- `memory_recent_keep` — 保留最近几条原文
-
-**代码**：[memory/store.py](../backend/src/porto_chatbot/memory/store.py)（存储）/ [memory/compaction.py](../backend/src/porto_chatbot/memory/compaction.py)（压缩逻辑）。
-
-> 小白重点：聊天场景才用记忆（`/api/chat`）。跑 PRD 工作流不用（它是无状态的一锤子买卖）。
-
----
-
-### ⚡ 流式输出 — 边想边说（[api/routes/chat.py](../backend/src/porto_chatbot/api/routes/chat.py) 的 `chat_stream`）
-
-**是谁**：`/api/chat/stream` 的 SSE 流式接口。
-**干啥**：LLM 生成答案时，**一个 token 一个 token 往前端推**（不是等整段算完才发），首字延迟低很多。
-**怎么玩**：`agent_stream_enabled` 开关。关了就用老的"算完再切块发"（假流式）。协议是 AI SDK 的 SSE 格式（`text-delta` / `source-document` / `data-porto` / `finish`），前端要按这个解析。
-**降级**：LLM 没配 key 时自动退回非流式。
-
----
-
-## 4. 怎么玩起来（上手三步）
-
-### 第 1 步：装环境
-
-```bash
-cd chatbot/backend
-uv sync          # 装依赖
+```
+[用户问题]
+[会话历史摘要]   ← 来自 compaction（有才放）
+[最近会话原文]   ← recent N 条
+[记忆检索]       ← 向量检索相关历史
+[知识库片段]     ← RAG 检索
 ```
 
-### 第 2 步：配 LLM（可选，不配也能跑）
+加上**预算保护**（`_trim_to_budget`）：总字符超 `context_char_budget`（默认 16000）时，从后向前精确截断——保留问题/摘要/会话，裁掉检索片段。后缀长度计入预算，保证截断后真的不超。
 
-```bash
-cp .env.example .env
-# 编辑 .env，填上你的 key：
-# LANGCHAIN_AGENT_PROVIDER=openai
-# LANGCHAIN_API_KEY=sk-xxx
-# LANGCHAIN_MODEL=gpt-4.1-mini
-# LANGCHAIN_BASE_URL=            # 走代理才填
-```
-
-> 国内常用 deepseek / 通义等兼容 OpenAI 协议的，把 `LANGCHAIN_BASE_URL` 填它们的地址、`LANGCHAIN_MODEL` 填对应模型名即可。
-
-### 第 3 步：跑
-
-```bash
-uv run uvicorn porto_chatbot.main:app --reload   # 起后端
-```
-
-前端单独 `cd ../frontend && npm i && npm run dev`。
-
-**不配 key 也能跑**——所有 LLM 步骤走降级（模板/规则），功能完整，只是质量低。这就是为啥本地开发很轻。
+> 这是"context 是有限资源、有边际递减"的工程化。不是什么都要塞进去。
 
 ---
 
-## 5. 想改代码，去哪儿找？
+## 9. Streaming：原生 token 流
 
-| 我想…… | 改这里 |
-|--------|--------|
-| 加一个 HTTP 接口 | [api/routes/](../backend/src/porto_chatbot/api/routes/) 新建文件 |
-| 改意图判断规则 | [intent.py](../backend/src/porto_chatbot/intent.py) 的 `_rule_route` |
-| 换 LLM 调用方式 | [llm/client.py](../backend/src/porto_chatbot/llm/client.py) |
-| 给 agent 加新工具 | [tools/registry.py](../backend/src/porto_chatbot/tools/registry.py) |
-| 改某个流程节点 | [agent/nodes/](../backend/src/porto_chatbot/agent/nodes/) 对应文件 |
-| 改 spec 评分标准 | [specs/rubric.py](../backend/src/porto_chatbot/specs/rubric.py) |
-| 调 spec loop 行为 | [specs/loop.py](../backend/src/porto_chatbot/specs/loop.py) + `Settings` 的 `spec_refine_*` |
-| 改记忆/压缩 | [memory/](../backend/src/porto_chatbot/memory/) |
-| 加配置项 | [settings.py](../backend/src/porto_chatbot/settings.py) + [models/payload.py](../backend/src/porto_chatbot/models/payload.py) + 前端 [types.ts](../frontend/src/lib/types.ts) |
+[api/routes/chat.py](../backend/src/porto_chatbot/api/routes/chat.py) 的 `chat_stream`。`agent_stream_enabled` 开时，RAG 分支用 `LLMClient.stream` 原生流式：
 
-**改完一定跑测试**：
-```bash
-cd chatbot/backend && uv run pytest
+```mermaid
+sequenceDiagram
+    participant FE as 前端
+    participant API as chat_stream
+    participant LLM as 大模型
+    FE->>API: POST /api/chat/stream
+    API->>API: prep(意图/检索/记忆/拼prompt)
+    loop LLM token 流
+        LLM-->>API: delta token
+        API-->>FE: SSE text-delta
+    end
+    API->>FE: SSE source-document / data-porto / finish
 ```
-现在 96 个测试，全绿才能算改完。
+
+**运作要点**：
+- prep 阶段（检索/记忆/拼 prompt）是**非流式**的，一次性做完；只有答案生成是流式。首字延迟 ≈ prep 时间 + LLM 首个 token。
+- SSE 协议遵循 AI SDK 格式（`text-delta` / `source-document` / `data-porto` / `finish`），前端按这个解析。
+- **降级**：`agent_stream_enabled=false` 或 LLM 不可用时，退回 `complete`（算完整段再切块发，假流式）。
 
 ---
 
-## 6. 几个坑（踩过才知道）
+## 10. 降级哲学：为什么无 key 也全程能跑
 
-1. **没配 key 不是 bug**。系统设计成无 key 降级，测试也靠这个保持确定性。看到 LLM "没生效"先检查 `.env`。
+贯穿所有 layer 的设计原则：**每个 LLM 调用都有降级路径**。
 
-2. **`validation_alias` 的坑**。`agent_api_key` 这类字段在 [settings.py](../backend/src/porto_chatbot/settings.py) 用了 `validation_alias="LANGCHAIN_API_KEY"`，意思是它从 `LANGCHAIN_API_KEY` 环境变量读。两个副作用：
-   - 构造时 `Settings(agent_api_key="k")` **不生效**（要用 `setattr`）
-   - 环境变量有值时，会覆盖代码里的 `setattr`
-   - 所以测试里用 `monkeypatch.delenv` 把这些 env 清掉，保证测试确定性。
+| Layer | LLM 可用时 | LLM 不可用时（降级） |
+|-------|-----------|---------------------|
+| understand | LLM 写业务理解报告 | 正则抽关键词拼报告 |
+| identify | LLM 按领域设计拆子系统 | `DOMAIN_HINTS` 关键词字典匹配 |
+| generate | LLM 生成 + evaluator-optimizer loop | f-string 模板拼接 |
+| critique | LLM 按 rubric 打分 | 跳过（直接接受当前 spec） |
+| intent | LLM 分类 | 正则 + 关键词 |
+| memory compaction | LLM 摘要旧消息 | 只返回近期原文，不压缩 |
+| chat answer | LLM 回答 | 列出检索到的片段 |
 
-3. **配置三套，别搞混**：
-   - `.env` — 生产/本地开发
-   - `.env.test` — 跑基线评估脚本（[scripts/spec_baseline_eval.py](../backend/scripts/spec_baseline_eval.py)）用；pytest 单元测试会**隔离**它的 LLM key（保持确定性）
-   - 前端 Settings 页 — 存到 sqlite（`~/.porto/settings.sqlite3`），优先级介于 env 和默认值之间
+这带来三个好处：
+1. **本地开发零门槛**（不配 key 也能跑通全流程）
+2. **测试确定性**（降级路径不调 LLM，结果稳定）
+3. **生产容错**（LLM 偶发失败时系统退化而非崩溃）
 
-4. **critic 模型可以单独配**。想用便宜模型当评审、贵模型当生成？配 `critic_provider` / `critic_model`（前端「高级配置」面板）。不配就复用 generator。
-
-5. **spec loop 不是越多轮越好**。`max_iter` 默认 3 已经够（实测能到 11+ 分）。设太大浪费钱，而且有"分数不升就停"的保护防止越改越差。
+代价：降级质量明显更低（baseline 实测模板 3.2 vs LLM loop 11.4）。所以 LLM 是"质量放大器"，不是"功能开关"。
 
 ---
 
-## 7. 还想深挖？
+## 11. 概念对照表：这套实现 ↔ 业界术语
 
-- 整体改造方案与决策：[PLANs/2026-07-12-spec-refine-loop-and-agent-modernization.md](PLANs/2026-07-12-spec-refine-loop-and-agent-modernization.md)
-- 任务清单（全勾完）：[TODOs/2026-07-12-spec-refine-loop-and-agent-modernization.md](TODOs/2026-07-12-spec-refine-loop-and-agent-modernization.md)
-- 跑基线对照（看 loop 比 template 好多少）：`uv run python scripts/spec_baseline_eval.py`
+| 本系统 | 业界术语 / 出处 |
+|--------|----------------|
+| `complete_with_tools` 的循环 | tool use / function calling agent loop |
+| `complete_structured` | structured output / JSON mode |
+| spec 的 generate→critique→refine | evaluator-optimizer workflow（[Anthropic Cookbook](https://platform.claude.com/cookbook/patterns-agents-evaluator-optimizer)） |
+| critic 分数不升就停 | Self-Refine 的防震荡终止（[arXiv:2303.17651](https://arxiv.org/abs/2303.17651)） |
+| memory compaction | context engineering 的 compaction（[Anthropic](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)） |
+| evaluate→identify 回边 | workflows 的条件路由 / self-correction |
+| intent LLM 路由 | LLM-as-a-judge / semantic router |
+| 节点内 just-in-time 检索 | just-in-time context loading |
+| 固定图 + 节点内 agentic | workflows with agentic nodes（[Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)） |
 
-有具体问题，直接读对应 layer 的代码——每个文件顶部都有注释说明它在干嘛。
+---
+
+## 12. 想看代码
+
+| Layer | 入口文件 |
+|-------|---------|
+| LLM 客户端 | [llm/client.py](../backend/src/porto_chatbot/llm/client.py) |
+| Tool loop 实现 | [llm/client.py](../backend/src/porto_chatbot/llm/client.py) 的 `complete_with_tools` |
+| 工具注册 | [tools/registry.py](../backend/src/porto_chatbot/tools/registry.py) |
+| Agent 编排 | [agent/graph.py](../backend/src/porto_chatbot/agent/graph.py) |
+| 流程节点 | [agent/nodes/](../backend/src/porto_chatbot/agent/nodes/) |
+| Spec loop | [specs/loop.py](../backend/src/porto_chatbot/specs/loop.py) |
+| Rubric | [specs/rubric.py](../backend/src/porto_chatbot/specs/rubric.py) |
+| Intent 路由 | [intent.py](../backend/src/porto_chatbot/intent.py) |
+| Memory / compaction | [memory/compaction.py](../backend/src/porto_chatbot/memory/compaction.py) |
+
+每个文件顶部都有注释说明它的角色。建议读顺序：`llm/client.py`（看四种调用）→ `agent/graph.py`（看编排）→ `agent/nodes/understand.py`（看一个节点怎么用 tool loop）→ `specs/loop.py`（看 evaluator-optimizer）。
