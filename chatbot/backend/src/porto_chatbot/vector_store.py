@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import shutil
+import threading
 from typing import Any
 
 import chromadb
@@ -32,6 +33,8 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 class ChromaVectorStore:
+    _build_lock = threading.Lock()
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.logger = get_component_logger("vector_store", settings)
@@ -45,6 +48,10 @@ class ChromaVectorStore:
         )
 
     def build(self, reset: bool = True) -> IndexStats:
+        with self._build_lock:
+            return self._build_impl(reset)
+
+    def _build_impl(self, reset: bool = True) -> IndexStats:
         self.logger.info(
             "index build start kb_path=%s reset=%s provider=%s model=%s chunk_size=%s overlap=%s",
             self.settings.kb_path,
@@ -228,7 +235,9 @@ class ChromaVectorStore:
             if metadata.get(key) != expected.get(key):
                 return False
         if metadata.get("embedding_dimensions") is None:
-            return False
+            # collection 新建、build 进行中（维度尚未写入）。视为兼容，避免并发的
+            # search 把正被 build 的 collection 当不兼容删掉，导致 build _add_batch NotFound。
+            return True
         if self.settings.embedding_provider == "local":
             return metadata.get("embedding_dimensions") == self.settings.embedding_dimensions
         return True
