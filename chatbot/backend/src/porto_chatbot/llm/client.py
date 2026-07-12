@@ -1,70 +1,16 @@
 from __future__ import annotations
 
 import json
-import re
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from collections.abc import Iterator
 from typing import Any
 
 from anthropic import Anthropic
 from openai import OpenAI
 
-from .logging_utils import get_component_logger
-from .models import SourceChunk
-from .settings import Settings
-
-Message = dict[str, Any]
-
-
-@dataclass
-class ToolDef:
-    """单个工具定义：schema 给 LLM，handler 在本地执行。"""
-
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    handler: Callable[[dict[str, Any]], str]
-
-
-@dataclass
-class ToolCall:
-    name: str
-    arguments: dict[str, Any]
-    result: str
-
-
-@dataclass
-class ToolLoopResult:
-    """complete_with_tools 的返回。"""
-
-    text: str = ""
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    turns: int = 0
-    truncated: bool = False
-
-
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
-_BARE_JSON_RE = re.compile(r"(\{.*\}|\[.*\])", re.DOTALL)
-
-
-def _try_parse_json(text: str) -> dict | None:
-    """容忍 LLM 把 JSON 包在 fence 或夹杂文本里。"""
-    if not text:
-        return None
-    candidates = [text]
-    fence = _JSON_FENCE_RE.search(text)
-    if fence:
-        candidates.insert(0, fence.group(1))
-    bare = _BARE_JSON_RE.search(text)
-    if bare:
-        candidates.insert(0, bare.group(1))
-    for cand in candidates:
-        try:
-            parsed = json.loads(cand)
-            return parsed if isinstance(parsed, dict) else None
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return None
+from ..logging_utils import get_component_logger
+from ..settings import Settings
+from .parsing import _try_parse_json
+from .types import Message, ToolCall, ToolDef, ToolLoopResult
 
 
 class LLMClient:
@@ -430,11 +376,3 @@ class LLMClient:
                 kwargs["base_url"] = self.settings.agent_base_url
             return Anthropic(**kwargs)
         raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
-
-
-def format_sources(sources: list[SourceChunk]) -> str:
-    if not sources:
-        return "无可用知识库片段。"
-    return "\n\n".join(
-        f"[{i + 1}] {s.path} score={s.score}\n{s.text}" for i, s in enumerate(sources)
-    )

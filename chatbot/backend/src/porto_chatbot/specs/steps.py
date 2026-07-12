@@ -1,0 +1,65 @@
+"""LLM 驱动的三步：generate_initial_spec / critique_spec / refine_spec。"""
+from __future__ import annotations
+
+from ..models import Critique, Subsystem
+from ..tools import AgentToolContext, build_agent_tools
+from .context import SpecContext
+from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
+
+# ----------------------------- LLM 驱动的三步 ----------------------------- #
+
+def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> str:
+    """LLM 生成首版 spec（带工具，可检索知识库）。失败返回空串，由 loop 层降级。"""
+    if not ctx.llm.enabled:
+        return ""
+    tools_ctx = AgentToolContext(state=ctx.state, vector_store=ctx.vector_store)
+    result = ctx.llm.complete_with_tools(
+        f"你是资深系统规格工程师。为子系统 {sub.name} 生成详细的系统需求规格（markdown）。"
+        f"子系统职责：{sub.responsibility}；能力：{', '.join(sub.capabilities) or '（待识别）'}。"
+        f"必须包含这些章节：{', '.join(_SPEC_SECTIONS)}。"
+        "API 需求要给出具体端点/方法/输入输出/错误码；数据模型要列实体与关键字段；验收标准要具体可测。"
+        "可调用工具检索知识库以参考现有系统约定。",
+        f"请生成 {sub.name} 的规格文档。",
+        build_agent_tools(tools_ctx),
+    )
+    return (result.text or "").strip()
+
+
+def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | None:
+    """LLM 依据 rubric 评判 spec。解析失败返回 None（loop 层接受当前版本）。"""
+    if not ctx.llm.enabled:
+        return None
+    parsed = ctx.llm.complete_structured(
+        "你是严格的系统规格评审专家。只评审、不重写。依据如下 6 维 rubric 打分，每维 0-2 分，满分 12：\n"
+        f"{_rubric_text()}\n\n"
+        "判定规则：score≥10 且无重大缺陷 → PASS；7-9 → NEEDS_IMPROVEMENT；≤6 → FAIL。"
+        "feedback 必须针对未满分维度给出具体、可执行的改进方向。",
+        f"子系统：{sub.name}（职责：{sub.responsibility}）\n\n待评审规格：\n{spec}",
+        _critique_schema(),
+    )
+    if not isinstance(parsed, dict):
+        return None
+    verdict = parsed.get("verdict", "NEEDS_IMPROVEMENT")
+    if verdict not in ("PASS", "NEEDS_IMPROVEMENT", "FAIL"):
+        verdict = "NEEDS_IMPROVEMENT"
+    try:
+        score = int(parsed.get("score", 0))
+    except (TypeError, ValueError):
+        score = 0
+    score = max(0, min(12, score))
+    per_dim = parsed.get("per_dimension")
+    per_dim = per_dim if isinstance(per_dim, dict) else {}
+    return Critique(verdict=verdict, score=score, feedback=str(parsed.get("feedback", "")), per_dimension=per_dim)
+
+
+def refine_spec(ctx: SpecContext, sub: Subsystem, spec: str, feedback: str) -> str:
+    """LLM 依据反馈修订 spec。失败返回原 spec（不改）。"""
+    if not ctx.llm.enabled:
+        return spec
+    result = ctx.llm.complete(
+        f"你是资深系统规格工程师。根据评审反馈改进 {sub.name} 的规格文档（职责：{sub.responsibility}）。"
+        "保持原有 markdown 结构与章节，只针对反馈改进；不要删除已有合理内容；不要输出解释，直接给完整文档。",
+        f"评审反馈：\n{feedback}\n\n当前规格：\n{spec}\n\n请输出改进后的完整规格文档。",
+    )
+    refined = (result or "").strip()
+    return refined or spec
