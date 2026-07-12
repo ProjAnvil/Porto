@@ -202,3 +202,28 @@ def test_render_template_spec_contains_required_sections(tmp_path):
     for section in ["执行摘要", "业务能力", "API 需求", "数据模型需求", "集成需求", "验收标准"]:
         assert section in out
     assert "billing-service" in out
+
+
+# ----------------------------- critic 独立模型（Phase 2 P1）----------------------------- #
+
+
+def test_critique_falls_back_to_generator_when_no_critic(tmp_path):
+    ctx = _make_ctx(tmp_path, cwt_texts=["V0"], critiques=[_crit("PASS", 10)])
+    assert ctx.critic_llm is None
+    result = generate_spec_with_loop(ctx, _sub())
+    assert result.used_llm is True  # 用 generator 作 critic 正常完成
+    assert result.attempts[0].verdict == "PASS"
+
+
+def test_critique_uses_independent_critic_llm(tmp_path):
+    # 主 llm 的 complete_structured 返回 FAIL（若被错用会看到 FAIL）
+    ctx = _make_ctx(tmp_path, cwt_texts=["V0"], critiques=[_crit("FAIL", 0)])
+    critic_llm = LLMClient(_settings(tmp_path))
+    critic_llm.complete_structured = lambda *a, **k: {
+        "verdict": "PASS", "score": 12, "feedback": "from-critic", "per_dimension": {},
+    }
+    ctx.critic_llm = critic_llm
+    result = generate_spec_with_loop(ctx, _sub())
+    # critic_llm 给 PASS，loop 首轮即停；attempts 反映 critic 的判定
+    assert result.attempts[0].verdict == "PASS"
+    assert result.attempts[0].score == 12

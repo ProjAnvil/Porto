@@ -20,6 +20,7 @@ def generate_specs(agent, state: PortoAgentState) -> PortoAgentState:
             state={**state},
             settings=agent.settings,
             vector_store=agent.vector_store,
+            critic_llm=agent.critic_llm,
         )
         return generate_spec_with_loop(sub_ctx, sub)
 

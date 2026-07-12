@@ -103,3 +103,38 @@ def test_chat_stream_native_streaming_when_llm_enabled(monkeypatch, sample_setti
     assert "流" in text and "式" in text and "回答" in text
     assert text.count('"text-delta"') >= 3  # 原生流式：至少 3 个分片
     assert "data: [DONE]" in text
+
+
+# ----------------------------- context 预算（Phase 4 P1）----------------------------- #
+
+
+def test_trim_to_budget_under_budget():
+    from porto_chatbot.api.routes.chat import _trim_to_budget
+
+    parts = ["问题", "摘要", "片段"]
+    assert _trim_to_budget(parts, 1000) == ["问题", "摘要", "片段"]
+
+
+def test_trim_to_budget_trims_from_back():
+    from porto_chatbot.api.routes.chat import _trim_to_budget
+
+    parts = ["问题", "摘要", "片段" * 100]
+    result = _trim_to_budget(parts, 20)
+    assert sum(len(p) for p in result) <= 20
+    assert "问题" in result[0]  # 前面优先保留
+
+
+def test_trim_to_budget_drops_empty_parts():
+    from porto_chatbot.api.routes.chat import _trim_to_budget
+
+    parts = ["a", "b", "c" * 200]
+    result = _trim_to_budget(parts, 5)
+    assert all(p for p in result)  # 无空串残留
+    assert sum(len(p) for p in result) <= 5
+
+
+def test_trim_to_budget_zero_budget_noop():
+    from porto_chatbot.api.routes.chat import _trim_to_budget
+
+    parts = ["a", "b"]
+    assert _trim_to_budget(parts, 0) == ["a", "b"]

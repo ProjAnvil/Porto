@@ -26,10 +26,14 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> str:
 
 
 def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | None:
-    """LLM 依据 rubric 评判 spec。解析失败返回 None（loop 层接受当前版本）。"""
-    if not ctx.llm.enabled:
+    """LLM 依据 rubric 评判 spec。优先用独立 critic 模型，缺省用 generator。
+
+    解析失败返回 None（loop 层接受当前版本）。
+    """
+    critic = ctx.critic_llm or ctx.llm
+    if not critic.enabled:
         return None
-    parsed = ctx.llm.complete_structured(
+    parsed = critic.complete_structured(
         "你是严格的系统规格评审专家。只评审、不重写。依据如下 6 维 rubric 打分，每维 0-2 分，满分 12：\n"
         f"{_rubric_text()}\n\n"
         "判定规则：score≥10 且无重大缺陷 → PASS；7-9 → NEEDS_IMPROVEMENT；≤6 → FAIL。"

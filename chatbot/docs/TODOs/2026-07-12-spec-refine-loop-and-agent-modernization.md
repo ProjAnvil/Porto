@@ -38,7 +38,7 @@
 - [x] **[P0]** `agent.py` `generate_specs`：改用 loop，`spec_refine_parallel` 时并行，写 `AgentStep.data.attempts`
 - [x] **[P0]** `tests/test_spec_loop.py`：PASS 即停 / max_iter 截断 / 分数不升回退 / critic 异常跳过 / generate 异常降级模板 / 预算截断
 - [x] **[P1]** 预算上限触发 `truncated`（简易字符预算实现）
-- [ ] **[P1]** critic 走独立 `critic_*` 模型（当前与 generator 同 client，后续优化）
+- [x] **[P1]** critic 走独立 `critic_*` 模型（SpecContext.critic_llm + PortoAgent._build_critic_llm，未配回退 generator）
 
 > Phase 2 验证：69 测试全绿、ruff 全过、零回归。四重终止条件全部被测试覆盖；`_render_spec` 已下沉为 `specs.render_template_spec` 的降级路径。
 
@@ -54,7 +54,7 @@
 
 - [x] **[P0]** `memory/` 包：会话超阈值触发 compaction（远期摘要 + 近期原文），按 last_message_id 缓存
 - [x] **[P0]** `tests/test_memory_compaction.py`：超阈 compaction / 缓存命中 / 消息增长重摘要 / 无 LLM 降级（6 测试）
-- [ ] **[P1]** 拼接 context 前的 token 预算估算（compaction 已大幅降 token，精细预算留后续）
+- [x] **[P1]** chat 路由 context 字符预算（`context_char_budget` 默认 16000 + `_trim_to_budget` 从后截断，chat/chat_stream 接入）
 
 > Phase 4 验证：81 测试全绿。
 

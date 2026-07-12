@@ -15,3 +15,4 @@ class SpecContext:
     state: dict[str, Any]
     settings: Settings
     vector_store: LocalVectorStore | None = None
+    critic_llm: LLMClient | None = None  # spec loop 评判模型，缺省用 llm

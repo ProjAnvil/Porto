@@ -20,6 +20,30 @@ logger = get_component_logger("api")
 router = APIRouter()
 
 
+def _trim_to_budget(parts: list[str], budget: int) -> list[str]:
+    """超字符预算时从后向前截断：保留问题/摘要/会话，裁剪 memories/sources。
+
+    context engineering 的预算保护：避免长会话 + 大量检索片段撑爆 context 窗口。
+    """
+    if budget <= 0 or sum(len(p) for p in parts) <= budget:
+        return parts
+    suffix = "…（已截断）"
+    result = list(parts)
+    for i in range(len(result) - 1, -1, -1):
+        total = sum(len(p) for p in result)
+        if total <= budget:
+            break
+        over = total - budget
+        part = result[i]
+        keep = len(part) - over  # part i 最多保留的字符数
+        if keep <= 0:
+            result[i] = ""
+        else:
+            room = keep - len(suffix)
+            result[i] = (part[:room] + suffix) if room > 0 else part[:keep]
+    return [p for p in result if p]
+
+
 def _direct_chat_answer(req: ChatRequest, runtime_settings, decision: IntentDecision, llm: LLMClient | None = None) -> ChatResponse:
     llm = llm or LLMClient(runtime_settings)
     answer = llm.complete(
@@ -95,6 +119,7 @@ def chat(req: ChatRequest):
     )
     prompt_parts.append(f"记忆检索:\n{format_sources(memories)}")
     prompt_parts.append(f"知识库片段:\n{format_sources(sources)}")
+    prompt_parts = _trim_to_budget(prompt_parts, runtime_settings.context_char_budget)
     answer = llm.complete(
         "你是 Porto 知识库问答助手。优先基于知识库片段回答，也可引用会话记忆；不确定时说明缺口。",
         "\n\n".join(prompt_parts),
@@ -203,6 +228,7 @@ async def chat_stream(body: dict[str, Any]):
             prompt_parts.append("最近会话:\n" + "\n".join(f"{m.role}: {m.content}" for m in recent))
             prompt_parts.append(f"记忆检索:\n{format_sources(memories)}")
             prompt_parts.append(f"知识库片段:\n{format_sources(sources)}")
+            prompt_parts = _trim_to_budget(prompt_parts, runtime_settings.context_char_budget)
             system_prompt = "你是 Porto 知识库问答助手。优先基于知识库片段回答，也可引用会话记忆；不确定时说明缺口。"
 
             yield _ai_sdk_sse({"type": "start", "messageMetadata": {"session_id": req.session_id}})

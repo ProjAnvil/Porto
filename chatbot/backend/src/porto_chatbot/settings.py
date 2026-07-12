@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     memory_collection: str = "porto_memory"
     memory_compact_threshold: int = Field(default=20, ge=4)
     memory_recent_keep: int = Field(default=8, ge=1)
+    context_char_budget: int = Field(default=16000, ge=1000)
     max_chunk_chars: int = 1400
     chunk_overlap: int = 180
     top_k: int = 6

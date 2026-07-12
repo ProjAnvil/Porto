@@ -34,8 +34,29 @@ class PortoAgent:
         self.logger = get_component_logger("agent", settings)
         self.vector_store = vector_store or LocalVectorStore(settings)
         self.llm = llm or LLMClient(settings)
+        self.critic_llm = self._build_critic_llm()
         self.graph = self._build_graph()
         self.logger.info("agent ready")
+
+    def _build_critic_llm(self) -> LLMClient:
+        """构造 spec loop 的评判模型。未配 critic_* 时回退到 generator（self.llm）。"""
+        s = self.settings
+        if not s.critic_provider:
+            return self.llm
+        critic_settings = s.model_copy(update={
+            "agent_provider": s.critic_provider,
+            "agent_api_key": s.critic_api_key or s.agent_api_key,
+            "agent_base_url": s.critic_base_url,
+            "agent_model": s.critic_model or s.agent_model,
+            "agent_temperature": s.critic_temperature,
+            "agent_max_tokens": s.critic_max_tokens,
+        })
+        critic = LLMClient(critic_settings)
+        self.logger.info(
+            "critic llm ready provider=%s model=%s independent=%s",
+            s.critic_provider, s.critic_model, critic.enabled,
+        )
+        return critic
 
     def run(self, prd_text: str, project_name: str | None = None, top_k: int | None = None) -> WorkflowResponse:
         workflow_id = str(uuid.uuid4())
