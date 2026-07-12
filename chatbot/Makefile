@@ -1,5 +1,5 @@
 # Porto Chatbot · 前后端进程管理（pid 文件存 ~/.porto/chatbot/）
-BACKEND_PORT  ?= 8000
+BACKEND_PORT  ?= 8100
 FRONTEND_PORT ?= 3000
 PID_DIR       := $(HOME)/.porto/chatbot
 RUN_DIR       := .run
@@ -67,7 +67,7 @@ frontend-start:
 	    echo "⚠️  前端已在运行 (pid $$(cat $(FRONTEND_PID)))"; \
 	else \
 	    echo "▶ 启动前端 http://localhost:$(FRONTEND_PORT) ..."; \
-	    sh -c 'cd frontend && exec npm run dev -- -p $(FRONTEND_PORT)' > $(FRONTEND_LOG) 2>&1 & \
+	    sh -c 'cd frontend && PORTO_API_BASE_URL=http://127.0.0.1:$(BACKEND_PORT) exec npm run dev -- -p $(FRONTEND_PORT)' > $(FRONTEND_LOG) 2>&1 & \
 	    echo $$! > $(FRONTEND_PID); \
 	    sleep 1; \
 	    echo "   pid=$$(cat $(FRONTEND_PID))  日志: $(FRONTEND_LOG)"; \
@@ -125,7 +125,7 @@ backend-dev:
 
 frontend-dev:
 	@echo "▶ 前台启动前端（Ctrl-C 停）..."
-	@cd frontend && exec npm run dev -- -p $(FRONTEND_PORT)
+	@cd frontend && PORTO_API_BASE_URL=http://127.0.0.1:$(BACKEND_PORT) exec npm run dev -- -p $(FRONTEND_PORT)
 
 clean: stop
 	@rm -rf $(RUN_DIR)
