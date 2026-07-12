@@ -50,17 +50,21 @@
 
 > Phase 3 验证：76 测试全绿、ruff 全过、零回归。线性 DAG 已升级为带条件回边的 LangGraph：evaluate 不达标且未超 `workflow_rework_max_passes` 时回到 identify_subsystems 重做。降级路径（无 LLM）evaluate passed → 不回边，`len(steps)==5` 不变。
 
-## Phase 4 — Memory compaction
+## Phase 4 — Memory compaction ✅ 已完成
 
-- [ ] **[P0]** `memory.py`：会话超阈值触发 compaction（远期摘要 + 近期原文）
-- [ ] **[P1]** 拼接 context 前做 token 预算估算（防超窗）
-- [ ] **[P0]** `tests/test_memory.py`：超阈 compaction + 检索命中
+- [x] **[P0]** `memory/` 包：会话超阈值触发 compaction（远期摘要 + 近期原文），按 last_message_id 缓存
+- [x] **[P0]** `tests/test_memory_compaction.py`：超阈 compaction / 缓存命中 / 消息增长重摘要 / 无 LLM 降级（6 测试）
+- [ ] **[P1]** 拼接 context 前的 token 预算估算（compaction 已大幅降 token，精细预算留后续）
 
-## Phase 5 — Native streaming + Intent 升级
+> Phase 4 验证：81 测试全绿。
 
-- [ ] **[P0]** `main.py` `/api/chat/stream`：改用 `LLMClient.stream` 原生 token → SSE `text-delta`
-- [ ] **[P1]** `intent.py`：升级为 LLM function-calling router（规则降级保留）
-- [ ] **[P0]** `tests/test_api.py`：流式 SSE 分片；`tests/test_intent.py`：LLM 路由准确
+## Phase 5 — Native streaming + Intent 升级 ✅ 已完成
+
+- [x] **[P0]** `api/routes/chat.py` `/api/chat/stream`：RAG 分支改用 `LLMClient.stream` 原生 token → SSE `text-delta`（`agent_stream_enabled` 开关，disabled 降级 complete）
+- [x] **[P1]** `intent.py`：升级为 LLM function-calling router（`complete_structured`），规则降级保留
+- [x] **[P0]** `tests/test_intent.py`（5 测试）+ `tests/test_api.py` native streaming 集成测试
+
+> Phase 5 验证：87 测试全绿、ruff 全过。
 
 ---
 

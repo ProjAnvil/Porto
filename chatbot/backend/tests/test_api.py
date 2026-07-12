@@ -73,3 +73,33 @@ def test_api_chat_greeting_skips_rag(monkeypatch, sample_settings):
     assert data["steps"][0]["name"] == "route_intent"
     assert data["steps"][0]["data"]["intent"] == "direct"
     assert all(step["name"] != "retrieve_knowledge" for step in data["steps"])
+
+
+def test_chat_stream_native_streaming_when_llm_enabled(monkeypatch, sample_settings):
+    """LLM enabled + agent_stream_enabled 时走原生 token 流（多个 text-delta 分片）。"""
+    from porto_chatbot.llm import LLMClient
+
+    sample_settings.agent_api_key = "k"
+    sample_settings.agent_stream_enabled = True
+    monkeypatch.setattr(main, "settings", sample_settings)
+    # intent router 固定返回 rag；stream 返回多个分片
+    monkeypatch.setattr(LLMClient, "complete_structured", lambda self, *a, **k: {"intent": "rag", "reason": "领域问题"})
+    monkeypatch.setattr(LLMClient, "stream", lambda self, *a, **k: iter(["流", "式", "回答"]))
+
+    client = TestClient(main.app)
+    client.post("/api/kb/index")
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "id": "t1",
+            "session_id": "s1",
+            "messages": [{"id": "m1", "role": "user", "parts": [{"type": "text", "text": "支付架构怎么拆"}]}],
+        },
+    ) as response:
+        assert response.status_code == 200
+        text = "".join(response.iter_text())
+
+    assert "流" in text and "式" in text and "回答" in text
+    assert text.count('"text-delta"') >= 3  # 原生流式：至少 3 个分片
+    assert "data: [DONE]" in text
