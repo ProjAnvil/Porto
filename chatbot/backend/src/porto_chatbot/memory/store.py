@@ -57,17 +57,25 @@ class MemoryStore:
             "memory sqlite added id=%s session_id=%s role=%s chars=%s",
             record.id, record.session_id, record.role, len(record.content),
         )
-        self.collection.add(
-            ids=[record.id],
-            documents=[record.content],
-            metadatas=[{
-                "session_id": record.session_id,
-                "role": record.role,
-                "created_at": record.created_at,
-                **record.metadata,
-            }],
-            embeddings=self.embeddings.embed_documents([record.content]),
-        )
+        embeddings = self.embeddings.embed_documents([record.content])
+        metadatas = [{
+            "session_id": record.session_id,
+            "role": record.role,
+            "created_at": record.created_at,
+            **record.metadata,
+        }]
+        try:
+            self.collection.add(
+                ids=[record.id], documents=[record.content], metadatas=metadatas, embeddings=embeddings,
+            )
+        except Exception as exc:
+            if "dimension" not in str(exc).lower():
+                raise
+            self.logger.warning("memory collection dim mismatch on add, rebuilding: %s", exc)
+            self._reset_collection()
+            self.collection.add(
+                ids=[record.id], documents=[record.content], metadatas=metadatas, embeddings=embeddings,
+            )
         self.logger.info("memory vector added id=%s session_id=%s", record.id, record.session_id)
         return record
 
@@ -118,12 +126,20 @@ class MemoryStore:
             len(query), session_id, top_k,
         )
         where = {"session_id": session_id} if session_id else None
-        result = self.collection.query(
-            query_embeddings=[self.embeddings.embed_query(query)],
-            n_results=top_k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
+        query_embedding = self.embeddings.embed_query(query)
+        try:
+            result = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as exc:
+            if "dimension" not in str(exc).lower():
+                raise
+            self.logger.warning("memory collection dim mismatch on search, rebuilding: %s", exc)
+            self._reset_collection()
+            return []
         rows: list[SourceChunk] = []
         for item_id, doc, metadata, distance in zip(
             result.get("ids", [[]])[0],
@@ -173,6 +189,15 @@ class MemoryStore:
             "memory summary saved session_id=%s last_message_id=%s chars=%s",
             session_id, last_message_id, len(summary),
         )
+
+    def _reset_collection(self) -> None:
+        """删旧 collection 并重建（embedding 维度变化等场景）。注意：会清空向量记忆。"""
+        try:
+            self.client.delete_collection(self.settings.memory_collection)
+            self.logger.info("memory collection reset (dimension change)")
+        except Exception:
+            self.logger.info("memory collection reset skipped (not existed)")
+        self.collection = self.client.get_or_create_collection(self.settings.memory_collection)
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.settings.memory_db_path) as conn:

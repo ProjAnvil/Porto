@@ -47,10 +47,19 @@ _ENV_KEYS_TO_ISOLATE = [
 ]
 
 
-@pytest.fixture()
-def sample_settings(tmp_path: Path, monkeypatch) -> Settings:
+@pytest.fixture(autouse=True)
+def _isolate_llm_env(monkeypatch):
+    """所有测试隔离 LLM/critic/workflow env，避免 .env.test 的真 key 污染单元测试。
+
+    pydantic-settings 的 validation_alias 字段会从 env 读取并覆盖 setattr，
+    故必须 delenv；用 autouse 让不依赖 sample_settings 的测试也被隔离。
+    """
     for key in _ENV_KEYS_TO_ISOLATE:
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture()
+def sample_settings(tmp_path: Path) -> Settings:
     kb = tmp_path / "kb"
     kb.mkdir()
     (kb / "payment-platform.md").write_text(
