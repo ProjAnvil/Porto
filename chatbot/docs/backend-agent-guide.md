@@ -87,19 +87,19 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant Node as Agent 节点
-    participant Loop as tool-loop (LLMClient)
+    participant TL as tool-loop (LLMClient)
     participant LLM as 大模型
     participant Exec as 本地 tool 执行器
-    Node->>Loop: system + user + tools(schema)
+    Node->>TL: system + user + tools(schema)
     loop 直到 LLM 不再要工具 或 达到 max_turns
-        Loop->>LLM: 当前对话 + 可用工具
-        LLM-->>Loop: tool_call(name, args) 或 最终文本
+        TL->>LLM: 当前对话 + 可用工具
+        LLM-->>TL: tool_call(name, args) 或 最终文本
         alt 返回 tool_call
-            Loop->>Exec: 调对应 handler(args)
-            Exec-->>Loop: 执行结果(字符串)
-            Loop->>Loop: 把结果作为 tool_result 回填对话
+            TL->>Exec: 调对应 handler(args)
+            Exec-->>TL: 执行结果(字符串)
+            TL->>TL: 把结果作为 tool_result 回填对话
         else 返回文本
-            Loop-->>Node: 最终答案 (退出循环)
+            TL-->>Node: 最终答案 (退出循环)
         end
     end
 ```
@@ -207,7 +207,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph 存储
+    subgraph STOR["存储"]
         A[(SQLite<br/>每条消息原文)]
         B[(ChromaDB<br/>消息向量, 语义检索)]
         C[(SQLite<br/>session 摘要缓存)]
