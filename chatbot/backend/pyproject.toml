@@ -1,0 +1,45 @@
+[project]
+name = "porto-chatbot"
+version = "0.1.0"
+description = "Agentic RAG and PRD decomposition service for Porto"
+requires-python = ">=3.12"
+dependencies = [
+  "anthropic>=0.60.0",
+  "chromadb>=1.0.0",
+  "fastapi>=0.116.0",
+  "httpx>=0.28.0",
+  "langchain-text-splitters>=1.0.0",
+  "langgraph>=0.5.0",
+  "ollama>=0.6.0",
+  "openai>=1.90.0",
+  "pydantic>=2.11.0",
+  "pydantic-settings>=2.10.0",
+  "pypdf>=5.7.0",
+  "python-docx>=1.1.2",
+  "python-multipart>=0.0.20",
+  "uvicorn[standard]>=0.35.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.0.0",
+  "ruff>=0.12.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

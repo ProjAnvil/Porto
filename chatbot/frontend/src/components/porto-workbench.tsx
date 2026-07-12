@@ -1,0 +1,1314 @@
+"use client";
+
+import {
+  AssistantRuntimeProvider,
+  ComposerPrimitive,
+  MessagePrimitive,
+  ThreadPrimitive,
+  useMessage,
+} from "@assistant-ui/react";
+import {
+  AssistantChatTransport,
+  useChatRuntime,
+} from "@assistant-ui/react-ai-sdk";
+import {
+  Bot,
+  Braces,
+  CheckCircle2,
+  ChevronDown,
+  Database,
+  FileInput,
+  Gauge,
+  History,
+  Loader2,
+  Play,
+  Search,
+  Send,
+  Settings,
+  Upload,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
+import {
+  defaultAgentConfig,
+  defaultRagConfig,
+  getAppSettings,
+  getKbStats,
+  indexKnowledgeBase,
+  listMemory,
+  runWorkflow,
+  runWorkflowUpload,
+  saveAppSettings,
+  searchMemory,
+} from "@/lib/api";
+import type {
+  AgentConfig,
+  ChatResponseEval,
+  InspectorState,
+  KbStats,
+  MemoryRecord,
+  RagConfig,
+  SourceChunk,
+  Subsystem,
+  WorkflowResponse,
+} from "@/lib/types";
+
+type Mode = "chat" | "workflow";
+type View = "workbench" | "settings";
+type SettingsSection = "rag" | "agent" | "knowledge";
+
+const emptyInspector: InspectorState = {
+  steps: [],
+  sources: [],
+  memory: [],
+  evaluation: null,
+  workflow: null,
+};
+
+function scoreClass(score?: number) {
+  if (score == null) return "bg-zinc-100 text-zinc-600";
+  if (score >= 0.75) return "bg-emerald-100 text-emerald-700";
+  if (score >= 0.45) return "bg-amber-100 text-amber-700";
+  return "bg-rose-100 text-rose-700";
+}
+
+function subsystemClass(subsystem: Subsystem) {
+  if (subsystem.type === "existing") return "bg-emerald-100 text-emerald-700";
+  if (subsystem.type === "extend") return "bg-amber-100 text-amber-700";
+  return "bg-sky-100 text-sky-700";
+}
+
+function isInspectorState(value: unknown): value is InspectorState {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<InspectorState>;
+  return (
+    Array.isArray(candidate.steps) &&
+    Array.isArray(candidate.sources) &&
+    Array.isArray(candidate.memory)
+  );
+}
+
+export function PortoWorkbench() {
+  const [view, setView] = useState<View>("workbench");
+  const [mode, setMode] = useState<Mode>("chat");
+  const [sessionId, setSessionId] = useState(
+    `porto-${new Date().toISOString().slice(0, 10)}`,
+  );
+  const [ragConfig, setRagConfig] = useState<RagConfig>(defaultRagConfig);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>(defaultAgentConfig);
+  const [kbStats, setKbStats] = useState<KbStats | null>(null);
+  const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
+  const [memoryQuery, setMemoryQuery] = useState("");
+  const [inspector, setInspector] = useState<InspectorState>(emptyInspector);
+  const [projectName, setProjectName] = useState("");
+  const [workflowText, setWorkflowText] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [busyLabel, setBusyLabel] = useState("");
+  const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const refreshMemory = useCallback(async () => {
+    const data = await listMemory(sessionId);
+    setMemoryItems(data.items);
+  }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const [settingsResult, statsResult, memoryResult] = await Promise.allSettled([
+        getAppSettings(),
+        getKbStats(),
+        listMemory(sessionId),
+      ]);
+      if (cancelled) return;
+      if (settingsResult.status === "fulfilled") {
+        setRagConfig(settingsResult.value.rag);
+        setAgentConfig(settingsResult.value.agent);
+      }
+      setKbStats(statsResult.status === "fulfilled" ? statsResult.value : null);
+      if (memoryResult.status === "fulfilled") {
+        setMemoryItems(memoryResult.value.items);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  const transport = useMemo(
+    () =>
+      new AssistantChatTransport({
+        api: "/api/chat/stream",
+        body: {
+          session_id: sessionId,
+          rag: ragConfig,
+          agent: agentConfig,
+          top_k: ragConfig.top_k,
+        },
+        fetch(input, init) {
+          setBusyLabel("生成回答");
+          setError("");
+          setInspector(emptyInspector);
+          return globalThis.fetch(input, init);
+        },
+      }),
+    [agentConfig, ragConfig, sessionId],
+  );
+
+  const runtime = useChatRuntime({
+    transport,
+    messages: [
+      {
+        id: "porto-welcome",
+        role: "assistant",
+        parts: [
+          {
+            type: "text",
+            text: "选择知识库问答或 Porto PRD 拆解模式。问答会检索知识库和会话记忆；拆解模式会输出子系统、规格和评估结果。",
+          },
+        ],
+      },
+    ],
+    onData(dataPart) {
+      if (dataPart.type !== "data-porto") return;
+      if (isInspectorState(dataPart.data)) {
+        setInspector(dataPart.data);
+      }
+    },
+    onError(err) {
+      setError(err instanceof Error ? err.message : "请求失败");
+      setBusyLabel("");
+    },
+    onFinish() {
+      setBusyLabel("");
+      void refreshMemory();
+    },
+  });
+
+  async function refreshIndex(nextConfig: RagConfig = ragConfig) {
+    setBusyLabel("索引知识库");
+    setError("");
+    try {
+      setKbStats(await indexKnowledgeBase(nextConfig));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "知识库索引失败");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function saveRagConfig(nextConfig: RagConfig): Promise<RagConfig | null> {
+    setBusyLabel("保存 RAG 设置");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ rag: nextConfig });
+      setRagConfig(saved.rag);
+      return saved.rag;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存 RAG 设置失败");
+      return null;
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function saveAgentConfig(nextConfig: AgentConfig) {
+    setBusyLabel("保存 Agent 设置");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ agent: nextConfig });
+      setAgentConfig(saved.agent);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存 Agent 设置失败");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function runMemorySearch() {
+    if (!memoryQuery.trim()) return;
+    setBusyLabel("搜索记忆");
+    setError("");
+    try {
+      const data = await searchMemory(memoryQuery.trim(), sessionId);
+      setInspector((current) => ({ ...current, memory: data.results }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "记忆搜索失败");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function runWorkflowAction() {
+    if (!workflowText.trim() && !selectedFile) return;
+    setBusyLabel("运行 PRD 拆解");
+    setError("");
+    setInspector(emptyInspector);
+    try {
+      const response: WorkflowResponse = selectedFile
+        ? await runWorkflowUpload(selectedFile, projectName.trim())
+        : await runWorkflow(
+            workflowText.trim(),
+            projectName.trim(),
+            sessionId,
+            ragConfig,
+            agentConfig,
+          );
+      setInspector({
+        steps: response.steps,
+        sources: response.sources,
+        memory: [],
+        evaluation: null,
+        workflow: response,
+      });
+      setWorkflowText("");
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await refreshMemory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PRD 拆解失败");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <div className="grid min-h-screen grid-cols-1 bg-zinc-100 text-zinc-950 lg:grid-cols-[300px_minmax(0,1fr)_380px]">
+        <Sidebar
+          busy={Boolean(busyLabel)}
+          kbStats={kbStats}
+          memoryItems={memoryItems}
+          memoryQuery={memoryQuery}
+          mode={mode}
+          sessionId={sessionId}
+          view={view}
+          setMemoryQuery={setMemoryQuery}
+          setMode={setMode}
+          setSessionId={setSessionId}
+          setView={setView}
+          onRunMemorySearch={runMemorySearch}
+        />
+
+        <main className="flex min-h-[70vh] min-w-0 flex-col border-x border-zinc-200 bg-white">
+          <header className="flex h-14 items-center justify-between border-b border-zinc-200 px-4">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              {view === "settings" ? (
+                <>
+                  <Settings size={17} />
+                  Settings
+                </>
+              ) : mode === "chat" ? (
+                <>
+                  <Search size={17} />
+                  知识库问答
+                </>
+              ) : (
+                <>
+                  <Braces size={17} />
+                  Porto PRD 拆解
+                </>
+              )}
+            </div>
+            {busyLabel ? (
+              <span className="flex items-center gap-2 text-xs text-zinc-500">
+                <Loader2 size={14} className="animate-spin" />
+                {busyLabel}
+              </span>
+            ) : null}
+          </header>
+
+          {view === "settings" ? (
+            <SettingsPage
+              agentConfig={agentConfig}
+              busy={Boolean(busyLabel)}
+              error={error}
+              kbStats={kbStats}
+              ragConfig={ragConfig}
+              onRefreshIndex={refreshIndex}
+              onSaveAgent={saveAgentConfig}
+              onSaveRag={saveRagConfig}
+            />
+          ) : mode === "chat" ? (
+            <ThreadView error={error} />
+          ) : (
+            <WorkflowPanel
+              busy={Boolean(busyLabel)}
+              error={error}
+              fileInputRef={fileInputRef}
+              projectName={projectName}
+              selectedFile={selectedFile}
+              setProjectName={setProjectName}
+              setSelectedFile={setSelectedFile}
+              workflow={inspector.workflow}
+              text={workflowText}
+              onRun={runWorkflowAction}
+              onTextChange={setWorkflowText}
+            />
+          )}
+        </main>
+
+        <Inspector inspector={inspector} memoryItems={memoryItems} />
+      </div>
+    </AssistantRuntimeProvider>
+  );
+}
+
+function Sidebar({
+  busy,
+  kbStats,
+  memoryItems,
+  memoryQuery,
+  mode,
+  onRunMemorySearch,
+  sessionId,
+  view,
+  setMemoryQuery,
+  setMode,
+  setSessionId,
+  setView,
+}: {
+  busy: boolean;
+  kbStats: KbStats | null;
+  memoryItems: MemoryRecord[];
+  memoryQuery: string;
+  mode: Mode;
+  sessionId: string;
+  view: View;
+  setMemoryQuery: (value: string) => void;
+  setMode: (value: Mode) => void;
+  setSessionId: (value: string) => void;
+  setView: (value: View) => void;
+  onRunMemorySearch: () => void;
+}) {
+  return (
+    <aside className="min-w-0 border-b border-zinc-200 bg-zinc-50 p-4 lg:border-b-0">
+      <div className="mb-6 flex items-center gap-3">
+        <div className="flex size-9 items-center justify-center rounded-lg bg-zinc-950 text-white">
+          <Bot size={19} />
+        </div>
+        <div>
+          <h1 className="text-base font-semibold">Porto Agent</h1>
+          <p className="text-xs text-zinc-500">Next + assistant-ui</p>
+        </div>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 rounded-lg bg-zinc-200 p-1 text-sm">
+        <button
+          className={`rounded-md px-3 py-2 ${view === "workbench" && mode === "chat" ? "bg-white shadow-sm" : "text-zinc-600"}`}
+          onClick={() => {
+            setMode("chat");
+            setView("workbench");
+          }}
+        >
+          问答
+        </button>
+        <button
+          className={`rounded-md px-3 py-2 ${view === "workbench" && mode === "workflow" ? "bg-white shadow-sm" : "text-zinc-600"}`}
+          onClick={() => {
+            setMode("workflow");
+            setView("workbench");
+          }}
+        >
+          拆解
+        </button>
+      </div>
+
+      <button
+        className={`mb-4 flex w-full items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm ${
+          view === "settings"
+            ? "bg-zinc-950 text-white"
+            : "bg-white text-zinc-700 hover:bg-zinc-100"
+        }`}
+        onClick={() => setView("settings")}
+      >
+        <Settings size={15} />
+        Settings
+      </button>
+
+      <section className="rounded-lg border border-zinc-200 bg-white p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Database size={15} />
+            知识库
+          </div>
+          {busy ? <Loader2 size={14} className="animate-spin text-zinc-400" /> : null}
+        </div>
+        <p className="truncate text-xs text-zinc-500">
+          {kbStats?.kb_path || "~/.scv/analysis"}
+        </p>
+        <p className="mt-1 text-xs text-zinc-500">
+          {kbStats?.documents ?? 0} documents / {kbStats?.chunks ?? 0} chunks
+        </p>
+      </section>
+
+      <section className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
+        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+          <History size={15} />
+          Session
+        </h2>
+        <label className="block text-xs text-zinc-500">Session ID</label>
+        <input
+          className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
+          value={sessionId}
+          onChange={(event) => setSessionId(event.target.value)}
+        />
+        <div className="mt-3 flex gap-2">
+          <input
+            className="min-w-0 flex-1 rounded-md border border-zinc-200 px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
+            placeholder="搜索记忆"
+            value={memoryQuery}
+            onChange={(event) => setMemoryQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onRunMemorySearch();
+            }}
+          />
+          <button
+            className="rounded-md border border-zinc-200 px-2.5 text-zinc-600 hover:bg-zinc-100"
+            onClick={onRunMemorySearch}
+          >
+            <Search size={14} />
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-zinc-500">
+          {memoryItems.length} records
+        </p>
+      </section>
+
+      <section className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
+        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+          <History size={15} />
+          Chat Records
+        </h2>
+        <div className="max-h-72 space-y-2 overflow-y-auto">
+          {memoryItems.map((item) => (
+            <button
+              className="block w-full rounded-md border border-zinc-200 p-2 text-left hover:bg-zinc-50"
+              key={item.id}
+              onClick={() => setView("workbench")}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                <span className="font-medium">{item.role}</span>
+                <span className="truncate text-zinc-400">{item.created_at}</span>
+              </div>
+              <p className="line-clamp-2 text-xs leading-5 text-zinc-600">
+                {item.content}
+              </p>
+            </button>
+          ))}
+          {memoryItems.length === 0 ? (
+            <p className="text-sm text-zinc-400">暂无聊天记录。</p>
+          ) : null}
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function ThreadView({ error }: { error: string }) {
+  return (
+    <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
+      <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
+        <div className="mx-auto flex max-w-4xl flex-col gap-4">
+          <ThreadPrimitive.Messages
+            components={{
+              UserMessage,
+              AssistantMessage,
+            }}
+          />
+        </div>
+      </ThreadPrimitive.Viewport>
+      <div className="border-t border-zinc-200 p-4">
+        {error ? (
+          <div className="mx-auto mb-3 max-w-4xl rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            {error}
+          </div>
+        ) : null}
+        <Composer />
+      </div>
+    </ThreadPrimitive.Root>
+  );
+}
+
+function UserMessage() {
+  return (
+    <MessagePrimitive.Root className="flex justify-end">
+      <div className="max-w-[78%] rounded-2xl bg-zinc-950 px-4 py-3 text-sm leading-6 text-white">
+        <MessagePrimitive.Content components={{ Text: MarkdownText }} />
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+function AssistantMessage() {
+  const status = useMessage((message) => message.status);
+  return (
+    <MessagePrimitive.Root className="flex justify-start">
+      <div className="max-w-[82%] rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-900">
+        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-zinc-500">
+          <Bot size={14} />
+          Porto
+          {status?.type === "running" ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : null}
+        </div>
+        <MessagePrimitive.Content
+          components={{
+            Text: MarkdownText,
+            Source: SourcePart,
+            Reasoning: ReasoningPart,
+            tools: { Fallback: ToolPart },
+          }}
+        />
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+function MarkdownText({ text }: { text: string }) {
+  return (
+    <div className="prose prose-zinc max-w-none prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
+      <ReactMarkdown rehypePlugins={[rehypeHighlight]} remarkPlugins={[remarkGfm]}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function SourcePart({
+  title,
+  filename,
+}: {
+  title?: string;
+  filename?: string;
+}) {
+  return (
+    <div className="mt-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+      <span className="font-medium">Source</span>
+      <span className="ml-2">{title || filename}</span>
+    </div>
+  );
+}
+
+function ReasoningPart({ text }: { text: string }) {
+  return (
+    <details className="my-2 rounded-md border border-zinc-200 bg-white">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-zinc-600">
+        Reasoning
+      </summary>
+      <div className="px-3 pb-3 text-xs text-zinc-600">{text}</div>
+    </details>
+  );
+}
+
+function ToolPart({ toolName, args, result }: Record<string, unknown>) {
+  return (
+    <details className="my-2 rounded-md border border-zinc-200 bg-white">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-zinc-600">
+        Tool: {String(toolName)}
+      </summary>
+      <pre className="overflow-auto px-3 pb-3 text-xs">
+        {JSON.stringify({ args, result }, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+function Composer() {
+  return (
+    <ComposerPrimitive.Root className="mx-auto flex max-w-4xl items-end gap-2">
+      <ComposerPrimitive.Input
+        className="min-h-12 flex-1 resize-none rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm outline-none focus:border-zinc-400"
+        placeholder="询问 ~/.scv/analysis 知识库..."
+        rows={1}
+      />
+      <ComposerPrimitive.Send className="flex size-12 items-center justify-center rounded-xl bg-zinc-950 text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">
+        <Send size={17} />
+      </ComposerPrimitive.Send>
+    </ComposerPrimitive.Root>
+  );
+}
+
+function SettingsPage({
+  agentConfig,
+  busy,
+  error,
+  kbStats,
+  ragConfig,
+  onRefreshIndex,
+  onSaveAgent,
+  onSaveRag,
+}: {
+  agentConfig: AgentConfig;
+  busy: boolean;
+  error: string;
+  kbStats: KbStats | null;
+  ragConfig: RagConfig;
+  onRefreshIndex: (config?: RagConfig) => Promise<void>;
+  onSaveAgent: (config: AgentConfig) => Promise<void>;
+  onSaveRag: (config: RagConfig) => Promise<RagConfig | null>;
+}) {
+  const [section, setSection] = useState<SettingsSection>("rag");
+  const [savedLabel, setSavedLabel] = useState("");
+
+  const markSaved = (label: string) => {
+    setSavedLabel(label);
+    window.setTimeout(() => setSavedLabel(""), 1800);
+  };
+
+  async function saveKnowledge() {
+    await onRefreshIndex();
+    markSaved("Knowledge base indexed");
+  }
+
+  return (
+    <div className="grid min-h-0 flex-1 grid-cols-1 bg-white md:grid-cols-[220px_minmax(0,1fr)]">
+      <aside className="border-b border-zinc-200 bg-zinc-50 p-3 md:border-b-0 md:border-r">
+        <div className="space-y-1">
+          {[
+            { id: "rag" as const, label: "RAG", icon: <Gauge size={15} /> },
+            { id: "agent" as const, label: "Agent", icon: <Bot size={15} /> },
+            {
+              id: "knowledge" as const,
+              label: "Knowledge",
+              icon: <Database size={15} />,
+            },
+          ].map((item) => (
+            <button
+              className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm ${
+                section === item.id
+                  ? "bg-zinc-950 text-white"
+                  : "text-zinc-600 hover:bg-zinc-100"
+              }`}
+              key={item.id}
+              onClick={() => setSection(item.id)}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <section className="min-w-0 overflow-y-auto p-5">
+        {error ? (
+          <div className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            {error}
+          </div>
+        ) : null}
+        {savedLabel ? (
+          <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            {savedLabel}
+          </div>
+        ) : null}
+
+        {section === "rag" ? (
+          <RagSettingsForm
+            key={JSON.stringify(ragConfig)}
+            busy={busy}
+            ragConfig={ragConfig}
+            onSaved={() => markSaved("RAG settings saved and indexed")}
+            onRefreshIndex={onRefreshIndex}
+            onSaveRag={onSaveRag}
+          />
+        ) : null}
+
+        {section === "agent" ? (
+          <AgentSettingsForm
+            key={JSON.stringify(agentConfig)}
+            agentConfig={agentConfig}
+            busy={busy}
+            onSaved={() => markSaved("Agent settings saved")}
+            onSaveAgent={onSaveAgent}
+          />
+        ) : null}
+
+        {section === "knowledge" ? (
+          <SettingsCard
+            busy={busy}
+            saveLabel="Re-index"
+            title="Knowledge Base"
+            onSave={saveKnowledge}
+          >
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+                <p className="text-xs text-zinc-500">Path</p>
+                <p className="mt-1 truncate text-sm font-medium">
+                  {kbStats?.kb_path || "~/.scv/analysis"}
+                </p>
+              </div>
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+                <p className="text-xs text-zinc-500">Documents</p>
+                <p className="mt-1 text-2xl font-semibold">
+                  {kbStats?.documents ?? 0}
+                </p>
+              </div>
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+                <p className="text-xs text-zinc-500">Chunks</p>
+                <p className="mt-1 text-2xl font-semibold">
+                  {kbStats?.chunks ?? 0}
+                </p>
+              </div>
+            </div>
+          </SettingsCard>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function RagSettingsForm({
+  busy,
+  ragConfig,
+  onSaved,
+  onRefreshIndex,
+  onSaveRag,
+}: {
+  busy: boolean;
+  ragConfig: RagConfig;
+  onSaved: () => void;
+  onRefreshIndex: (config?: RagConfig) => Promise<void>;
+  onSaveRag: (config: RagConfig) => Promise<RagConfig | null>;
+}) {
+  const [ragDraft, setRagDraft] = useState<RagConfig>(ragConfig);
+
+  const updateRag = <K extends keyof RagConfig>(key: K, value: RagConfig[K]) => {
+    setRagDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  async function saveRag() {
+    const saved = await onSaveRag(ragDraft);
+    if (!saved) return;
+    await onRefreshIndex(saved);
+    onSaved();
+  }
+
+  return (
+    <SettingsCard
+      busy={busy}
+      saveLabel="Save & Re-index"
+      title="RAG Settings"
+      onSave={saveRag}
+    >
+      <div className="grid gap-4 md:grid-cols-2">
+        <label className="block">
+          <span className="text-xs text-zinc-500">Embedding Provider</span>
+          <select
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={ragDraft.embedding_provider}
+            onChange={(event) =>
+              updateRag(
+                "embedding_provider",
+                event.target.value as RagConfig["embedding_provider"],
+              )
+            }
+          >
+            <option value="ollama">ollama</option>
+            <option value="local">local</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">Embedding Model</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={ragDraft.embedding_model}
+            onChange={(event) =>
+              updateRag("embedding_model", event.target.value)
+            }
+          />
+        </label>
+        <label className="block md:col-span-2">
+          <span className="text-xs text-zinc-500">Embedding Base URL</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={ragDraft.embedding_base_url}
+            onChange={(event) =>
+              updateRag("embedding_base_url", event.target.value)
+            }
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">Chunk Size</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            min={200}
+            type="number"
+            value={ragDraft.chunk_size}
+            onChange={(event) =>
+              updateRag("chunk_size", Number(event.target.value))
+            }
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">Chunk Overlap</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            min={0}
+            type="number"
+            value={ragDraft.chunk_overlap}
+            onChange={(event) =>
+              updateRag("chunk_overlap", Number(event.target.value))
+            }
+          />
+        </label>
+        <label className="block md:col-span-2">
+          <span className="text-xs text-zinc-500">Top K: {ragDraft.top_k}</span>
+          <input
+            className="mt-2 w-full accent-zinc-950"
+            max={20}
+            min={1}
+            type="range"
+            value={ragDraft.top_k}
+            onChange={(event) => updateRag("top_k", Number(event.target.value))}
+          />
+        </label>
+      </div>
+    </SettingsCard>
+  );
+}
+
+function AgentSettingsForm({
+  agentConfig,
+  busy,
+  onSaved,
+  onSaveAgent,
+}: {
+  agentConfig: AgentConfig;
+  busy: boolean;
+  onSaved: () => void;
+  onSaveAgent: (config: AgentConfig) => Promise<void>;
+}) {
+  const [agentDraft, setAgentDraft] = useState<AgentConfig>(agentConfig);
+
+  const updateAgent = <K extends keyof AgentConfig>(
+    key: K,
+    value: AgentConfig[K],
+  ) => {
+    setAgentDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  async function saveAgent() {
+    await onSaveAgent(agentDraft);
+    onSaved();
+  }
+
+  return (
+    <SettingsCard busy={busy} title="Agent Settings" onSave={saveAgent}>
+      <div className="grid gap-4 md:grid-cols-2">
+        <label className="block">
+          <span className="text-xs text-zinc-500">Provider</span>
+          <select
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={agentDraft.agent_provider}
+            onChange={(event) =>
+              updateAgent(
+                "agent_provider",
+                event.target.value as AgentConfig["agent_provider"],
+              )
+            }
+          >
+            <option value="openai">openai</option>
+            <option value="anthropic">anthropic</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">Model</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={agentDraft.agent_model}
+            onChange={(event) =>
+              updateAgent("agent_model", event.target.value)
+            }
+          />
+        </label>
+        <label className="block md:col-span-2">
+          <span className="text-xs text-zinc-500">Base URL</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            placeholder="可选"
+            value={agentDraft.agent_base_url ?? ""}
+            onChange={(event) =>
+              updateAgent("agent_base_url", event.target.value)
+            }
+          />
+        </label>
+        <label className="block md:col-span-2">
+          <span className="text-xs text-zinc-500">API Key</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            placeholder="留空则禁用 LLM"
+            type="password"
+            value={agentDraft.agent_api_key ?? ""}
+            onChange={(event) =>
+              updateAgent("agent_api_key", event.target.value)
+            }
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">
+            Temperature: {agentDraft.agent_temperature}
+          </span>
+          <input
+            className="mt-2 w-full accent-zinc-950"
+            max={2}
+            min={0}
+            step={0.1}
+            type="range"
+            value={agentDraft.agent_temperature}
+            onChange={(event) =>
+              updateAgent("agent_temperature", Number(event.target.value))
+            }
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">Max Tokens</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            min={1}
+            type="number"
+            value={agentDraft.agent_max_tokens}
+            onChange={(event) =>
+              updateAgent("agent_max_tokens", Number(event.target.value))
+            }
+          />
+        </label>
+      </div>
+    </SettingsCard>
+  );
+}
+
+function SettingsCard({
+  busy,
+  children,
+  onSave,
+  saveLabel = "Save",
+  title,
+}: {
+  busy: boolean;
+  children: React.ReactNode;
+  onSave: () => Promise<void>;
+  saveLabel?: string;
+  title: string;
+}) {
+  return (
+    <div className="max-w-3xl">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="text-base font-semibold">{title}</h2>
+        <button
+          className="flex items-center gap-2 rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
+          disabled={busy}
+          onClick={() => void onSave()}
+        >
+          {busy ? <Loader2 size={15} className="animate-spin" /> : null}
+          {saveLabel}
+        </button>
+      </div>
+      <div className="rounded-xl border border-zinc-200 bg-white p-4">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowPanel({
+  busy,
+  error,
+  fileInputRef,
+  onRun,
+  onTextChange,
+  projectName,
+  selectedFile,
+  setProjectName,
+  setSelectedFile,
+  text,
+  workflow,
+}: {
+  busy: boolean;
+  error: string;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  projectName: string;
+  selectedFile: File | null;
+  setProjectName: (value: string) => void;
+  setSelectedFile: (value: File | null) => void;
+  text: string;
+  workflow: WorkflowResponse | null;
+  onRun: () => void;
+  onTextChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex flex-1 flex-col p-4">
+      {error ? (
+        <div className="mb-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+          {error}
+        </div>
+      ) : null}
+      <div className="mb-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
+        <label className="block">
+          <span className="text-xs text-zinc-500">项目名称</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm outline-none focus:border-zinc-400"
+            placeholder="可选"
+            value={projectName}
+            onChange={(event) => setProjectName(event.target.value)}
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">PRD 文件</span>
+          <span className="mt-1 flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50">
+            <Upload size={15} />
+            <span className="truncate">
+              {selectedFile?.name || "上传 PDF / Word / Markdown"}
+            </span>
+            <input
+              ref={fileInputRef}
+              className="hidden"
+              type="file"
+              accept=".pdf,.docx,.md,.txt"
+              onChange={(event) =>
+                setSelectedFile(event.target.files?.[0] ?? null)
+              }
+            />
+          </span>
+        </label>
+      </div>
+      <textarea
+        className="min-h-[360px] flex-1 resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 outline-none focus:border-zinc-400"
+        placeholder="粘贴一句业务需求或完整 PRD 文本..."
+        value={text}
+        onChange={(event) => onTextChange(event.target.value)}
+      />
+      {workflow ? (
+        <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">
+                已完成 Porto 拆解：{workflow.project_name}
+              </h2>
+              <p className="mt-1 text-xs text-zinc-500">
+                Eval Score {workflow.evaluation.score} /{" "}
+                {workflow.subsystems.length} subsystems
+              </p>
+            </div>
+            <span
+              className={`rounded-full px-2 py-1 text-xs ${scoreClass(
+                workflow.evaluation.score,
+              )}`}
+            >
+              {workflow.evaluation.passed ? "passed" : "review"}
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {workflow.subsystems.map((sub) => (
+              <div
+                className="rounded-lg border border-zinc-200 bg-white p-3"
+                key={sub.name}
+              >
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="truncate text-sm font-medium">
+                    {sub.name}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-1 text-xs ${subsystemClass(
+                      sub,
+                    )}`}
+                  >
+                    {sub.type}
+                  </span>
+                </div>
+                <p className="line-clamp-2 text-xs leading-5 text-zinc-600">
+                  {sub.responsibility}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <p className="truncate text-xs text-zinc-500">
+          {selectedFile
+            ? `将使用上传文件：${selectedFile.name}`
+            : "未上传文件时，将使用文本框内容。"}
+        </p>
+        <button
+          className="flex items-center gap-2 rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
+          disabled={busy || (!text.trim() && !selectedFile)}
+          onClick={onRun}
+        >
+          {busy ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+          运行拆解
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Inspector({
+  inspector,
+  memoryItems,
+}: {
+  inspector: InspectorState;
+  memoryItems: MemoryRecord[];
+}) {
+  return (
+    <aside className="min-w-0 overflow-y-auto border-t border-zinc-200 bg-zinc-50 p-4 lg:border-t-0">
+      <InspectorSection icon={<Play size={15} />} title="Agent Steps">
+        <div className="space-y-2">
+          {inspector.steps.map((step) => (
+            <details
+              className="rounded-lg border border-zinc-200 bg-white p-3"
+              key={step.name}
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{step.name}</span>
+                <span className="flex items-center gap-1 text-emerald-600">
+                  <CheckCircle2 size={15} />
+                  <ChevronDown size={13} />
+                </span>
+              </summary>
+              <p className="mt-2 text-xs leading-5 text-zinc-600">
+                {step.summary}
+              </p>
+            </details>
+          ))}
+          {inspector.steps.length === 0 ? <EmptyText text="尚无执行步骤。" /> : null}
+        </div>
+      </InspectorSection>
+
+      {inspector.evaluation ? <EvalCard evaluation={inspector.evaluation} /> : null}
+
+      <InspectorSection icon={<History size={15} />} title="Memory Search">
+        <ChunkList chunks={inspector.memory} empty="暂无记忆命中。" />
+      </InspectorSection>
+
+      <InspectorSection icon={<History size={15} />} title="Chat Records">
+        <div className="max-h-80 space-y-2 overflow-y-auto">
+          {memoryItems.map((item) => (
+            <div className="rounded-lg border border-zinc-200 bg-white p-2" key={item.id}>
+              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                <span className="font-medium">{item.role}</span>
+                <span className="truncate text-zinc-400">{item.created_at}</span>
+              </div>
+              <p className="line-clamp-3 text-xs leading-5 text-zinc-600">
+                {item.content}
+              </p>
+            </div>
+          ))}
+          {memoryItems.length === 0 ? <EmptyText text="暂无聊天记录。" /> : null}
+        </div>
+      </InspectorSection>
+
+      {inspector.workflow ? <WorkflowResult workflow={inspector.workflow} /> : null}
+
+      <InspectorSection icon={<FileInput size={15} />} title="Sources">
+        <ChunkList chunks={inspector.sources} empty="暂无引用片段。" />
+      </InspectorSection>
+    </aside>
+  );
+}
+
+function InspectorSection({
+  children,
+  icon,
+  title,
+}: {
+  children: React.ReactNode;
+  icon: React.ReactNode;
+  title: string;
+}) {
+  return (
+    <section className="mb-6">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+        {icon}
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function EvalCard({ evaluation }: { evaluation: ChatResponseEval }) {
+  return (
+    <InspectorSection icon={<Gauge size={15} />} title="RAG Eval">
+      <div className="rounded-lg border border-zinc-200 bg-white p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-sm font-medium">Score</span>
+          <span className={`rounded-full px-2 py-1 text-xs ${scoreClass(evaluation.score)}`}>
+            {evaluation.score}
+          </span>
+        </div>
+        {evaluation.cases[0] ? (
+          <div className="space-y-1 text-xs text-zinc-600">
+            {Object.entries(evaluation.cases[0].metrics).map(([key, value]) => (
+              <div className="flex justify-between gap-3" key={key}>
+                <span className="truncate">{key}</span>
+                <span>{value}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </InspectorSection>
+  );
+}
+
+function WorkflowResult({ workflow }: { workflow: WorkflowResponse }) {
+  return (
+    <InspectorSection icon={<FileInput size={15} />} title="Workflow Result">
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <div className="rounded-lg border border-zinc-200 bg-white p-3">
+          <p className="text-xs text-zinc-500">Eval Score</p>
+          <p className="mt-1 text-2xl font-semibold">{workflow.evaluation.score}</p>
+        </div>
+        <div className="rounded-lg border border-zinc-200 bg-white p-3">
+          <p className="text-xs text-zinc-500">Subsystems</p>
+          <p className="mt-1 text-2xl font-semibold">{workflow.subsystems.length}</p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {workflow.subsystems.map((sub) => (
+          <div className="rounded-lg border border-zinc-200 bg-white p-3" key={sub.name}>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="truncate text-sm font-medium">{sub.name}</span>
+              <span className={`rounded-full px-2 py-1 text-xs ${subsystemClass(sub)}`}>
+                {sub.type}
+              </span>
+            </div>
+            <p className="text-xs leading-5 text-zinc-600">{sub.responsibility}</p>
+          </div>
+        ))}
+      </div>
+    </InspectorSection>
+  );
+}
+
+function ChunkList({
+  chunks,
+  empty,
+}: {
+  chunks: SourceChunk[];
+  empty: string;
+}) {
+  return (
+    <div className="space-y-2">
+      {chunks.map((chunk) => (
+        <details className="rounded-lg border border-zinc-200 bg-white" key={chunk.id}>
+          <summary className="cursor-pointer px-3 py-2 text-sm">
+            <span className="block truncate">{chunk.title || chunk.path}</span>
+            <span className="text-xs text-zinc-400">score {chunk.score}</span>
+          </summary>
+          <div className="px-3 pb-3 text-xs leading-5 text-zinc-600">
+            {chunk.text}
+          </div>
+        </details>
+      ))}
+      {chunks.length === 0 ? <EmptyText text={empty} /> : null}
+    </div>
+  );
+}
+
+function EmptyText({ text }: { text: string }) {
+  return <p className="text-sm text-zinc-400">{text}</p>;
+}

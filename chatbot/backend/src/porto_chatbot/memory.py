@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import sqlite3
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+import chromadb
+
+from .embeddings import EmbeddingClient
+from .logging_utils import get_component_logger
+from .models import MemoryRecord, SourceChunk
+from .settings import Settings
+
+
+class MemoryStore:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.logger = get_component_logger("memory", settings)
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        self.settings.chroma_dir.mkdir(parents=True, exist_ok=True)
+        self.embeddings = EmbeddingClient(settings)
+        self.client = chromadb.PersistentClient(path=str(settings.chroma_dir))
+        self.collection = self.client.get_or_create_collection(settings.memory_collection)
+        self._init_db()
+        self.logger.info(
+            "memory store ready db=%s collection=%s",
+            self.settings.memory_db_path,
+            self.settings.memory_collection,
+        )
+
+    def add(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRecord:
+        record = MemoryRecord(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            role=role,
+            content=content,
+            created_at=datetime.now(UTC).isoformat(),
+            metadata=metadata or {},
+        )
+        with sqlite3.connect(self.settings.memory_db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO memories (id, session_id, role, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (record.id, record.session_id, record.role, record.content, record.created_at),
+            )
+        self.logger.info(
+            "memory sqlite added id=%s session_id=%s role=%s chars=%s",
+            record.id,
+            record.session_id,
+            record.role,
+            len(record.content),
+        )
+        self.collection.add(
+            ids=[record.id],
+            documents=[record.content],
+            metadatas=[
+                {
+                    "session_id": record.session_id,
+                    "role": record.role,
+                    "created_at": record.created_at,
+                    **record.metadata,
+                }
+            ],
+            embeddings=self.embeddings.embed_documents([record.content]),
+        )
+        self.logger.info("memory vector added id=%s session_id=%s", record.id, record.session_id)
+        return record
+
+    def list_session(self, session_id: str, limit: int = 50) -> list[MemoryRecord]:
+        with sqlite3.connect(self.settings.memory_db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, role, content, created_at
+                FROM memories
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        records = [
+            MemoryRecord(id=row[0], session_id=row[1], role=row[2], content=row[3], created_at=row[4])
+            for row in rows
+        ]
+        self.logger.info("memory list session_id=%s limit=%s records=%s", session_id, limit, len(records))
+        return records
+
+    def search(self, query: str, *, session_id: str | None = None, top_k: int = 5) -> list[SourceChunk]:
+        if self.collection.count() == 0:
+            self.logger.info("memory search skipped empty collection query_chars=%s", len(query))
+            return []
+        self.logger.info(
+            "memory search start query_chars=%s session_id=%s top_k=%s",
+            len(query),
+            session_id,
+            top_k,
+        )
+        where = {"session_id": session_id} if session_id else None
+        result = self.collection.query(
+            query_embeddings=[self.embeddings.embed_query(query)],
+            n_results=top_k,
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+        rows: list[SourceChunk] = []
+        for item_id, doc, metadata, distance in zip(
+            result.get("ids", [[]])[0],
+            result.get("documents", [[]])[0],
+            result.get("metadatas", [[]])[0],
+            result.get("distances", [[]])[0],
+            strict=False,
+        ):
+            rows.append(
+                SourceChunk(
+                    id=item_id,
+                    path=f"memory:{metadata.get('session_id', '')}",
+                    title=str(metadata.get("role", "memory")),
+                    text=doc or "",
+                    score=round(1.0 / (1.0 + max(0.0, float(distance))), 4),
+                    metadata=dict(metadata),
+                )
+            )
+        self.logger.info("memory search finish results=%s", len(rows))
+        return rows
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.settings.memory_db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memories (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
