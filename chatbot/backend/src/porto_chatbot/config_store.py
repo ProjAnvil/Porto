@@ -25,7 +25,27 @@ AGENT_SETTING_KEYS = {
     "agent_api_key",
     "agent_temperature",
     "agent_max_tokens",
+    "critic_provider",
+    "critic_model",
+    "critic_base_url",
+    "critic_api_key",
+    "critic_temperature",
+    "critic_max_tokens",
+    "spec_refine_enabled",
+    "spec_refine_max_iter",
+    "spec_refine_parallel",
+    "spec_refine_pass_score",
+    "spec_refine_budget_tokens",
+    "workflow_rework_enabled",
+    "workflow_rework_max_passes",
+    "memory_compact_threshold",
+    "memory_recent_keep",
+    "context_char_budget",
+    "agent_stream_enabled",
+    "agent_max_tool_turns",
 }
+
+SENSITIVE_SETTING_KEYS = {"agent_api_key", "critic_api_key"}
 
 
 class ConfigStore:
@@ -75,8 +95,8 @@ class ConfigStore:
 
     def _save_namespace(self, namespace: str, values: dict[str, Any]) -> None:
         updated_at = datetime.now(UTC).isoformat()
-        safe_keys = sorted(key for key in values if key != "agent_api_key")
-        redacted_keys = ["agent_api_key"] if "agent_api_key" in values else []
+        safe_keys = sorted(key for key in values if key not in SENSITIVE_SETTING_KEYS)
+        redacted_keys = sorted(k for k in SENSITIVE_SETTING_KEYS if k in values)
         with sqlite3.connect(self.settings.settings_db_path) as conn:
             for key, value in values.items():
                 conn.execute(

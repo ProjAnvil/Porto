@@ -67,12 +67,36 @@ export type RagConfig = {
 };
 
 export type AgentConfig = {
+  // LLM 连接
   agent_provider: "openai" | "anthropic";
   agent_model: string;
   agent_base_url: string | null;
   agent_api_key: string | null;
   agent_temperature: number;
   agent_max_tokens: number;
+  // Critic（独立评审模型，可选）
+  critic_provider: "openai" | "anthropic" | null;
+  critic_model: string | null;
+  critic_base_url: string | null;
+  critic_api_key: string | null;
+  critic_temperature: number | null;
+  critic_max_tokens: number | null;
+  // Spec refine loop
+  spec_refine_enabled: boolean;
+  spec_refine_max_iter: number;
+  spec_refine_parallel: boolean;
+  spec_refine_pass_score: number;
+  spec_refine_budget_tokens: number;
+  // Workflow 条件回边
+  workflow_rework_enabled: boolean;
+  workflow_rework_max_passes: number;
+  // Memory compaction
+  memory_compact_threshold: number;
+  memory_recent_keep: number;
+  // Context / streaming / tool
+  context_char_budget: number;
+  agent_stream_enabled: boolean;
+  agent_max_tool_turns: number;
 };
 
 export type AppSettings = {

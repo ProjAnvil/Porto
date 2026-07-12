@@ -976,6 +976,199 @@ function AgentSettingsForm({
           />
         </label>
       </div>
+      <details className="mt-4">
+        <summary className="cursor-pointer text-xs text-zinc-500">
+          高级配置（Critic · Spec loop · Workflow · Memory · Context）
+        </summary>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+          <label className="block">
+            <span className="text-xs text-zinc-500">Critic Provider（留空复用 generator）</span>
+            <select
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={agentDraft.critic_provider ?? ""}
+              onChange={(event) =>
+                updateAgent(
+                  "critic_provider",
+                  (event.target.value || null) as AgentConfig["critic_provider"],
+                )
+              }
+            >
+              <option value="">（复用 generator）</option>
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Critic Model</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={agentDraft.critic_model ?? ""}
+              onChange={(event) =>
+                updateAgent("critic_model", event.target.value || null)
+              }
+            />
+          </label>
+          <label className="block md:col-span-2">
+            <span className="text-xs text-zinc-500">Critic Base URL（留空复用 generator）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={agentDraft.critic_base_url ?? ""}
+              onChange={(event) =>
+                updateAgent("critic_base_url", event.target.value || null)
+              }
+            />
+          </label>
+          <label className="block md:col-span-2">
+            <span className="text-xs text-zinc-500">Critic API Key（留空复用 generator）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="password"
+              value={agentDraft.critic_api_key ?? ""}
+              onChange={(event) =>
+                updateAgent("critic_api_key", event.target.value || null)
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Spec refine 启用</span>
+            <input
+              className="mt-2 h-4 w-4 accent-zinc-950"
+              type="checkbox"
+              checked={agentDraft.spec_refine_enabled}
+              onChange={(event) =>
+                updateAgent("spec_refine_enabled", event.target.checked)
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Spec refine 最大迭代</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={0}
+              max={10}
+              value={agentDraft.spec_refine_max_iter}
+              onChange={(event) =>
+                updateAgent("spec_refine_max_iter", Number(event.target.value))
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Spec 并行生成</span>
+            <input
+              className="mt-2 h-4 w-4 accent-zinc-950"
+              type="checkbox"
+              checked={agentDraft.spec_refine_parallel}
+              onChange={(event) =>
+                updateAgent("spec_refine_parallel", event.target.checked)
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Spec PASS 分数（满分 12）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={0}
+              max={12}
+              value={agentDraft.spec_refine_pass_score}
+              onChange={(event) =>
+                updateAgent("spec_refine_pass_score", Number(event.target.value))
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Workflow 回边启用</span>
+            <input
+              className="mt-2 h-4 w-4 accent-zinc-950"
+              type="checkbox"
+              checked={agentDraft.workflow_rework_enabled}
+              onChange={(event) =>
+                updateAgent("workflow_rework_enabled", event.target.checked)
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Workflow 回边上限</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={0}
+              max={5}
+              value={agentDraft.workflow_rework_max_passes}
+              onChange={(event) =>
+                updateAgent(
+                  "workflow_rework_max_passes",
+                  Number(event.target.value),
+                )
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Memory 压缩阈值（消息数）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={4}
+              value={agentDraft.memory_compact_threshold}
+              onChange={(event) =>
+                updateAgent(
+                  "memory_compact_threshold",
+                  Number(event.target.value),
+                )
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Memory 近期保留条数</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={1}
+              value={agentDraft.memory_recent_keep}
+              onChange={(event) =>
+                updateAgent("memory_recent_keep", Number(event.target.value))
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Context 字符预算</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={1000}
+              value={agentDraft.context_char_budget}
+              onChange={(event) =>
+                updateAgent("context_char_budget", Number(event.target.value))
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">原生流式输出</span>
+            <input
+              className="mt-2 h-4 w-4 accent-zinc-950"
+              type="checkbox"
+              checked={agentDraft.agent_stream_enabled}
+              onChange={(event) =>
+                updateAgent("agent_stream_enabled", event.target.checked)
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">节点 tool 最大轮数</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={1}
+              max={20}
+              value={agentDraft.agent_max_tool_turns}
+              onChange={(event) =>
+                updateAgent("agent_max_tool_turns", Number(event.target.value))
+              }
+            />
+          </label>
+        </div>
+      </details>
     </SettingsCard>
   );
 }
