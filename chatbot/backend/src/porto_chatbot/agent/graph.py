@@ -39,18 +39,22 @@ class PortoAgent:
         self.logger.info("agent ready")
 
     def _build_critic_llm(self) -> LLMClient:
-        """构造 spec loop 的评判模型。未配 critic_* 时回退到 generator（self.llm）。"""
+        """构造 spec loop 的评判模型。未配 critic_* 时回退到 generator（self.llm）。
+
+        用 setattr 而非 model_copy：BaseSettings 字段带 validation_alias 时，
+        model_copy 的 update 对 env 已有值的字段会被重新加载的 env 值覆盖
+        （pydantic-settings 行为）。setattr 则稳定生效。
+        """
         s = self.settings
         if not s.critic_provider:
             return self.llm
-        critic_settings = s.model_copy(update={
-            "agent_provider": s.critic_provider,
-            "agent_api_key": s.critic_api_key or s.agent_api_key,
-            "agent_base_url": s.critic_base_url,
-            "agent_model": s.critic_model or s.agent_model,
-            "agent_temperature": s.critic_temperature,
-            "agent_max_tokens": s.critic_max_tokens,
-        })
+        critic_settings = Settings()
+        critic_settings.agent_provider = s.critic_provider
+        critic_settings.agent_api_key = s.critic_api_key or s.agent_api_key
+        critic_settings.agent_base_url = s.critic_base_url or s.agent_base_url
+        critic_settings.agent_model = s.critic_model or s.agent_model
+        critic_settings.agent_temperature = s.critic_temperature
+        critic_settings.agent_max_tokens = s.critic_max_tokens
         critic = LLMClient(critic_settings)
         self.logger.info(
             "critic llm ready provider=%s model=%s independent=%s",

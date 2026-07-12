@@ -31,8 +31,26 @@ def _load_env_test() -> None:
 _load_env_test()
 
 
+# pytest 单元测试必须确定性：隔离 LLM/critic/工作流相关 env，避免 .env.test 的
+# 真 key / 配置让测试走真 LLM 或改变行为。.env.test 的 key 仅供基线脚本
+# (scripts/spec_baseline_eval.py) 使用。pydantic-settings 的 validation_alias
+# 字段会从 env 读取并覆盖 setattr，所以必须 delenv 而非 setattr。
+_ENV_KEYS_TO_ISOLATE = [
+    "LANGCHAIN_AGENT_PROVIDER", "LANGCHAIN_API_KEY", "LANGCHAIN_BASE_URL",
+    "LANGCHAIN_MODEL", "LANGCHAIN_TEMPERATURE", "LANGCHAIN_MAX_TOKENS",
+    "PORTO_CHATBOT_CRITIC_PROVIDER", "PORTO_CHATBOT_CRITIC_MODEL",
+    "PORTO_CHATBOT_CRITIC_API_KEY", "PORTO_CHATBOT_CRITIC_BASE_URL",
+    "PORTO_CHATBOT_SPEC_REFINE_ENABLED", "PORTO_CHATBOT_SPEC_REFINE_MAX_ITER",
+    "PORTO_CHATBOT_SPEC_REFINE_PARALLEL", "PORTO_CHATBOT_SPEC_REFINE_PASS_SCORE",
+    "PORTO_CHATBOT_WORKFLOW_REWORK_ENABLED", "PORTO_CHATBOT_WORKFLOW_REWORK_MAX_PASSES",
+    "PORTO_CHATBOT_AGENT_STREAM_ENABLED",
+]
+
+
 @pytest.fixture()
-def sample_settings(tmp_path: Path) -> Settings:
+def sample_settings(tmp_path: Path, monkeypatch) -> Settings:
+    for key in _ENV_KEYS_TO_ISOLATE:
+        monkeypatch.delenv(key, raising=False)
     kb = tmp_path / "kb"
     kb.mkdir()
     (kb / "payment-platform.md").write_text(
