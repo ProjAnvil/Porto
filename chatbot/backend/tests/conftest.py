@@ -1,10 +1,34 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from porto_chatbot.settings import Settings
+
+
+def _load_env_test() -> None:
+    """加载 backend/.env.test 到环境变量（setdefault，不覆盖已有环境变量）。
+
+    测试套件读 .env.test 而非 .env，与生产配置隔离。默认 .env.test 不配 LLM
+    key → 测试走降级路径（确定性，不调真 LLM）；在 .env.test 配 key 后，未 mock
+    的测试会走真 LLM（用于基线/集成测试）。
+
+    优先级：已有 os.environ > .env.test > Settings 默认；fixture 显式参数最高。
+    """
+    env_test = Path(__file__).resolve().parent.parent / ".env.test"
+    if not env_test.exists():
+        return
+    for line in env_test.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_env_test()
 
 
 @pytest.fixture()
