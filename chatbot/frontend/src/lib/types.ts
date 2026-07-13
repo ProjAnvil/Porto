@@ -23,21 +23,6 @@ export type Subsystem = {
   dependencies: string[];
 };
 
-export type WorkflowResponse = {
-  workflow_id: string;
-  project_name: string;
-  understanding: string;
-  subsystems: Subsystem[];
-  specs: Record<string, string>;
-  evaluation: {
-    score: number;
-    passed: boolean;
-    checks: Array<{ name: string; passed: boolean; weight: number }>;
-  };
-  sources: SourceChunk[];
-  steps: AgentStep[];
-};
-
 export type ChatResponseEval = {
   score: number;
   passed: boolean;
@@ -181,7 +166,6 @@ export type InspectorState = {
   sources: SourceChunk[];
   memory: SourceChunk[];
   evaluation: ChatResponseEval | null;
-  workflow: WorkflowResponse | null;
 };
 
 export type WorkflowStepName =

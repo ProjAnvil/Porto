@@ -22,9 +22,11 @@ import {
   History,
   Loader2,
   Play,
+  Plus,
   Search,
   Send,
   Settings,
+  Trash2,
   Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -32,16 +34,20 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import {
+  advanceWorkflow,
+  createWorkflow,
+  createWorkflowUpload,
   defaultAgentConfig,
   defaultRagConfig,
   getAppSettings,
   getHealth,
   getKbStats,
+  getWorkflow,
   indexKnowledgeBase,
   listMemory,
-  runWorkflow,
-  runWorkflowUpload,
+  listWorkflows,
   saveAppSettings,
+  saveStepOutput,
   searchMemory,
 } from "@/lib/api";
 import type {
@@ -54,7 +60,9 @@ import type {
   RagConfig,
   SourceChunk,
   Subsystem,
-  WorkflowResponse,
+  WorkflowDetail,
+  WorkflowListItem,
+  WorkflowStepName,
 } from "@/lib/types";
 
 type Mode = "chat" | "workflow";
@@ -66,7 +74,28 @@ const emptyInspector: InspectorState = {
   sources: [],
   memory: [],
   evaluation: null,
-  workflow: null,
+};
+
+const WORKFLOW_STEPS: WorkflowStepName[] = [
+  "retrieve",
+  "understand",
+  "identify",
+  "generate",
+  "evaluate",
+];
+
+const CHECKPOINT_STEPS: WorkflowStepName[] = [
+  "understand",
+  "identify",
+  "generate",
+];
+
+const STEP_LABELS: Record<WorkflowStepName, string> = {
+  retrieve: "检索",
+  understand: "理解",
+  identify: "子系统",
+  generate: "规格",
+  evaluate: "评估",
 };
 
 function scoreClass(score?: number) {
@@ -92,6 +121,65 @@ function isInspectorState(value: unknown): value is InspectorState {
   );
 }
 
+/**
+ * 把后端某一步的 outputs 转成 CheckpointEditor 可编辑的草稿字符串。
+ * - understand / generate：取 understanding / specs（specs 序列化为 markdown 文本）
+ * - identify：草稿无意义（子系统卡片走 Subsystem[]），返回空串
+ */
+function readStepDraft(detail: WorkflowDetail, step: WorkflowStepName): string {
+  const entry = detail.outputs[step];
+  if (!entry) return "";
+  const output = entry.output;
+  if (step === "understand") {
+    const text = output.understanding;
+    return typeof text === "string" ? text : "";
+  }
+  if (step === "generate") {
+    const specs = output.specs;
+    if (specs && typeof specs === "object") {
+      // 将 Record<string,string> 序列化为 "## name\n\nbody" 形式，方便用户整体编辑
+      return Object.entries(specs as Record<string, string>)
+        .map(([name, body]) => `## ${name}\n\n${body}`)
+        .join("\n\n---\n\n");
+    }
+    return "";
+  }
+  return "";
+}
+
+/** 解析 generate 步骤的 markdown 草稿（## name 切分）回 specs dict */
+function parseSpecsDraft(draft: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const blocks = draft.split(/^---$/m);
+  for (const block of blocks) {
+    const match = block.match(/^##\s+(.+?)\s*\n([\s\S]*)$/);
+    if (match) {
+      const name = match[1].trim();
+      const body = match[2].trim();
+      if (name) result[name] = body;
+    }
+  }
+  return result;
+}
+
+/** 读取 detail.identify 步骤的 subsystems 列表 */
+function readSubsystems(detail: WorkflowDetail): Subsystem[] {
+  const entry = detail.outputs.identify;
+  if (!entry) return [];
+  const subs = entry.output.subsystems;
+  if (!Array.isArray(subs)) return [];
+  return subs as Subsystem[];
+}
+
+const EMPTY_SUBSYSTEM: Subsystem = {
+  name: "",
+  type: "new",
+  responsibility: "",
+  capabilities: [],
+  data_entities: [],
+  dependencies: [],
+};
+
 export function PortoWorkbench() {
   const [view, setView] = useState<View>("workbench");
   const [mode, setMode] = useState<Mode>("chat");
@@ -110,12 +198,79 @@ export function PortoWorkbench() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [busyLabel, setBusyLabel] = useState("");
   const [error, setError] = useState("");
+  const [workflowId, setWorkflowId] = useState<string | null>(null);
+  const [workflowDetail, setWorkflowDetail] = useState<WorkflowDetail | null>(null);
+  const [workflowList, setWorkflowList] = useState<WorkflowListItem[]>([]);
+  const [draft, setDraft] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshMemory = useCallback(async () => {
     const data = await listMemory(sessionId);
     setMemoryItems(data.items);
   }, [sessionId]);
+
+  const refreshWorkflowList = useCallback(async () => {
+    try {
+      const result = await listWorkflows(sessionId);
+      setWorkflowList(result.items);
+    } catch {
+      /* 历史列表非关键，失败静默 */
+    }
+  }, [sessionId]);
+
+  // 工作流历史：sessionId 变化时拉取一次
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const result = await listWorkflows(sessionId);
+        if (!cancelled) setWorkflowList(result.items);
+      } catch {
+        /* 历史列表非关键，失败静默 */
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  // 工作流详情轮询：仅在 workflowId 存在时启动；status 回到 running 时（如 advance 后）
+  // 通过 status 依赖重启轮询。状态稳定为 running 期间靠 setTimeout 自驱动，不会重复触发。
+  useEffect(() => {
+    if (!workflowId) return;
+    const id = workflowId;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const detail = await getWorkflow(id);
+        if (!active) return;
+        setWorkflowDetail(detail);
+        // 进入 awaiting_input 或 completed 后同步草稿
+        if (
+          detail.status === "awaiting_input" &&
+          detail.current_step &&
+          CHECKPOINT_STEPS.includes(detail.current_step)
+        ) {
+          setDraft(readStepDraft(detail, detail.current_step));
+        }
+        if (detail.status === "running") {
+          timer = setTimeout(poll, 2000);
+        } else {
+          // 终态时刷新历史列表
+          void refreshWorkflowList();
+        }
+      } catch {
+        if (active) timer = setTimeout(poll, 2000);
+      }
+    }
+    poll();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [workflowId, workflowDetail?.status, refreshWorkflowList]);
 
   useEffect(() => {
     let cancelled = false;
@@ -285,34 +440,87 @@ export function PortoWorkbench() {
 
   async function runWorkflowAction() {
     if (!workflowText.trim() && !selectedFile) return;
-    setBusyLabel("运行 PRD 拆解");
+    setBusyLabel("提交拆解");
     setError("");
-    setInspector(emptyInspector);
+    setWorkflowDetail(null);
     try {
-      const response: WorkflowResponse = selectedFile
-        ? await runWorkflowUpload(selectedFile, projectName.trim())
-        : await runWorkflow(
-            workflowText.trim(),
-            projectName.trim(),
-            sessionId,
-            ragConfig,
-            agentConfig,
-          );
-      setInspector({
-        steps: response.steps,
-        sources: response.sources,
-        memory: [],
-        evaluation: null,
-        workflow: response,
-      });
-      setWorkflowText("");
-      setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      await refreshMemory();
+      const resp = selectedFile
+        ? await createWorkflowUpload(selectedFile, projectName.trim() || undefined)
+        : await createWorkflow({
+            text: workflowText.trim(),
+            project_name: projectName.trim() || undefined,
+            session_id: sessionId,
+            rag: ragConfig,
+            agent: agentConfig,
+            top_k: ragConfig.top_k,
+          });
+      setWorkflowId(resp.workflow_id);
+      setDraft("");
+      void refreshWorkflowList();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "PRD 拆解失败");
+      setError(err instanceof Error ? err.message : "提交拆解失败");
     } finally {
       setBusyLabel("");
+    }
+  }
+
+  async function onAdvance() {
+    if (!workflowId) return;
+    setBusyLabel("推进");
+    setError("");
+    try {
+      const resp = await advanceWorkflow(workflowId);
+      // advance 通常会把状态切回 running，立即拉一次详情触发轮询分支
+      const detail = await getWorkflow(resp.workflow_id);
+      setWorkflowDetail(detail);
+      if (
+        detail.status === "awaiting_input" &&
+        detail.current_step &&
+        CHECKPOINT_STEPS.includes(detail.current_step)
+      ) {
+        setDraft(readStepDraft(detail, detail.current_step));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "推进失败");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function onSaveStep(step: WorkflowStepName, output: Record<string, unknown>) {
+    if (!workflowId) return;
+    setBusyLabel("保存");
+    setError("");
+    try {
+      const detail = await saveStepOutput(workflowId, step, output);
+      setWorkflowDetail(detail);
+      setDraft(readStepDraft(detail, step));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存步骤产出失败");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function onPickWorkflow(id: string) {
+    setMode("workflow");
+    setView("workbench");
+    setWorkflowId(id);
+    setWorkflowDetail(null);
+    setDraft("");
+    setError("");
+    try {
+      const detail = await getWorkflow(id);
+      setWorkflowDetail(detail);
+      if (
+        detail.status === "awaiting_input" &&
+        detail.current_step &&
+        CHECKPOINT_STEPS.includes(detail.current_step)
+      ) {
+        setDraft(readStepDraft(detail, detail.current_step));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载工作流失败");
     }
   }
 
@@ -325,13 +533,16 @@ export function PortoWorkbench() {
           memoryItems={memoryItems}
           memoryQuery={memoryQuery}
           mode={mode}
+          onPickWorkflow={onPickWorkflow}
+          onRunMemorySearch={runMemorySearch}
           sessionId={sessionId}
           view={view}
           setMemoryQuery={setMemoryQuery}
           setMode={setMode}
           setSessionId={setSessionId}
           setView={setView}
-          onRunMemorySearch={runMemorySearch}
+          workflowId={workflowId}
+          workflows={workflowList}
         />
 
         <main className="flex min-h-[70vh] min-w-0 flex-col border-x border-zinc-200 bg-white">
@@ -379,16 +590,20 @@ export function PortoWorkbench() {
           ) : (
             <WorkflowPanel
               busy={Boolean(busyLabel)}
+              detail={workflowDetail}
+              draft={draft}
               error={error}
               fileInputRef={fileInputRef}
+              onAdvance={onAdvance}
+              onRun={runWorkflowAction}
+              onSaveStep={onSaveStep}
+              onTextChange={setWorkflowText}
               projectName={projectName}
               selectedFile={selectedFile}
+              setDraft={setDraft}
               setProjectName={setProjectName}
               setSelectedFile={setSelectedFile}
-              workflow={inspector.workflow}
               text={workflowText}
-              onRun={runWorkflowAction}
-              onTextChange={setWorkflowText}
             />
           )}
         </main>
@@ -405,6 +620,7 @@ function Sidebar({
   memoryItems,
   memoryQuery,
   mode,
+  onPickWorkflow,
   onRunMemorySearch,
   sessionId,
   view,
@@ -412,18 +628,23 @@ function Sidebar({
   setMode,
   setSessionId,
   setView,
+  workflowId,
+  workflows,
 }: {
   busy: boolean;
   kbStats: KbStats | null;
   memoryItems: MemoryRecord[];
   memoryQuery: string;
   mode: Mode;
+  onPickWorkflow: (id: string) => void;
   sessionId: string;
   view: View;
   setMemoryQuery: (value: string) => void;
   setMode: (value: Mode) => void;
   setSessionId: (value: string) => void;
   setView: (value: View) => void;
+  workflowId: string | null;
+  workflows: WorkflowListItem[];
   onRunMemorySearch: () => void;
 }) {
   return (
@@ -543,6 +764,46 @@ function Sidebar({
           ))}
           {memoryItems.length === 0 ? (
             <p className="text-sm text-zinc-400">暂无聊天记录。</p>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
+        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+          <Braces size={15} />
+          Workflows
+        </h2>
+        <div className="max-h-72 space-y-2 overflow-y-auto">
+          {workflows.map((wf) => {
+            const active = wf.workflow_id === workflowId;
+            const stepLabel = wf.current_step
+              ? STEP_LABELS[wf.current_step] ?? wf.current_step
+              : "—";
+            return (
+              <button
+                className={`block w-full rounded-md border p-2 text-left ${
+                  active
+                    ? "border-zinc-950 bg-zinc-50"
+                    : "border-zinc-200 hover:bg-zinc-50"
+                }`}
+                key={wf.workflow_id}
+                onClick={() => onPickWorkflow(wf.workflow_id)}
+              >
+                <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate font-medium">
+                    {wf.project_name || wf.workflow_id.slice(0, 8)}
+                  </span>
+                  <span className="truncate text-zinc-400">{stepLabel}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-zinc-500">
+                  <span>{wf.status}</span>
+                  <span className="truncate">{wf.created_at}</span>
+                </div>
+              </button>
+            );
+          })}
+          {workflows.length === 0 ? (
+            <p className="text-sm text-zinc-400">暂无拆解记录。</p>
           ) : null}
         </div>
       </section>
@@ -1377,13 +1638,15 @@ function AgentSettingsForm({
             />
           </label>
           <label className="block">
-            <span className="text-xs text-zinc-500">Spec 并行生成</span>
+            <span className="text-xs text-zinc-500">Spec 并发度（1-10）</span>
             <input
-              className="mt-2 h-4 w-4 accent-zinc-950"
-              type="checkbox"
-              checked={agentDraft.spec_refine_parallel}
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={1}
+              max={10}
+              value={agentDraft.spec_refine_concurrency}
               onChange={(event) =>
-                updateAgent("spec_refine_parallel", event.target.checked)
+                updateAgent("spec_refine_concurrency", Number(event.target.value))
               }
             />
           </label>
@@ -1531,29 +1794,45 @@ function SettingsCard({
 
 function WorkflowPanel({
   busy,
+  detail,
+  draft,
   error,
   fileInputRef,
+  onAdvance,
   onRun,
+  onSaveStep,
   onTextChange,
   projectName,
   selectedFile,
+  setDraft,
   setProjectName,
   setSelectedFile,
   text,
-  workflow,
 }: {
   busy: boolean;
+  detail: WorkflowDetail | null;
+  draft: string;
   error: string;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
+  onAdvance: () => void;
+  onRun: () => void;
+  onSaveStep: (step: WorkflowStepName, output: Record<string, unknown>) => void;
+  onTextChange: (value: string) => void;
   projectName: string;
   selectedFile: File | null;
+  setDraft: (value: string) => void;
   setProjectName: (value: string) => void;
   setSelectedFile: (value: File | null) => void;
   text: string;
-  workflow: WorkflowResponse | null;
-  onRun: () => void;
-  onTextChange: (value: string) => void;
 }) {
+  const curStep = detail?.current_step ?? null;
+  const curIdx = curStep ? WORKFLOW_STEPS.indexOf(curStep) : -1;
+  const showCheckpoint =
+    !!detail &&
+    detail.status === "awaiting_input" &&
+    !!curStep &&
+    CHECKPOINT_STEPS.includes(curStep);
+
   return (
     <div className="flex flex-1 flex-col p-4">
       {error ? (
@@ -1561,104 +1840,568 @@ function WorkflowPanel({
           {error}
         </div>
       ) : null}
-      <div className="mb-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
-        <label className="block">
-          <span className="text-xs text-zinc-500">项目名称</span>
-          <input
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm outline-none focus:border-zinc-400"
-            placeholder="可选"
-            value={projectName}
-            onChange={(event) => setProjectName(event.target.value)}
+
+      {!detail ? (
+        <>
+          <div className="mb-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
+            <label className="block">
+              <span className="text-xs text-zinc-500">项目名称</span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm outline-none focus:border-zinc-400"
+                placeholder="可选"
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-zinc-500">PRD 文件</span>
+              <span className="mt-1 flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50">
+                <Upload size={15} />
+                <span className="truncate">
+                  {selectedFile?.name || "上传 PDF / Word / Markdown"}
+                </span>
+                <input
+                  ref={fileInputRef}
+                  className="hidden"
+                  type="file"
+                  accept=".pdf,.docx,.md,.txt"
+                  onChange={(event) =>
+                    setSelectedFile(event.target.files?.[0] ?? null)
+                  }
+                />
+              </span>
+            </label>
+          </div>
+          <textarea
+            className="min-h-[300px] flex-1 resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 outline-none focus:border-zinc-400"
+            placeholder="粘贴一句业务需求或完整 PRD 文本..."
+            value={text}
+            onChange={(event) => onTextChange(event.target.value)}
           />
-        </label>
-        <label className="block">
-          <span className="text-xs text-zinc-500">PRD 文件</span>
-          <span className="mt-1 flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50">
-            <Upload size={15} />
-            <span className="truncate">
-              {selectedFile?.name || "上传 PDF / Word / Markdown"}
-            </span>
-            <input
-              ref={fileInputRef}
-              className="hidden"
-              type="file"
-              accept=".pdf,.docx,.md,.txt"
-              onChange={(event) =>
-                setSelectedFile(event.target.files?.[0] ?? null)
-              }
-            />
-          </span>
-        </label>
-      </div>
-      <textarea
-        className="min-h-[360px] flex-1 resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 outline-none focus:border-zinc-400"
-        placeholder="粘贴一句业务需求或完整 PRD 文本..."
-        value={text}
-        onChange={(event) => onTextChange(event.target.value)}
-      />
-      {workflow ? (
-        <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold">
-                已完成 Porto 拆解：{workflow.project_name}
-              </h2>
-              <p className="mt-1 text-xs text-zinc-500">
-                Eval Score {workflow.evaluation.score} /{" "}
-                {workflow.subsystems.length} subsystems
-              </p>
-            </div>
-            <span
-              className={`rounded-full px-2 py-1 text-xs ${scoreClass(
-                workflow.evaluation.score,
-              )}`}
-            >
-              {workflow.evaluation.passed ? "passed" : "review"}
-            </span>
-          </div>
-          <div className="grid gap-2 md:grid-cols-2">
-            {workflow.subsystems.map((sub) => (
-              <div
-                className="rounded-lg border border-zinc-200 bg-white p-3"
-                key={sub.name}
-              >
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">
-                    {sub.name}
-                  </span>
-                  <span
-                    className={`rounded-full px-2 py-1 text-xs ${subsystemClass(
-                      sub,
-                    )}`}
-                  >
-                    {sub.type}
-                  </span>
-                </div>
-                <p className="line-clamp-2 text-xs leading-5 text-zinc-600">
-                  {sub.responsibility}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
+          <p className="mt-2 truncate text-xs text-zinc-500">
+            {selectedFile
+              ? `将使用上传文件：${selectedFile.name}`
+              : "未上传文件时，将使用文本框内容。"}
+          </p>
+        </>
       ) : null}
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <p className="truncate text-xs text-zinc-500">
-          {selectedFile
-            ? `将使用上传文件：${selectedFile.name}`
-            : "未上传文件时，将使用文本框内容。"}
-        </p>
+
+      {detail ? (
+        <>
+          <WorkflowStepper curIdx={curIdx} status={detail.status} />
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1">
+              workflow: {detail.workflow_id.slice(0, 8)}
+            </span>
+            <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1">
+              status: {detail.status}
+            </span>
+            {detail.project_name ? (
+              <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1">
+                {detail.project_name}
+              </span>
+            ) : null}
+          </div>
+
+          {detail.status === "running" ? (
+            <div className="my-6 flex items-center gap-2 text-sm text-zinc-500">
+              <Loader2 className="animate-spin" size={16} />
+              生成中…
+            </div>
+          ) : null}
+
+          {detail.status === "failed" ? (
+            <div className="my-4 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+              {detail.error || "步骤失败"}
+              <button
+                className="ml-2 underline"
+                onClick={onAdvance}
+                type="button"
+              >
+                重试
+              </button>
+            </div>
+          ) : null}
+
+          {showCheckpoint && curStep ? (
+            <CheckpointEditor
+              detail={detail}
+              draft={draft}
+              onAdvance={onAdvance}
+              onSaveStep={onSaveStep}
+              setDraft={setDraft}
+              step={curStep}
+            />
+          ) : null}
+
+          {detail.status === "completed" ? (
+            <CompletedView detail={detail} />
+          ) : null}
+        </>
+      ) : null}
+
+      <div className="mt-3 flex items-center justify-end gap-3">
         <button
           className="flex items-center gap-2 rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
           disabled={busy || (!text.trim() && !selectedFile)}
           onClick={onRun}
+          type="button"
         >
           {busy ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-          运行拆解
+          {detail ? "重新拆解" : "运行拆解"}
         </button>
       </div>
     </div>
   );
+}
+
+function WorkflowStepper({
+  curIdx,
+  status,
+}: {
+  curIdx: number;
+  status: WorkflowDetail["status"];
+}) {
+  // completed 时所有 step 标记完成
+  const effectiveIdx = status === "completed" ? WORKFLOW_STEPS.length : curIdx;
+  return (
+    <ol className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+      {WORKFLOW_STEPS.map((step, idx) => {
+        const done = idx < effectiveIdx;
+        const current = idx === effectiveIdx && status !== "completed";
+        const label = STEP_LABELS[step];
+        const dotClass = done
+          ? "bg-emerald-500 text-white"
+          : current
+            ? "bg-zinc-950 text-white"
+            : "bg-zinc-200 text-zinc-500";
+        return (
+          <li key={step} className="flex items-center gap-2">
+            <span
+              className={`flex size-6 items-center justify-center rounded-full text-xs font-medium ${dotClass}`}
+            >
+              {done ? <CheckCircle2 size={14} /> : idx + 1}
+            </span>
+            <span
+              className={`text-sm ${current ? "font-semibold text-zinc-900" : done ? "text-zinc-700" : "text-zinc-400"}`}
+            >
+              {label}
+            </span>
+            {idx < WORKFLOW_STEPS.length - 1 ? (
+              <span className="mx-1 text-zinc-300">›</span>
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function CheckpointEditor({
+  detail,
+  draft,
+  onAdvance,
+  onSaveStep,
+  setDraft,
+  step,
+}: {
+  detail: WorkflowDetail;
+  draft: string;
+  onAdvance: () => void;
+  onSaveStep: (step: WorkflowStepName, output: Record<string, unknown>) => void;
+  setDraft: (value: string) => void;
+  step: WorkflowStepName;
+}) {
+  if (step === "understand") {
+    return (
+      <MarkdownCheckpoint
+        key="understand"
+        draft={draft}
+        onAdvance={onAdvance}
+        onSave={() => onSaveStep("understand", { understanding: draft })}
+        setDraft={setDraft}
+        title="理解（understanding）"
+      />
+    );
+  }
+  if (step === "generate") {
+    return (
+      <MarkdownCheckpoint
+        key="generate"
+        draft={draft}
+        onAdvance={onAdvance}
+        onSave={() => onSaveStep("generate", { specs: parseSpecsDraft(draft) })}
+        setDraft={setDraft}
+        title="规格（specs，使用 ## 子系统名 分段）"
+      />
+    );
+  }
+  if (step === "identify") {
+    return (
+      <SubsystemCheckpoint
+        detail={detail}
+        key={`${detail.workflow_id}:${detail.outputs.identify?.produced_at ?? ""}`}
+        onAdvance={onAdvance}
+        onSaveStep={onSaveStep}
+      />
+    );
+  }
+  return null;
+}
+
+function MarkdownCheckpoint({
+  draft,
+  onAdvance,
+  onSave,
+  setDraft,
+  title,
+}: {
+  draft: string;
+  onAdvance: () => void;
+  onSave: () => void;
+  setDraft: (value: string) => void;
+  title: string;
+}) {
+  const [preview, setPreview] = useState(false);
+  return (
+    <div className="my-4 flex flex-1 flex-col rounded-xl border border-zinc-200 bg-white">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <div className="flex items-center gap-2 text-xs">
+          <button
+            className={`rounded-md px-2 py-1 ${!preview ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-100"}`}
+            onClick={() => setPreview(false)}
+            type="button"
+          >
+            编辑
+          </button>
+          <button
+            className={`rounded-md px-2 py-1 ${preview ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-100"}`}
+            onClick={() => setPreview(true)}
+            type="button"
+          >
+            预览
+          </button>
+        </div>
+      </div>
+      {preview ? (
+        <div className="prose prose-zinc max-w-none flex-1 overflow-y-auto p-4 prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
+          <ReactMarkdown rehypePlugins={[rehypeHighlight]} remarkPlugins={[remarkGfm]}>
+            {draft || "_（空）_"}
+          </ReactMarkdown>
+        </div>
+      ) : (
+        <textarea
+          className="min-h-[280px] flex-1 resize-none rounded-b-xl border-0 p-4 text-sm leading-6 outline-none focus:ring-0"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+      )}
+      <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-2">
+        <button
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100"
+          onClick={onSave}
+          type="button"
+        >
+          保存修改
+        </button>
+        <button
+          className="rounded-md bg-zinc-950 px-3 py-1.5 text-sm text-white hover:bg-zinc-800"
+          onClick={onAdvance}
+          type="button"
+        >
+          继续下一步
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SubsystemCheckpoint({
+  detail,
+  onAdvance,
+  onSaveStep,
+}: {
+  detail: WorkflowDetail;
+  onAdvance: () => void;
+  onSaveStep: (step: WorkflowStepName, output: Record<string, unknown>) => void;
+}) {
+  const [items, setItems] = useState<Subsystem[]>(() => readSubsystems(detail));
+
+  function update(idx: number, patch: Partial<Subsystem>) {
+    setItems((current) =>
+      current.map((item, i) => (i === idx ? { ...item, ...patch } : item)),
+    );
+  }
+  function remove(idx: number) {
+    setItems((current) => current.filter((_, i) => i !== idx));
+  }
+  function add() {
+    setItems((current) => [
+      ...current,
+      { ...EMPTY_SUBSYSTEM, name: `Subsystem ${current.length + 1}` },
+    ]);
+  }
+  function saveAll() {
+    onSaveStep("identify", { subsystems: items });
+  }
+
+  return (
+    <div className="my-4 flex flex-1 flex-col rounded-xl border border-zinc-200 bg-white">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+        <h3 className="text-sm font-semibold">子系统（subsystems）</h3>
+        <button
+          className="flex items-center gap-1 rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
+          onClick={add}
+          type="button"
+        >
+          <Plus size={13} />
+          添加
+        </button>
+      </div>
+      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+        {items.map((sub, idx) => (
+          <div
+            className="rounded-lg border border-zinc-200 bg-zinc-50 p-3"
+            key={`${sub.name}-${idx}`}
+          >
+            <div className="mb-2 flex items-center gap-2">
+              <input
+                className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm font-medium outline-none focus:border-zinc-400"
+                placeholder="子系统名称"
+                value={sub.name}
+                onChange={(event) => update(idx, { name: event.target.value })}
+              />
+              <select
+                className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm"
+                value={sub.type}
+                onChange={(event) =>
+                  update(idx, {
+                    type: event.target.value as Subsystem["type"],
+                  })
+                }
+              >
+                <option value="new">new</option>
+                <option value="extend">extend</option>
+                <option value="existing">existing</option>
+              </select>
+              <button
+                className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50"
+                onClick={() => remove(idx)}
+                title="删除子系统"
+                type="button"
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+            <label className="block">
+              <span className="text-xs text-zinc-500">职责（responsibility）</span>
+              <textarea
+                className="mt-1 min-h-[60px] w-full resize-y rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
+                value={sub.responsibility}
+                onChange={(event) =>
+                  update(idx, { responsibility: event.target.value })
+                }
+              />
+            </label>
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <label className="block">
+                <span className="text-xs text-zinc-500">
+                  capabilities（逗号分隔）
+                </span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
+                  value={sub.capabilities.join(", ")}
+                  onChange={(event) =>
+                    update(idx, {
+                      capabilities: splitCsv(event.target.value),
+                    })
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">
+                  data_entities（逗号分隔）
+                </span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
+                  value={sub.data_entities.join(", ")}
+                  onChange={(event) =>
+                    update(idx, {
+                      data_entities: splitCsv(event.target.value),
+                    })
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">
+                  dependencies（逗号分隔）
+                </span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
+                  value={sub.dependencies.join(", ")}
+                  onChange={(event) =>
+                    update(idx, {
+                      dependencies: splitCsv(event.target.value),
+                    })
+                  }
+                />
+              </label>
+            </div>
+          </div>
+        ))}
+        {items.length === 0 ? (
+          <p className="text-sm text-zinc-400">
+            还没有任何子系统，点击右上角「添加」开始。
+          </p>
+        ) : null}
+      </div>
+      <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-2">
+        <button
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100"
+          onClick={saveAll}
+          type="button"
+        >
+          保存修改
+        </button>
+        <button
+          className="rounded-md bg-zinc-950 px-3 py-1.5 text-sm text-white hover:bg-zinc-800"
+          onClick={onAdvance}
+          type="button"
+        >
+          继续下一步
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CompletedView({ detail }: { detail: WorkflowDetail }) {
+  const understanding = detail.outputs.understand?.output.understanding;
+  const subsystems = readSubsystems(detail);
+  const specs = detail.outputs.generate?.output.specs as
+    | Record<string, string>
+    | undefined;
+  const evaluateOutput = detail.outputs.evaluate?.output;
+  const score =
+    evaluateOutput && typeof evaluateOutput === "object" && "score" in evaluateOutput
+      ? Number((evaluateOutput as Record<string, unknown>).score)
+      : null;
+  const [tab, setTab] = useState<"understand" | "subsystems" | "specs">(
+    "understand",
+  );
+
+  return (
+    <div className="my-4 flex flex-1 flex-col rounded-xl border border-zinc-200 bg-white">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+        <h3 className="flex items-center gap-2 text-sm font-semibold">
+          <CheckCircle2 size={15} className="text-emerald-500" />
+          拆解完成
+        </h3>
+        {score != null ? (
+          <span className={`rounded-full px-2 py-1 text-xs ${scoreClass(score)}`}>
+            score {score}
+          </span>
+        ) : null}
+      </div>
+      <div className="flex gap-1 border-b border-zinc-200 px-2 py-1">
+        {(
+          [
+            ["understand", "理解"],
+            ["subsystems", "子系统"],
+            ["specs", "规格"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            className={`rounded-md px-3 py-1.5 text-sm ${
+              tab === key
+                ? "bg-zinc-950 text-white"
+                : "text-zinc-600 hover:bg-zinc-100"
+            }`}
+            key={key}
+            onClick={() => setTab(key)}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto p-4">
+        {tab === "understand" ? (
+          <div className="prose prose-zinc max-w-none prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
+            <ReactMarkdown
+              rehypePlugins={[rehypeHighlight]}
+              remarkPlugins={[remarkGfm]}
+            >
+              {typeof understanding === "string"
+                ? understanding
+                : "_（无 understanding 输出）_"}
+            </ReactMarkdown>
+          </div>
+        ) : null}
+        {tab === "subsystems" ? (
+          <div className="grid gap-2 md:grid-cols-2">
+            {subsystems.map((sub, idx) => (
+              <div
+                className="rounded-lg border border-zinc-200 bg-zinc-50 p-3"
+                key={`${sub.name}-${idx}`}
+              >
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="truncate text-sm font-medium">{sub.name}</span>
+                  <span
+                    className={`rounded-full px-2 py-1 text-xs ${subsystemClass(sub)}`}
+                  >
+                    {sub.type}
+                  </span>
+                </div>
+                <p className="line-clamp-3 text-xs leading-5 text-zinc-600">
+                  {sub.responsibility}
+                </p>
+              </div>
+            ))}
+            {subsystems.length === 0 ? (
+              <p className="text-sm text-zinc-400">无子系统输出。</p>
+            ) : null}
+          </div>
+        ) : null}
+        {tab === "specs" ? (
+          <div className="space-y-3">
+            {specs
+              ? Object.entries(specs).map(([name, body]) => (
+                  <details
+                    className="rounded-lg border border-zinc-200 bg-zinc-50"
+                    key={name}
+                  >
+                    <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                      {name}
+                    </summary>
+                    <div className="prose prose-zinc max-w-none px-3 pb-3 prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
+                      <ReactMarkdown
+                        rehypePlugins={[rehypeHighlight]}
+                        remarkPlugins={[remarkGfm]}
+                      >
+                        {body}
+                      </ReactMarkdown>
+                    </div>
+                  </details>
+                ))
+              : null}
+            {!specs || Object.keys(specs).length === 0 ? (
+              <p className="text-sm text-zinc-400">无规格输出。</p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function Inspector({
@@ -1716,8 +2459,6 @@ function Inspector({
         </div>
       </InspectorSection>
 
-      {inspector.workflow ? <WorkflowResult workflow={inspector.workflow} /> : null}
-
       <InspectorSection icon={<FileInput size={15} />} title="Sources">
         <ChunkList chunks={inspector.sources} empty="暂无引用片段。" />
       </InspectorSection>
@@ -1765,36 +2506,6 @@ function EvalCard({ evaluation }: { evaluation: ChatResponseEval }) {
             ))}
           </div>
         ) : null}
-      </div>
-    </InspectorSection>
-  );
-}
-
-function WorkflowResult({ workflow }: { workflow: WorkflowResponse }) {
-  return (
-    <InspectorSection icon={<FileInput size={15} />} title="Workflow Result">
-      <div className="mb-3 grid grid-cols-2 gap-2">
-        <div className="rounded-lg border border-zinc-200 bg-white p-3">
-          <p className="text-xs text-zinc-500">Eval Score</p>
-          <p className="mt-1 text-2xl font-semibold">{workflow.evaluation.score}</p>
-        </div>
-        <div className="rounded-lg border border-zinc-200 bg-white p-3">
-          <p className="text-xs text-zinc-500">Subsystems</p>
-          <p className="mt-1 text-2xl font-semibold">{workflow.subsystems.length}</p>
-        </div>
-      </div>
-      <div className="space-y-2">
-        {workflow.subsystems.map((sub) => (
-          <div className="rounded-lg border border-zinc-200 bg-white p-3" key={sub.name}>
-            <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="truncate text-sm font-medium">{sub.name}</span>
-              <span className={`rounded-full px-2 py-1 text-xs ${subsystemClass(sub)}`}>
-                {sub.type}
-              </span>
-            </div>
-            <p className="text-xs leading-5 text-zinc-600">{sub.responsibility}</p>
-          </div>
-        ))}
       </div>
     </InspectorSection>
   );
