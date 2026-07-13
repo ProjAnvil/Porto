@@ -64,11 +64,15 @@ class WorkflowExecutor:
     """后台线程推进 workflow;每 workflow 一把锁防并发 advance。
 
     锁策略:
-    - 每个工作流有独立的 ``guard`` 锁;``_run_async`` 在调用线程 acquire,
-      worker 线程在 ``finally`` 中 release —— 从调用方返回后 guard 仍被持有,
-      直到后台步进完成。
+    - 每个工作流有独立的 ``guard`` 锁;调用线程(acquire 非阻塞)持有 guard
+      **跨过** ``Thread.start()``,worker 线程在 ``finally`` 中 release ——
+      从调用方返回后 guard 仍被持有,直到后台步进完成。
+      guard 在 ``Thread.start()`` 期间绝不被 release,避免两个并发 ``advance``
+      之间出现 TOCTOU 窗口(否则两者都返回 True 并各自起一个 worker,跳过 checkpoint)。
     - ``advance`` 用 ``acquire(blocking=False)`` 试探:拿不到说明正在 running,
       返回 False(调用方应返回 409 Conflict)。
+    - 若 ``Thread.start()`` 失败,调用线程负责 release guard(worker 从未启动,
+      无法在 ``finally`` 里 release)。
     """
 
     def __init__(self, settings: Settings, store: WorkflowStore):
@@ -103,33 +107,43 @@ class WorkflowExecutor:
     def start_workflow(self, workflow_id: str) -> None:
         """启动首个后台步进(retrieve → understand)。
 
-        用于刚创建的 workflow(``status="created"``);不做 running 检查 ——
-        创建后第一次启动不应被 409 拦。
+        用于刚创建的 workflow(``status="created"``)。若该 workflow 已在
+        running(guard 已被持有)——编程错误——抛 ``RuntimeError``。
         """
-        self._run_async(workflow_id)
+        guard = self._guard(workflow_id)
+        if not guard.acquire(blocking=False):
+            raise RuntimeError(f"workflow {workflow_id} already started")
+        try:
+            threading.Thread(
+                target=self._worker, args=(workflow_id, guard), daemon=True
+            ).start()
+        except Exception:
+            guard.release()
+            raise
 
     def advance(self, workflow_id: str) -> bool:
         """推进到下个 checkpoint。
 
         返回:
-            True: 已接受(起后台线程)。
+            True: 已接受(已起后台线程)。
             False: 该 workflow 正在 running,调用方应返回 409。
+
+        锁策略:guard 在 ``Thread.start()`` 之前获取、之后才(由 worker)release,
+        保证两次并发 ``advance`` 不会都返回 True 并各自起 worker(跳过 checkpoint)。
         """
         guard = self._guard(workflow_id)
         if not guard.acquire(blocking=False):
             return False
-        guard.release()
-        self._run_async(workflow_id)
+        try:
+            threading.Thread(
+                target=self._worker, args=(workflow_id, guard), daemon=True
+            ).start()
+        except Exception:
+            guard.release()
+            raise
         return True
 
     # --------------------------------------------------------------- internals
-
-    def _run_async(self, workflow_id: str) -> None:
-        """acquire guard(调用线程),起 daemon worker。"""
-        guard = self._guard(workflow_id)
-        guard.acquire()
-        t = threading.Thread(target=self._worker, args=(workflow_id, guard), daemon=True)
-        t.start()
 
     def _worker(self, workflow_id: str, guard: threading.Lock) -> None:
         try:
@@ -148,6 +162,9 @@ class WorkflowExecutor:
         if row is None:
             logger.warning("workflow not found workflow_id=%s", workflow_id)
             return
+        # 记录本次推进前的 current_step;_persist_state 只落 THIS invocation 实际跑过的步,
+        # 不重写更早的(用户可能已 produced_by="user" 编辑过,保留审计轨迹)。
+        before_step = row["current_step"]
         self.store.update_status(workflow_id, "running")
         # snapshot 重建 Settings(不走 db)——后续配置改动不影响在途 workflow。
         # 延迟导入避免顶层循环依赖(api.deps 引入 supervisor/health 等重组件)。
@@ -164,8 +181,8 @@ class WorkflowExecutor:
             logger.exception("workflow step failed workflow_id=%s", workflow_id)
             self.store.update_status(workflow_id, "failed", error=str(exc))
             return
-        # 落库:新跑过的步的产出(仅 current_step 及之前)
-        self._persist_state(workflow_id, state)
+        # 落库:仅本次实际跑过的步(before_step+1 .. current_step)
+        self._persist_state(workflow_id, state, before_step)
         self.store.update_status(
             workflow_id,
             state.get("status", "running"),
@@ -197,19 +214,36 @@ class WorkflowExecutor:
                 state[k] = v
         return state
 
-    def _persist_state(self, workflow_id: str, state: dict[str, Any]) -> None:
-        """只持久化"已完成步"的产出:current_step 及之前的步。
+    def _persist_state(
+        self,
+        workflow_id: str,
+        state: dict[str, Any],
+        before_step: str | None,
+    ) -> None:
+        """只持久化**本次推进实际跑过**的步的产出。
 
-        避免把还在跑的或未来步的旧数据落库。产出经 ``_to_jsonable`` 转换,
-        确保 Pydantic 模型(SourceChunk/Subsystem/SpecResult)可被 json.dumps。
+        步骤范围:``STEPS[index(before_step)+1 : index(current_step)+1]`` —— 即
+        ``before_step`` 之后的步到 ``current_step`` 之间的步,这些才是 runner 刚执行的。
+        更早的步是从 db 经 ``_rebuild_state`` 回填的,保留其 stored ``produced_by``
+        (用户可能编辑过,不应被这里统一覆盖为 ``"ai"``)。
+
+        产出经 ``_to_jsonable`` 转换,确保 Pydantic 模型
+        (SourceChunk/Subsystem/SpecResult)可被 json.dumps。
         """
         cur = state.get("current_step")
+        # end_idx = current_step 在 STEPS 中的位置;不在则保守地取到末尾。
         if cur in STEPS:
             end_idx = STEPS.index(cur)
         else:
-            # current_step 异常(不在 STEPS 中)——保守地持久化全部
             end_idx = len(STEPS) - 1
-        for step in STEPS[: end_idx + 1]:
+        # start_idx = before_step 之后的第一个步;before 缺失/不在 STEPS 时从 0 起。
+        if before_step in STEPS:
+            start_idx = STEPS.index(before_step) + 1
+        else:
+            start_idx = 0
+        # start_idx 不能超过 end_idx + 1(至少是空切片)。
+        start_idx = min(start_idx, end_idx + 1)
+        for step in STEPS[start_idx : end_idx + 1]:
             out = {
                 k: _to_jsonable(state[k])
                 for k in _STEP_OUTPUT_KEYS.get(step, [])
