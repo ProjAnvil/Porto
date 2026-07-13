@@ -58,6 +58,16 @@ def _isolate_llm_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_rag_singletons():
+    """每个测试前后重置 IndexSupervisor / HealthMonitor 单例，保证 data_dir 隔离。"""
+    from porto_chatbot.api.deps import reset_rag_singletons
+
+    reset_rag_singletons()
+    yield
+    reset_rag_singletons()
+
+
 @pytest.fixture()
 def sample_settings(tmp_path: Path) -> Settings:
     kb = tmp_path / "kb"

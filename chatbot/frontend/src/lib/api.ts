@@ -2,6 +2,8 @@ import type {
   AgentConfig,
   AppSettings,
   ChatResponse,
+  HealthSnapshot,
+  IndexJobStatus,
   KbStats,
   MemoryRecord,
   RagConfig,
@@ -38,14 +40,18 @@ export async function saveAppSettings(settings: {
   );
 }
 
-export async function indexKnowledgeBase(config: RagConfig) {
-  return parseJson<KbStats>(
+export async function indexKnowledgeBase(config: RagConfig): Promise<IndexJobStatus> {
+  return parseJson<IndexJobStatus>(
     await fetch("/api/kb/index", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...config, reset: true }),
     }),
   );
+}
+
+export async function getHealth(): Promise<HealthSnapshot> {
+  return parseJson<HealthSnapshot>(await fetch("/api/health"));
 }
 
 export async function sendChat(

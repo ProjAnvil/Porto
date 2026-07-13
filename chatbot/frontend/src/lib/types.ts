@@ -112,10 +112,55 @@ export type MemoryRecord = {
   created_at: string;
 };
 
+export type IndexJobStatus = {
+  status: "idle" | "running" | "succeeded" | "failed" | "interrupted";
+  source: string | null;
+  reset: boolean;
+  progress_done: number;
+  progress_total: number;
+  chunks_done: number;
+  started_at: string | null;
+  heartbeat_at: string | null;
+  finished_at: string | null;
+  last_indexed_at: string | null;
+  last_stats: KbStats | null;
+  error: string | null;
+};
+
 export type KbStats = {
   kb_path: string;
   documents: number;
   chunks: number;
+  embedding_provider?: string;
+  embedding_model?: string;
+  embedding_dimensions?: number | null;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  rag_index?: IndexJobStatus;
+};
+
+export type DependencyName = "embedding" | "agent_llm" | "critic_llm";
+export type DependencyStatus = "ok" | "degraded" | "down" | "unknown";
+export type DependencyHealth = {
+  name: DependencyName;
+  status: DependencyStatus;
+  latency_ms: number | null;
+  detail: string | null;
+  checked_at: string | null;
+};
+
+export type FeatureName = "chat" | "rag_search" | "workflow";
+export type FeatureAvailability = {
+  name: FeatureName;
+  available: boolean;
+  reason: string | null;
+};
+
+export type HealthSnapshot = {
+  dependencies: DependencyHealth[];
+  features: FeatureAvailability[];
+  rag_index: IndexJobStatus;
+  updated_at: string | null;
 };
 
 export type InspectorState = {

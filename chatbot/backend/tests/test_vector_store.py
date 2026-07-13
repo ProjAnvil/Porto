@@ -16,10 +16,10 @@ def test_build_and_search(sample_settings):
     assert results[0].score > 0
 
 
-def test_ensure_index_rebuilds_when_embedding_dimension_changes(sample_settings):
-    first_store = LocalVectorStore(sample_settings)
-    first_stats = first_store.build()
-    assert first_stats.embedding_dimensions == 128
+def test_ensure_index_no_rebuild_on_dimension_change(sample_settings):
+    """新设计：维度变化后 ensure_index 不再自动重建（重建由 IndexSupervisor 手动触发）；
+    search 因维度不匹配直接返回空。"""
+    LocalVectorStore(sample_settings).build()  # 128 维
 
     changed_settings = Settings(
         kb_path=sample_settings.kb_path,
@@ -30,8 +30,8 @@ def test_ensure_index_rebuilds_when_embedding_dimension_changes(sample_settings)
     )
     changed_store = LocalVectorStore(changed_settings)
 
-    rebuilt_stats = changed_store.ensure_index()
+    stats = changed_store.ensure_index()
     results = changed_store.search("支付 风控 refund", top_k=2)
 
-    assert rebuilt_stats.embedding_dimensions == 64
-    assert results
+    assert stats.embedding_dimensions == 128  # 旧维度，未重建
+    assert results == []  # 维度不匹配 → 不可用，返回空

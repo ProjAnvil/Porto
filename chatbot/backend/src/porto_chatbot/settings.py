@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     kb_path: Path = Path.home() / ".scv" / "analysis"
     data_dir: Path = Path.home() / ".porto"
     log_dir: Path = Path.home() / ".porto" / "logs"
+    # 捆绑部署：前端静态导出（next build:static）产物目录，若存在则由后端同源托管
+    static_dir: Path = BACKEND_DIR / "static"
     embedding_dimensions: int = 384
     embedding_provider: Literal["local", "ollama"] = "local"
     embedding_model: str = "qwen3-embedding:0.6b"
@@ -72,7 +74,11 @@ class Settings(BaseSettings):
     # --- 节点内 tool calling（Phase 0/1）---
     agent_max_tool_turns: int = Field(default=4, ge=1, le=20)
 
-    @field_validator("kb_path", "data_dir", "log_dir", mode="after")
+    # --- RAG 监督 / 健康探测 ---
+    health_probe_interval: int = Field(default=30, ge=5)
+    health_probe_timeout: int = Field(default=5, ge=1)
+
+    @field_validator("kb_path", "data_dir", "log_dir", "static_dir", mode="after")
     @classmethod
     def expand_path(cls, value: Path) -> Path:
         return value.expanduser()

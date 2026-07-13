@@ -1,7 +1,22 @@
 from __future__ import annotations
 
-from .chat import ChatMessage, ChatRequest, ChatResponse, MemoryRecord, MemorySearchResponse
-from .common import IndexStats, SourceChunk
+from .chat import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    MemoryRecord,
+    MemorySearchResponse,
+)
+from .common import (
+    DependencyHealth,
+    DependencyName,
+    FeatureAvailability,
+    HealthSnapshot,
+    IndexJobStatus,
+    IndexStats,
+    IndexStatsView,
+    SourceChunk,
+)
 from .payload import (
     AgentSettingsPayload,
     AppSettingsPayload,
@@ -18,6 +33,12 @@ from .workflow import AgentStep, Subsystem, WorkflowResponse
 __all__ = [
     "SourceChunk",
     "IndexStats",
+    "IndexJobStatus",
+    "IndexStatsView",
+    "DependencyHealth",
+    "DependencyName",
+    "FeatureAvailability",
+    "HealthSnapshot",
     "RagSettingsPayload",
     "AgentSettingsPayload",
     "AppSettingsPayload",

@@ -12,7 +12,7 @@ from ...llm import LLMClient, format_sources
 from ...logging_utils import get_component_logger
 from ...memory import get_compacted_history
 from ...models import ChatRequest, ChatResponse, EvalCase
-from ..deps import apply_rag_settings, effective_rag_settings, get_memory, get_store
+from ..deps import apply_rag_settings, effective_rag_settings, get_index_supervisor, get_memory, get_store
 from ..sse import _ai_sdk_sse, _chat_request_from_stream_body, _text_chunks
 
 logger = get_component_logger("api")
@@ -87,6 +87,42 @@ def _direct_chat_answer(req: ChatRequest, runtime_settings, decision: IntentDeci
     )
 
 
+_RAG_UNAVAILABLE_HINTS = {
+    "reindexing": "知识库正在重建索引，请等待完成后再提问。",
+    "index_unavailable": "知识库索引不可用，请在设置中触发重新索引后再提问。",
+}
+
+
+def _rag_unavailable_hint(reason: str | None) -> str:
+    return _RAG_UNAVAILABLE_HINTS.get(reason or "", "知识库当前不可用，请稍后重试。")
+
+
+def _rag_unavailable_answer(req: ChatRequest, reason: str | None) -> ChatResponse:
+    hint = _rag_unavailable_hint(reason)
+    logger.info("chat rag unavailable session_id=%s reason=%s", req.session_id, reason)
+    return ChatResponse(
+        answer=hint,
+        sources=[],
+        memory=[],
+        evaluation={"score": 0.0, "passed": False, "cases": []},
+        steps=[
+            {
+                "name": "route_intent",
+                "status": "completed",
+                "summary": f"rag unavailable: {reason}",
+                "data": {"reason": reason},
+            },
+            {
+                "name": "retrieve_knowledge",
+                "status": "skipped",
+                "summary": hint,
+                "data": {},
+            },
+            {"name": "answer", "status": "completed", "summary": "RAG 不可用，返回提示", "data": {}},
+        ],
+    )
+
+
 @router.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     logger.info(
@@ -102,6 +138,10 @@ def chat(req: ChatRequest):
     decision = route_chat_intent(req.message, runtime_settings, llm)
     if decision.intent == "direct":
         return _direct_chat_answer(req, runtime_settings, decision, llm)
+
+    available, reason = get_index_supervisor().rag_available()
+    if not available:
+        return _rag_unavailable_answer(req, reason)
 
     store = get_store(runtime_settings)
     memory = get_memory(runtime_settings)
@@ -212,6 +252,23 @@ async def chat_stream(body: dict[str, Any]):
                 yield _ai_sdk_sse({"type": "finish-step"})
                 yield _ai_sdk_sse({"type": "finish", "finishReason": "stop", "messageMetadata": {"source_count": 0}})
                 yield "data: [DONE]\n\n"
+                return
+
+            available, reason = get_index_supervisor().rag_available()
+            if not available:
+                hint = _rag_unavailable_hint(reason)
+                yield _ai_sdk_sse({"type": "start", "messageMetadata": {"session_id": req.session_id}})
+                yield _ai_sdk_sse({"type": "start-step"})
+                yield _ai_sdk_sse({"type": "text-start", "id": text_id})
+                for chunk in _text_chunks(hint):
+                    yield _ai_sdk_sse({"type": "text-delta", "id": text_id, "delta": chunk})
+                yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+                yield _ai_sdk_sse({"type": "finish-step"})
+                yield _ai_sdk_sse(
+                    {"type": "finish", "finishReason": "stop", "messageMetadata": {"source_count": 0}}
+                )
+                yield "data: [DONE]\n\n"
+                logger.info("chat stream rag unavailable session_id=%s reason=%s", req.session_id, reason)
                 return
 
             store = get_store(runtime_settings)

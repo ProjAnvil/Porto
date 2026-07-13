@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from ..agent import PortoAgent
 from ..config_store import ConfigStore
+from ..health import HealthMonitor
+from ..index_supervisor import IndexSupervisor
 from ..llm import LLMClient
+from ..locking import DbLockStore
 from ..logging_utils import get_component_logger
 from ..memory import MemoryStore
 from ..models import AgentSettingsPayload, RagSettingsPayload
@@ -111,3 +114,58 @@ def get_agent() -> PortoAgent:
 
 def get_memory(runtime_settings=None) -> MemoryStore:
     return MemoryStore(runtime_settings or current_settings())
+
+
+# ---------------- RAG 监督 / 健康监控 单例 ----------------
+# 按 data_dir 缓存：data_dir 变化（如测试用 tmp_path）时自动重建，保证隔离。
+
+_rag_singletons: dict = {}
+
+
+def _ensure_rag_singletons() -> dict:
+    settings = current_settings()
+    key = str(settings.data_dir)
+    entry = _rag_singletons.get(key)
+    if entry is not None:
+        return entry
+    lock_store = DbLockStore(settings)
+    supervisor = IndexSupervisor(
+        lock_store=lock_store,
+        store_factory=lambda s: LocalVectorStore(s),
+        settings_provider=current_settings,
+    )
+    health = HealthMonitor(
+        settings_provider=current_settings,
+        rag_available=supervisor.rag_available,
+        rag_status=supervisor.get_status,
+    )
+    entry = {"lock": lock_store, "supervisor": supervisor, "health": health}
+    _rag_singletons[key] = entry
+    return entry
+
+
+def get_lock_store() -> DbLockStore:
+    return _ensure_rag_singletons()["lock"]
+
+
+def get_index_supervisor() -> IndexSupervisor:
+    return _ensure_rag_singletons()["supervisor"]
+
+
+def get_health_monitor() -> HealthMonitor:
+    return _ensure_rag_singletons()["health"]
+
+
+def reset_rag_singletons() -> None:
+    """测试用：停止并清空单例，保证每个测试的 data_dir 隔离。"""
+    global _rag_singletons
+    for entry in _rag_singletons.values():
+        try:
+            entry["supervisor"].stop()
+        except Exception:
+            pass
+        try:
+            entry["health"].stop()
+        except Exception:
+            pass
+    _rag_singletons = {}

@@ -11,7 +11,7 @@ from ...documents import read_document
 from ...llm import LLMClient
 from ...logging_utils import get_component_logger
 from ...models import WorkflowRequest, WorkflowResponse
-from ..deps import apply_rag_settings, effective_rag_settings, get_memory, get_store
+from ..deps import apply_rag_settings, effective_rag_settings, get_index_supervisor, get_memory, get_store
 
 logger = get_component_logger("api")
 
@@ -37,6 +37,9 @@ def run_porto_workflow(req: WorkflowRequest):
         content=req.text[:2000],
         metadata={"kind": "workflow_request"},
     )
+    available, reason = get_index_supervisor().rag_available()
+    if not available:
+        raise HTTPException(status_code=503, detail=f"RAG unavailable: {reason}")
     agent = PortoAgent(runtime_settings, get_store(runtime_settings), LLMClient(runtime_settings))
     response = agent.run(req.text, project_name=req.project_name, top_k=top_k)
     get_memory(runtime_settings).add(
@@ -76,6 +79,9 @@ async def run_porto_workflow_upload(
     rag_settings = effective_rag_settings()
     resolved_top_k = top_k or rag_settings.top_k
     runtime_settings = apply_rag_settings(top_k=resolved_top_k)
+    available, reason = get_index_supervisor().rag_available()
+    if not available:
+        raise HTTPException(status_code=503, detail=f"RAG unavailable: {reason}")
     agent = PortoAgent(runtime_settings, get_store(runtime_settings), LLMClient(runtime_settings))
     response = agent.run(text, project_name=project_name, top_k=resolved_top_k)
     logger.info(

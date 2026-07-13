@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from ..logging_utils import get_component_logger
+from ..settings import settings
+from .deps import get_health_monitor, get_index_supervisor
 from .routes import (
     chat,
     knowledge,
@@ -21,7 +25,28 @@ from .routes import (
 
 logger = get_component_logger("api")
 
-app = FastAPI(title="Porto Chatbot API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动常驻线程：IndexSupervisor（唯一 reindex 执行者）+ HealthMonitor。
+
+    supervisor.start() 仅清理上次崩溃残留（running→interrupted），**不自动重建**；
+    重建始终由用户手动触发。关闭时优雅停止两个 daemon。
+    """
+    supervisor = get_index_supervisor()
+    health = get_health_monitor()
+    supervisor.start()
+    health.start()
+    logger.info("lifespan startup: index supervisor + health monitor started")
+    try:
+        yield
+    finally:
+        supervisor.stop()
+        health.stop()
+        logger.info("lifespan shutdown: index supervisor + health monitor stopped")
+
+
+app = FastAPI(title="Porto Chatbot API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -63,3 +88,14 @@ app.include_router(chat.router)
 app.include_router(workflow.router)
 app.include_router(memory.router)
 app.include_router(eval_routes.router)
+
+# 捆绑部署：若前端静态导出产物存在（`npm run build:static` 后拷贝到 static_dir），
+# 则由后端同源托管，浏览器直接以相对路径访问 /api/*，无需单独的 Node 进程或反代。
+# 挂载在所有 /api 路由之后，保证 API 优先匹配。
+if settings.static_dir.is_dir():
+    app.mount(
+        "/",
+        StaticFiles(directory=settings.static_dir, html=True),
+        name="frontend",
+    )
+    logger.info("serving bundled frontend from %s", settings.static_dir)

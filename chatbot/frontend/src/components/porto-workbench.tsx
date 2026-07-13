@@ -35,6 +35,7 @@ import {
   defaultAgentConfig,
   defaultRagConfig,
   getAppSettings,
+  getHealth,
   getKbStats,
   indexKnowledgeBase,
   listMemory,
@@ -46,6 +47,7 @@ import {
 import type {
   AgentConfig,
   ChatResponseEval,
+  HealthSnapshot,
   InspectorState,
   KbStats,
   MemoryRecord,
@@ -99,6 +101,7 @@ export function PortoWorkbench() {
   const [ragConfig, setRagConfig] = useState<RagConfig>(defaultRagConfig);
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(defaultAgentConfig);
   const [kbStats, setKbStats] = useState<KbStats | null>(null);
+  const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("");
   const [inspector, setInspector] = useState<InspectorState>(emptyInspector);
@@ -137,6 +140,26 @@ export function PortoWorkbench() {
       cancelled = true;
     };
   }, [sessionId]);
+
+  // 健康面板：周期轮询 /api/health（依赖级 + 功能级可用度）
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const snap = await getHealth();
+        if (active) setHealth(snap);
+      } catch {
+        /* 健康面板非关键，失败静默 */
+      }
+      if (active) timer = setTimeout(poll, 15000);
+    }
+    poll();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, []);
 
   const transport = useMemo(
     () =>
@@ -189,10 +212,28 @@ export function PortoWorkbench() {
   });
 
   async function refreshIndex(nextConfig: RagConfig = ragConfig) {
-    setBusyLabel("索引知识库");
     setError("");
+    setBusyLabel("索引知识库");
     try {
-      setKbStats(await indexKnowledgeBase(nextConfig));
+      const submitted = await indexKnowledgeBase(nextConfig);
+      if (submitted.status !== "running") {
+        setKbStats(await getKbStats());
+        return;
+      }
+      // 异步 reindex：轮询 /api/kb/stats 直到任务结束，期间实时展示进度
+      const deadline = Date.now() + 180_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const stats = await getKbStats();
+        setKbStats(stats);
+        const st = stats.rag_index?.status;
+        if (st && st !== "running") {
+          if (st === "failed" || st === "interrupted") {
+            setError(stats.rag_index?.error || `索引未完成（${st}）`);
+          }
+          break;
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "知识库索引失败");
     } finally {
@@ -326,6 +367,7 @@ export function PortoWorkbench() {
               agentConfig={agentConfig}
               busy={Boolean(busyLabel)}
               error={error}
+              health={health}
               kbStats={kbStats}
               ragConfig={ragConfig}
               onRefreshIndex={refreshIndex}
@@ -636,6 +678,7 @@ function SettingsPage({
   agentConfig,
   busy,
   error,
+  health,
   kbStats,
   ragConfig,
   onRefreshIndex,
@@ -645,6 +688,7 @@ function SettingsPage({
   agentConfig: AgentConfig;
   busy: boolean;
   error: string;
+  health: HealthSnapshot | null;
   kbStats: KbStats | null;
   ragConfig: RagConfig;
   onRefreshIndex: (config?: RagConfig) => Promise<void>;
@@ -653,6 +697,34 @@ function SettingsPage({
 }) {
   const [section, setSection] = useState<SettingsSection>("rag");
   const [savedLabel, setSavedLabel] = useState("");
+
+  const ri = kbStats?.rag_index;
+  const progressPct =
+    ri && ri.progress_total > 0 ? Math.round((ri.progress_done / ri.progress_total) * 100) : 0;
+  const lastIndexed = ri?.last_indexed_at ? new Date(ri.last_indexed_at).toLocaleString() : null;
+  const depLabels: Record<string, string> = {
+    embedding: "Embedding",
+    agent_llm: "Agent LLM",
+    critic_llm: "Critic LLM",
+  };
+  const featLabels: Record<string, string> = {
+    chat: "聊天",
+    rag_search: "RAG 检索",
+    workflow: "PRD 拆解",
+  };
+  const statusLabels: Record<string, string> = {
+    idle: "空闲",
+    running: "索引中",
+    succeeded: "已完成",
+    failed: "失败",
+    interrupted: "已中断",
+  };
+  const depStatusColor: Record<string, string> = {
+    ok: "text-emerald-600",
+    degraded: "text-amber-600",
+    down: "text-rose-600",
+    unknown: "text-zinc-400",
+  };
 
   const markSaved = (label: string) => {
     setSavedLabel(label);
@@ -753,6 +825,64 @@ function SettingsPage({
                 </p>
               </div>
             </div>
+
+            {ri ? (
+              <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-zinc-700">
+                    {ri.status === "running"
+                      ? `索引中… ${ri.progress_done}/${ri.progress_total} 文档（${ri.chunks_done} chunks）`
+                      : `索引状态：${statusLabels[ri.status] ?? ri.status}`}
+                  </span>
+                  {lastIndexed ? (
+                    <span className="text-xs text-zinc-500">上次索引：{lastIndexed}</span>
+                  ) : null}
+                </div>
+                {ri.status === "running" ? (
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
+                    <div
+                      className="h-full bg-zinc-950 transition-all"
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
+                ) : null}
+                {ri.error ? (
+                  <p className="mt-2 text-xs text-rose-600">{ri.error}</p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {health ? (
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+                  <p className="text-xs text-zinc-500">依赖健康度</p>
+                  <ul className="mt-2 space-y-1 text-sm">
+                    {health.dependencies.map((d) => (
+                      <li key={d.name} className="flex items-center justify-between">
+                        <span className="text-zinc-700">{depLabels[d.name] ?? d.name}</span>
+                        <span className={depStatusColor[d.status] ?? "text-zinc-400"}>
+                          {d.status}
+                          {d.latency_ms != null ? ` · ${d.latency_ms}ms` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+                  <p className="text-xs text-zinc-500">功能可用度</p>
+                  <ul className="mt-2 space-y-1 text-sm">
+                    {health.features.map((f) => (
+                      <li key={f.name} className="flex items-center justify-between">
+                        <span className="text-zinc-700">{featLabels[f.name] ?? f.name}</span>
+                        <span className={f.available ? "text-emerald-600" : "text-rose-600"}>
+                          {f.available ? "可用" : `不可用${f.reason ? `（${f.reason}）` : ""}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : null}
           </SettingsCard>
         ) : null}
       </section>
