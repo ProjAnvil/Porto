@@ -1,7 +1,7 @@
 # RAG 检索与配置增强 · 设计文档
 
 - 日期：2026-07-13
-- 状态：已与用户逐节确认，待实现
+- 状态：已实现（2026-07-13，9 commits）
 - 上游依赖：2026-07-12 已落地的 IndexSupervisor（单 worker reindex + 持久化 service_locks + HealthMonitor）
 
 ## 1. 背景与目标
