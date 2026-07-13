@@ -95,7 +95,7 @@ export type AgentConfig = {
   // Spec refine loop
   spec_refine_enabled: boolean;
   spec_refine_max_iter: number;
-  spec_refine_parallel: boolean;
+  spec_refine_concurrency: number;
   spec_refine_pass_score: number;
   spec_refine_budget_tokens: number;
   // Workflow 条件回边
@@ -108,6 +108,8 @@ export type AgentConfig = {
   context_char_budget: number;
   agent_stream_enabled: boolean;
   agent_max_tool_turns: number;
+  // HTTP request timeout (seconds) for agent LLM calls
+  agent_request_timeout: number;
 };
 
 export type AppSettings = {
@@ -180,4 +182,46 @@ export type InspectorState = {
   memory: SourceChunk[];
   evaluation: ChatResponseEval | null;
   workflow: WorkflowResponse | null;
+};
+
+export type WorkflowStepName =
+  | "retrieve"
+  | "understand"
+  | "identify"
+  | "generate"
+  | "evaluate";
+
+export type WorkflowStatus =
+  | "created"
+  | "running"
+  | "awaiting_input"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+export type WorkflowOutputEntry = {
+  output: Record<string, unknown>;
+  produced_by: "ai" | "user";
+  produced_at: string;
+};
+
+export type WorkflowDetail = {
+  workflow_id: string;
+  session_id: string;
+  project_name: string | null;
+  status: WorkflowStatus;
+  current_step: WorkflowStepName | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  outputs: Partial<Record<WorkflowStepName, WorkflowOutputEntry>>;
+};
+
+export type WorkflowListItem = {
+  workflow_id: string;
+  project_name: string | null;
+  status: WorkflowStatus;
+  current_step: WorkflowStepName | null;
+  created_at: string;
+  score: number | null;
 };

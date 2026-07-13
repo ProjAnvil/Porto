@@ -8,7 +8,9 @@ import type {
   MemoryRecord,
   RagConfig,
   SourceChunk,
-  WorkflowResponse,
+  WorkflowDetail,
+  WorkflowListItem,
+  WorkflowStepName,
 } from "./types";
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -73,39 +75,78 @@ export async function sendChat(
   );
 }
 
-export async function runWorkflow(
-  text: string,
-  projectName: string | undefined,
-  sessionId: string,
-  config: RagConfig,
-  agent?: AgentConfig,
-): Promise<WorkflowResponse> {
-  return parseJson<WorkflowResponse>(
+export async function createWorkflow(body: {
+  text: string;
+  project_name?: string;
+  session_id: string;
+  rag?: RagConfig;
+  agent?: AgentConfig;
+  top_k?: number;
+}): Promise<{ workflow_id: string; status: string }> {
+  return parseJson<{ workflow_id: string; status: string }>(
     await fetch("/api/porto/workflows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        project_name: projectName || undefined,
-        session_id: sessionId,
-        rag: config,
-        agent,
-        top_k: config.top_k,
-      }),
+      body: JSON.stringify(body),
     }),
   );
 }
 
-export async function runWorkflowUpload(file: File, projectName?: string) {
+export async function createWorkflowUpload(
+  file: File,
+  projectName?: string,
+): Promise<{ workflow_id: string; status: string }> {
   const form = new FormData();
   form.set("file", file);
   if (projectName) form.set("project_name", projectName);
-  return parseJson<WorkflowResponse>(
+  return parseJson<{ workflow_id: string; status: string }>(
     await fetch("/api/porto/workflows/upload", {
       method: "POST",
       body: form,
     }),
   );
+}
+
+export async function listWorkflows(sessionId?: string) {
+  const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  return parseJson<{ items: WorkflowListItem[] }>(
+    await fetch(`/api/porto/workflows${q}`),
+  );
+}
+
+export async function getWorkflow(id: string) {
+  return parseJson<WorkflowDetail>(
+    await fetch(`/api/porto/workflows/${encodeURIComponent(id)}`),
+  );
+}
+
+export async function advanceWorkflow(id: string) {
+  return parseJson<{ workflow_id: string; status: string }>(
+    await fetch(`/api/porto/workflows/${encodeURIComponent(id)}/advance`, {
+      method: "POST",
+    }),
+  );
+}
+
+export async function saveStepOutput(
+  id: string,
+  step: WorkflowStepName,
+  output: Record<string, unknown>,
+) {
+  return parseJson<WorkflowDetail>(
+    await fetch(`/api/porto/workflows/${encodeURIComponent(id)}/steps/${step}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(output),
+    }),
+  );
+}
+
+export async function deleteWorkflow(id: string) {
+  const r = await fetch(`/api/porto/workflows/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok) throw new Error(await r.text());
 }
 
 export async function listMemory(sessionId: string) {
@@ -155,7 +196,7 @@ export const defaultAgentConfig: AgentConfig = {
   critic_max_tokens: null,
   spec_refine_enabled: true,
   spec_refine_max_iter: 3,
-  spec_refine_parallel: true,
+  spec_refine_concurrency: 3,
   spec_refine_pass_score: 10,
   spec_refine_budget_tokens: 40000,
   workflow_rework_enabled: true,
@@ -165,4 +206,5 @@ export const defaultAgentConfig: AgentConfig = {
   context_char_budget: 16000,
   agent_stream_enabled: true,
   agent_max_tool_turns: 4,
+  agent_request_timeout: 120,
 };
