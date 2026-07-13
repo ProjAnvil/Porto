@@ -16,6 +16,9 @@ RAG_SETTING_KEYS = {
     "chunk_size",
     "chunk_overlap",
     "top_k",
+    "kb_dirs",
+    "retrieval_method",
+    "bm25_top_k",
 }
 
 AGENT_SETTING_KEYS = {

@@ -12,6 +12,9 @@ class RagSettingsPayload(BaseModel):
     chunk_size: int | None = Field(default=None, ge=200, le=8000)
     chunk_overlap: int | None = Field(default=None, ge=0, le=2000)
     top_k: int | None = Field(default=None, ge=1, le=30)
+    kb_dirs: list[str] | None = None
+    retrieval_method: Literal["vector", "bm25", "hybrid"] | None = None
+    bm25_top_k: int | None = Field(default=None, ge=1, le=100)
 
 
 class AgentSettingsPayload(BaseModel):

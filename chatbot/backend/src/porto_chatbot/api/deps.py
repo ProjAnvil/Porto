@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..agent import PortoAgent
 from ..config_store import ConfigStore
 from ..health import HealthMonitor
@@ -40,6 +42,9 @@ def default_rag_settings() -> RagSettingsPayload:
         chunk_size=settings.max_chunk_chars,
         chunk_overlap=settings.chunk_overlap,
         top_k=settings.top_k,
+        kb_dirs=[str(d) for d in settings.kb_dirs],
+        retrieval_method=settings.retrieval_method,
+        bm25_top_k=settings.bm25_top_k,
     )
 
 
@@ -100,6 +105,8 @@ def apply_rag_settings(
     updates.update(extra)
     if "chunk_size" in updates:
         updates["max_chunk_chars"] = updates.pop("chunk_size")
+    if "kb_dirs" in updates and updates["kb_dirs"] is not None:
+        updates["kb_dirs"] = [Path(d) for d in updates["kb_dirs"]]
     return settings.model_copy(update=updates)
 
 
