@@ -147,15 +147,20 @@ function readStepDraft(detail: WorkflowDetail, step: WorkflowStepName): string {
   return "";
 }
 
-/** 解析 generate 步骤的 markdown 草稿（## name 切分）回 specs dict */
+/**
+ * 解析 generate 步骤的 markdown 草稿（## name 切分）回 specs dict。
+ * readStepDraft 用 "\n\n---\n\n" 连接多段 specs，split 后第二段起会带前导空白，
+ * 必须 trim 每个 block 再匹配，否则 ^## 锚定失败 → 多 spec 静默丢失。
+ * body 设为可选以兼容仅有标题的 spec。
+ */
 function parseSpecsDraft(draft: string): Record<string, string> {
   const result: Record<string, string> = {};
   const blocks = draft.split(/^---$/m);
   for (const block of blocks) {
-    const match = block.match(/^##\s+(.+?)\s*\n([\s\S]*)$/);
+    const match = block.trim().match(/^##\s+(.+?)(?:\s*\n([\s\S]*))?$/);
     if (match) {
       const name = match[1].trim();
-      const body = match[2].trim();
+      const body = (match[2] ?? "").trim();
       if (name) result[name] = body;
     }
   }
@@ -604,6 +609,7 @@ export function PortoWorkbench() {
               setProjectName={setProjectName}
               setSelectedFile={setSelectedFile}
               text={workflowText}
+              workflowId={workflowId}
             />
           )}
         </main>
@@ -1646,7 +1652,10 @@ function AgentSettingsForm({
               max={10}
               value={agentDraft.spec_refine_concurrency}
               onChange={(event) =>
-                updateAgent("spec_refine_concurrency", Number(event.target.value))
+                updateAgent(
+                  "spec_refine_concurrency",
+                  Math.min(10, Math.max(1, Number(event.target.value))),
+                )
               }
             />
           </label>
@@ -1808,6 +1817,7 @@ function WorkflowPanel({
   setProjectName,
   setSelectedFile,
   text,
+  workflowId,
 }: {
   busy: boolean;
   detail: WorkflowDetail | null;
@@ -1824,6 +1834,7 @@ function WorkflowPanel({
   setProjectName: (value: string) => void;
   setSelectedFile: (value: File | null) => void;
   text: string;
+  workflowId: string | null;
 }) {
   const curStep = detail?.current_step ?? null;
   const curIdx = curStep ? WORKFLOW_STEPS.indexOf(curStep) : -1;
@@ -1841,7 +1852,7 @@ function WorkflowPanel({
         </div>
       ) : null}
 
-      {!detail ? (
+      {!workflowId && !detail ? (
         <>
           <div className="mb-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
             <label className="block">
@@ -1884,6 +1895,15 @@ function WorkflowPanel({
               : "未上传文件时，将使用文本框内容。"}
           </p>
         </>
+      ) : null}
+
+      {/* workflowId 已设置但首次轮询/加载尚未返回 detail —— 显示加载态，
+          防止此时输入表单 + 运行按钮可用导致重复创建工作流。 */}
+      {workflowId && !detail ? (
+        <div className="my-6 flex items-center gap-2 text-sm text-zinc-500">
+          <Loader2 className="animate-spin" size={16} />
+          加载工作流…
+        </div>
       ) : null}
 
       {detail ? (
@@ -1938,13 +1958,35 @@ function WorkflowPanel({
           {detail.status === "completed" ? (
             <CompletedView detail={detail} />
           ) : null}
+
+          {/* 未显式覆盖的状态（interrupted / created / 其他）：显示中性横幅 + 继续/重试按钮，
+              使服务重启后的 interrupted 工作流也能被 resume。 */}
+          {detail.status !== "running" &&
+          detail.status !== "failed" &&
+          detail.status !== "completed" &&
+          !showCheckpoint ? (
+            <div className="my-4 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
+              工作流状态: {detail.status}
+              <button
+                className="ml-2 underline"
+                onClick={onAdvance}
+                type="button"
+              >
+                继续/重试
+              </button>
+            </div>
+          ) : null}
         </>
       ) : null}
 
       <div className="mt-3 flex items-center justify-end gap-3">
         <button
           className="flex items-center gap-2 rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
-          disabled={busy || (!text.trim() && !selectedFile)}
+          disabled={
+            busy ||
+            (!!workflowId && !detail) ||
+            (!text.trim() && !selectedFile)
+          }
           onClick={onRun}
           type="button"
         >
@@ -2100,7 +2142,8 @@ function MarkdownCheckpoint({
       )}
       <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-2">
         <button
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100"
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={!draft.trim()}
           onClick={onSave}
           type="button"
         >
