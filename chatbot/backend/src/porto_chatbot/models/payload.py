@@ -41,9 +41,10 @@ class AgentSettingsPayload(BaseModel):
     # Spec refine loop
     spec_refine_enabled: bool | None = None
     spec_refine_max_iter: int | None = Field(default=None, ge=0, le=10)
-    spec_refine_parallel: bool | None = None
+    spec_refine_concurrency: int | None = Field(default=None, ge=1, le=10)
     spec_refine_pass_score: int | None = Field(default=None, ge=0, le=12)
     spec_refine_budget_tokens: int | None = Field(default=None, ge=1000)
+    agent_request_timeout: int | None = Field(default=None, ge=10)
     # Workflow 条件回边
     workflow_rework_enabled: bool | None = None
     workflow_rework_max_passes: int | None = Field(default=None, ge=0, le=5)

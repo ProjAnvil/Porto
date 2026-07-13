@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     # --- Spec refine loop（Phase 2）---
     spec_refine_enabled: bool = True
     spec_refine_max_iter: int = Field(default=3, ge=0, le=10)
-    spec_refine_parallel: bool = True
+    spec_refine_concurrency: int = Field(default=3, ge=1, le=10)
     spec_refine_pass_score: int = Field(default=10, ge=0, le=12)
     spec_refine_budget_tokens: int = Field(default=40000, ge=1000)
 
@@ -73,6 +73,9 @@ class Settings(BaseSettings):
 
     # --- 节点内 tool calling（Phase 0/1）---
     agent_max_tool_turns: int = Field(default=4, ge=1, le=20)
+
+    # --- LLM 请求超时（秒），抗单次调用挂死 ---
+    agent_request_timeout: int = Field(default=120, ge=10)
 
     # --- RAG 监督 / 健康探测 ---
     health_probe_interval: int = Field(default=30, ge=5)

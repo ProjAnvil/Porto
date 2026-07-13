@@ -42,7 +42,7 @@ AGENT_SETTING_KEYS = {
     "critic_max_tokens",
     "spec_refine_enabled",
     "spec_refine_max_iter",
-    "spec_refine_parallel",
+    "spec_refine_concurrency",
     "spec_refine_pass_score",
     "spec_refine_budget_tokens",
     "workflow_rework_enabled",
@@ -52,6 +52,7 @@ AGENT_SETTING_KEYS = {
     "context_char_budget",
     "agent_stream_enabled",
     "agent_max_tool_turns",
+    "agent_request_timeout",
 }
 
 SENSITIVE_SETTING_KEYS = {"agent_api_key", "critic_api_key"}

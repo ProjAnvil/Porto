@@ -71,7 +71,7 @@ def default_agent_settings() -> AgentSettingsPayload:
         critic_max_tokens=settings.critic_max_tokens,
         spec_refine_enabled=settings.spec_refine_enabled,
         spec_refine_max_iter=settings.spec_refine_max_iter,
-        spec_refine_parallel=settings.spec_refine_parallel,
+        spec_refine_concurrency=settings.spec_refine_concurrency,
         spec_refine_pass_score=settings.spec_refine_pass_score,
         spec_refine_budget_tokens=settings.spec_refine_budget_tokens,
         workflow_rework_enabled=settings.workflow_rework_enabled,
@@ -81,6 +81,7 @@ def default_agent_settings() -> AgentSettingsPayload:
         context_char_budget=settings.context_char_budget,
         agent_stream_enabled=settings.agent_stream_enabled,
         agent_max_tool_turns=settings.agent_max_tool_turns,
+        agent_request_timeout=settings.agent_request_timeout,
     )
 
 
