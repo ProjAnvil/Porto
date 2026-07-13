@@ -26,15 +26,15 @@ def generate_specs(agent, state: PortoAgentState) -> PortoAgentState:
 
     results: dict[str, SpecResult] = {}
     parallel = (
-        agent.settings.spec_refine_parallel
-        and agent.llm.enabled
+        agent.llm.enabled
         and agent.settings.spec_refine_enabled
         and len(subs) > 1
     )
     if parallel:
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=min(8, len(subs))) as pool:
+        max_workers = min(agent.settings.spec_refine_concurrency, len(subs))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(_gen, sub): sub for sub in subs}
             for future, sub in futures.items():
                 results[sub.name] = future.result()
