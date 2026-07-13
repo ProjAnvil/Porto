@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..logging_utils import get_component_logger
 from ..settings import settings
-from .deps import get_health_monitor, get_index_supervisor
+from .deps import get_health_monitor, get_index_supervisor, get_workflow_store
 from .routes import (
     chat,
     knowledge,
@@ -37,6 +37,9 @@ async def lifespan(app: FastAPI):
     health = get_health_monitor()
     supervisor.start()
     health.start()
+    n = get_workflow_store().mark_running_interrupted_on_startup()
+    if n:
+        logger.info("workflow startup recovery: %s running→interrupted", n)
     logger.info("lifespan startup: index supervisor + health monitor started")
     try:
         yield
