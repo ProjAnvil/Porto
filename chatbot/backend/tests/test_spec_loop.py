@@ -18,7 +18,7 @@ from porto_chatbot.specs import (
 def _settings(tmp_path, **overrides) -> Settings:
     # agent_api_key 有 validation_alias，init 传字段名无效，故构造后用 setattr
     s = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
         agent_provider="openai",

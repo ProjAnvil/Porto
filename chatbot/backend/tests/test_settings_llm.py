@@ -11,7 +11,7 @@ def test_langchain_prefixed_agent_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("LANGCHAIN_API_KEY", "test-key")
 
     settings = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
     )
@@ -29,7 +29,7 @@ def test_llm_disabled_without_langchain_api_key(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "ignored")
 
     settings = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
     )

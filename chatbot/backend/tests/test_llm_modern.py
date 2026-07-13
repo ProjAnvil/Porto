@@ -79,7 +79,7 @@ class FakeOpenAI:
 @pytest.fixture()
 def enabled_settings(tmp_path):
     return Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
         agent_api_key="k",
@@ -103,7 +103,7 @@ def _wire(client: LLMClient, script: list):
 
 def test_disabled_client_returns_none(tmp_path):
     s = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
     )  # 无 api_key

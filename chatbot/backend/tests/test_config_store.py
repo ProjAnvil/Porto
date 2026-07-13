@@ -8,7 +8,7 @@ from porto_chatbot.settings import Settings
 
 def test_config_store_persists_rag_and_agent_settings(tmp_path):
     settings = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / ".porto",
         log_dir=tmp_path / "logs",
         embedding_model="qwen3-embedding:0.6b",
@@ -47,7 +47,7 @@ def test_config_store_persists_rag_and_agent_settings(tmp_path):
 
 def test_effective_settings_default_to_qwen_and_agent_params(monkeypatch, tmp_path):
     settings = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / ".porto",
         log_dir=tmp_path / "logs",
         embedding_model="qwen3-embedding:0.6b",

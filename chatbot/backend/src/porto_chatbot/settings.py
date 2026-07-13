@@ -17,7 +17,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    kb_path: Path = Path.home() / ".scv" / "analysis"
+    kb_dirs: list[Path] = Field(default_factory=lambda: [Path.home() / ".scv" / "analysis"])
     data_dir: Path = Path.home() / ".porto"
     log_dir: Path = Path.home() / ".porto" / "logs"
     # 捆绑部署：前端静态导出（next build:static）产物目录，若存在则由后端同源托管
@@ -78,10 +78,24 @@ class Settings(BaseSettings):
     health_probe_interval: int = Field(default=30, ge=5)
     health_probe_timeout: int = Field(default=5, ge=1)
 
-    @field_validator("kb_path", "data_dir", "log_dir", "static_dir", mode="after")
+    # --- 检索算法（vector / bm25 / hybrid）---
+    retrieval_method: Literal["vector", "bm25", "hybrid"] = "hybrid"
+    bm25_top_k: int = Field(default=20, ge=1)
+
+    @field_validator("data_dir", "log_dir", "static_dir", mode="after")
     @classmethod
     def expand_path(cls, value: Path) -> Path:
         return value.expanduser()
+
+    @field_validator("kb_dirs", mode="after")
+    @classmethod
+    def expand_dirs(cls, value: list[Path]) -> list[Path]:
+        return [v.expanduser() for v in value]
+
+    @property
+    def kb_path(self) -> Path:
+        """向后兼容：首个知识库目录。"""
+        return self.kb_dirs[0] if self.kb_dirs else Path()
 
     @property
     def index_path(self) -> Path:

@@ -7,7 +7,7 @@ from porto_chatbot.settings import Settings
 
 def _enabled_llm(tmp_path) -> LLMClient:
     s = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "d",
         log_dir=tmp_path / "l",
         agent_provider="openai",

@@ -22,7 +22,7 @@ def test_ensure_index_no_rebuild_on_dimension_change(sample_settings):
     LocalVectorStore(sample_settings).build()  # 128 维
 
     changed_settings = Settings(
-        kb_path=sample_settings.kb_path,
+        kb_dirs=[sample_settings.kb_path],
         data_dir=sample_settings.data_dir,
         log_dir=sample_settings.log_dir,
         embedding_dimensions=64,

@@ -85,7 +85,7 @@ notification-service sends payment result messages.
         encoding="utf-8",
     )
     return Settings(
-        kb_path=kb,
+        kb_dirs=[kb],
         data_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
         embedding_dimensions=128,

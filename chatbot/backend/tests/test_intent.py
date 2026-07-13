@@ -7,7 +7,7 @@ from porto_chatbot.settings import Settings
 
 def _enabled_llm(tmp_path) -> LLMClient:
     s = Settings(
-        kb_path=tmp_path / "kb",
+        kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "d",
         log_dir=tmp_path / "l",
         agent_provider="openai",
@@ -24,7 +24,7 @@ def test_intent_no_llm_uses_rules():
 
 
 def test_intent_disabled_llm_falls_back_to_rules(tmp_path):
-    s = Settings(kb_path=tmp_path / "kb", data_dir=tmp_path / "d", log_dir=tmp_path / "l")
+    s = Settings(kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l")
     llm = LLMClient(s)
     assert llm.enabled is False
     d = route_chat_intent("你好", None, llm)
