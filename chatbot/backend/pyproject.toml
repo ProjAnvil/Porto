@@ -9,7 +9,6 @@ dependencies = [
   "fastapi>=0.116.0",
   "httpx>=0.28.0",
   "langchain-text-splitters>=1.0.0",
-  "langgraph>=0.5.0",
   "llama-index-core>=0.14.23",
   "llama-index-llms-anthropic>=0.11.8",
   "llama-index-llms-openai>=0.7.9",

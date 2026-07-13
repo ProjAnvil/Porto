@@ -3,11 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..agent import PortoAgent
 from ..config_store import ConfigStore
 from ..health import HealthMonitor
 from ..index_supervisor import IndexSupervisor
-from ..llm import LLMClient
 from ..locking import DbLockStore
 from ..logging_utils import get_component_logger
 from ..memory import MemoryStore
@@ -124,11 +122,6 @@ def apply_rag_settings(
 
 def get_store(runtime_settings=None) -> LocalVectorStore:
     return LocalVectorStore(runtime_settings or current_settings())
-
-
-def get_agent() -> PortoAgent:
-    settings = current_settings()
-    return PortoAgent(settings, get_store(), LLMClient(settings))
 
 
 def get_memory(runtime_settings=None) -> MemoryStore:
