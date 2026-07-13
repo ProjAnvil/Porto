@@ -1,0 +1,32 @@
+# 前后端分离部署编排：两个容器各自独立扩缩容/发布。
+# 用法：
+#   docker compose up -d --build
+#   docker compose logs -f
+#   docker compose down
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8100:8100"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - porto-data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      PORTO_API_BASE_URL: http://backend:8100
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  porto-data:

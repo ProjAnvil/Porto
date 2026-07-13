@@ -8,13 +8,14 @@ FRONTEND_PID  := $(PID_DIR)/frontend.pid
 BACKEND_LOG   := $(RUN_DIR)/backend.log
 FRONTEND_LOG  := $(RUN_DIR)/frontend.log
 
-.PHONY: help install start stop restart status logs logs-follow backend-start backend-stop frontend-start frontend-stop backend-dev frontend-dev clean
+.PHONY: help install start stop restart status logs logs-follow backend-start backend-stop frontend-start frontend-stop backend-dev frontend-dev clean \
+        bundle-build bundle-start docker-build docker-build-bundled docker-run-bundled compose-up compose-down
 
 help:
 	@echo "Porto Chatbot 进程管理（pid 文件: $(PID_DIR)）"
 	@echo ""
 	@echo "  make install         安装前后端依赖（uv sync + npm install）"
-	@echo "  make start           后台启动前后端"
+	@echo "  make start           后台启动前后端（分离进程，开发用）"
 	@echo "  make stop            停止前后端（读 pid 文件，杀进程树）"
 	@echo "  make restart         重启（stop → start）"
 	@echo "  make status          查看运行状态"
@@ -23,6 +24,10 @@ help:
 	@echo "  make backend-dev     前台启动后端（--reload 热重载）"
 	@echo "  make frontend-dev    前台启动前端"
 	@echo "  make clean           停止并清理日志目录"
+	@echo ""
+	@echo "  make bundle-start    捆绑部署：构建前端静态导出 + 单进程 uvicorn 同源托管前后端"
+	@echo "  make compose-up      分离部署：docker compose 启动前后端两个容器"
+	@echo "  make docker-run-bundled  捆绑部署：构建并运行单一 Docker 镜像"
 	@echo ""
 	@echo "端口可用环境变量覆盖：make start FRONTEND_PORT=3001"
 	@echo "当前：BACKEND_PORT=$(BACKEND_PORT)  FRONTEND_PORT=$(FRONTEND_PORT)"
@@ -130,3 +135,40 @@ frontend-dev:
 clean: stop
 	@rm -rf $(RUN_DIR)
 	@echo "🧹 已清理 $(RUN_DIR)"
+
+# ==================== 捆绑部署（单进程，前端静态导出由后端同源托管）====================
+# 一次构建后，只需一个 uvicorn 进程即可同时提供前端页面和 /api 接口。
+
+bundle-build:
+	@echo "▶ 构建前端静态导出..."
+	cd frontend && npm install && npm run build:static
+	@echo "▶ 拷贝静态产物到 backend/static ..."
+	rm -rf backend/static
+	cp -r frontend/out backend/static
+	@echo "✅ 捆绑产物就绪: backend/static"
+
+bundle-start: bundle-build
+	@echo "▶ 启动捆绑进程 http://localhost:$(BACKEND_PORT) （前端+后端同源，Ctrl-C 停）..."
+	cd backend && exec uv run uvicorn porto_chatbot.main:app --host 0.0.0.0 --port $(BACKEND_PORT)
+
+# ==================== Docker ====================
+
+docker-build:
+	docker compose build
+
+compose-up:
+	docker compose up -d --build
+	@echo "✅ 前后端分离容器已启动"
+	@echo "   前端: http://localhost:3000  后端: http://localhost:8100/api/health"
+
+compose-down:
+	docker compose down
+
+docker-build-bundled:
+	docker build -t porto-chatbot -f Dockerfile .
+
+docker-run-bundled: docker-build-bundled
+	docker run --rm -p $(BACKEND_PORT):8100 \
+	  --env-file backend/.env \
+	  -v porto-chatbot-data:/data \
+	  porto-chatbot
