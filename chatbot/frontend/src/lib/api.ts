@@ -132,6 +132,12 @@ export const defaultRagConfig: RagConfig = {
   kb_dirs: ["~/.scv/analysis"],
   retrieval_method: "hybrid",
   bm25_top_k: 20,
+  hybrid_vector_weight: 0.5,
+  rerank_enabled: false,
+  rerank_top_n: 5,
+  rerank_provider: null,
+  rerank_model: null,
+  rerank_choice_batch_size: 5,
 };
 
 export const defaultAgentConfig: AgentConfig = {

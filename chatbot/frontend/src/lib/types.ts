@@ -67,6 +67,14 @@ export type RagConfig = {
   kb_dirs: string[];
   retrieval_method: "vector" | "bm25" | "hybrid";
   bm25_top_k: number;
+  // hybrid 融合时向量检索的权重（llama-index QueryFusionRetriever RRF），BM25 权重 = 1 - 该值
+  hybrid_vector_weight: number;
+  // 重排序（llama-index LLMRerank）
+  rerank_enabled: boolean;
+  rerank_top_n: number;
+  rerank_provider: "openai" | "anthropic" | null;
+  rerank_model: string | null;
+  rerank_choice_batch_size: number;
 };
 
 export type AgentConfig = {

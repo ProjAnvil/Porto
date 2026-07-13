@@ -1,16 +1,22 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import bm25s
+from llama_index.core.schema import TextNode
+from llama_index.retrievers.bm25 import BM25Retriever
 
 from .embeddings import tokens
 from .logging_utils import get_component_logger
 from .settings import Settings
 
 logger = get_component_logger("bm25_index")
+
+# llama-index BM25Retriever 默认按英文单词边界正则分词（`\b\w\w+\b`），对无空格的中文
+# 整段文本会把连续汉字当成一个 token，检索效果很差。这里复用 embedding 侧的 CJK 分词
+# 逻辑（单字 + 双字 bigram）预先切好词、空格拼接，再用 `\S+` 的 token_pattern 让
+# BM25Retriever 按空白切分 —— 分词交给我们自己，BM25 算法本身完全交给 llama-index。
+_TOKEN_PATTERN = r"\S+"
 
 
 @dataclass
@@ -23,65 +29,80 @@ class ChunkRecord:
 
 
 def _tokenize_text(text: str) -> str:
-    """复用 embedding 侧分词（CJK 单字+双字 bigram），拼空格串喂 bm25s。"""
+    """复用 embedding 侧分词（CJK 单字+双字 bigram），拼空格串喂 llama-index BM25Retriever。"""
     return " ".join(tokens(text))
 
 
 class Bm25Index:
-    """基于 bm25s 的稀疏检索索引。
+    """基于 ``llama_index.retrievers.bm25.BM25Retriever`` 的稀疏检索索引封装。
 
-    build 时按 chunks 顺序建 BM25；retrieve 返回文档位置索引，靠 self._ids /
-    self._metadatas 映射回 chroma chunk id + metadata。save/load 用 bm25s 原生
-    落盘 + sidecar(ids/metadatas) json。
+    对外仍保留 build/query/save/load 的简单接口，供 vector_store.py 与 retrieval.py
+    复用；BM25 算法本身、打分、持久化均委托给 llama-index，不再直接依赖 bm25s。
     """
 
     def __init__(self) -> None:
-        self._retriever: bm25s.BM25 | None = None
-        self._ids: list[str] = []
-        self._metadatas: list[dict] = []
+        self._retriever: BM25Retriever | None = None
+        self._size = 0
 
     def build(self, chunks: list[ChunkRecord]) -> None:
-        self._ids = [c.chroma_id for c in chunks]
-        self._metadatas = [c.metadata for c in chunks]
-        corpus = [_tokenize_text(c.text) for c in chunks]
-        corpus_tokens = bm25s.tokenize(corpus, stemmer=None, stopwords=None, show_progress=False)
-        self._retriever = bm25s.BM25(method="lucene", k1=1.5, b=0.75)
-        self._retriever.index(corpus_tokens, show_progress=False)
-        logger.info("bm25 index built chunks=%s", len(chunks))
+        nodes = [
+            TextNode(text=_tokenize_text(c.text), id_=c.chroma_id, metadata=c.metadata)
+            for c in chunks
+        ]
+        self._retriever = BM25Retriever.from_defaults(
+            nodes=nodes,
+            similarity_top_k=max(len(nodes), 1),
+            token_pattern=_TOKEN_PATTERN,
+            skip_stemming=True,
+        )
+        self._size = len(nodes)
+        logger.info("bm25 index built chunks=%s", len(nodes))
+
+    def as_retriever(self, top_k: int) -> BM25Retriever | None:
+        """返回底层 llama-index ``BM25Retriever``（供 hybrid RRF 融合直接使用），并设置 top_k。
+
+        调用方需自行用 :func:`_tokenize_text` 预分词 query 后再传给
+        ``retriever.retrieve()``，因为 BM25Retriever 的 query 侧分词与 corpus 侧一致
+        （同样按空白切分预分词好的 token 串）。
+        """
+        if self._retriever is None or self._size == 0:
+            return None
+        self._retriever.similarity_top_k = min(max(top_k, 1), self._size)
+        return self._retriever
 
     def query(self, text: str, top_k: int) -> list[tuple[str, dict, float]]:
         """返回 [(chroma_id, metadata, score)]，按 bm25 分数降序。"""
-        if self._retriever is None or not self._ids:
+        retriever = self.as_retriever(top_k)
+        if retriever is None:
             return []
-        q_tokens = bm25s.tokenize([_tokenize_text(text)], stemmer=None, stopwords=None, show_progress=False)
-        results, scores = self._retriever.retrieve(q_tokens, k=min(top_k, len(self._ids)), show_progress=False)
-        out: list[tuple[str, dict, float]] = []
-        for idx, score in zip(results[0], scores[0], strict=False):
-            i = int(idx)
-            if 0 <= i < len(self._ids):
-                out.append((self._ids[i], self._metadatas[i], float(score)))
-        return out
+        nodes_with_scores = retriever.retrieve(_tokenize_text(text))
+        return [
+            (n.node.node_id, dict(n.node.metadata or {}), float(n.score or 0.0))
+            for n in nodes_with_scores
+        ]
 
     def __len__(self) -> int:
-        return len(self._ids)
+        return self._size
 
     def save(self, dir: Path) -> None:
         if self._retriever is None:
             raise RuntimeError("cannot save an unbuilt index")
         dir.mkdir(parents=True, exist_ok=True)
-        self._retriever.save(str(dir))  # 不传 corpus：只落 index arrays
-        (dir / "ids.json").write_text(json.dumps(self._ids, ensure_ascii=False), encoding="utf-8")
-        (dir / "metadatas.json").write_text(
-            json.dumps(self._metadatas, ensure_ascii=False), encoding="utf-8"
-        )
-        logger.info("bm25 index saved dir=%s chunks=%s", dir, len(self._ids))
+        self._retriever.persist(str(dir))
+        logger.info("bm25 index saved dir=%s chunks=%s", dir, self._size)
 
     @classmethod
-    def load(cls, dir: Path) -> "Bm25Index":
+    def load(cls, dir: Path) -> Bm25Index:
         idx = cls()
-        idx._retriever = bm25s.BM25.load(str(dir), load_corpus=False, mmap=True)
-        idx._ids = json.loads((dir / "ids.json").read_text(encoding="utf-8"))
-        idx._metadatas = json.loads((dir / "metadatas.json").read_text(encoding="utf-8"))
+        retriever = BM25Retriever.from_persist_dir(str(dir))
+        # llama-index 当前版本 persist/from_persist_dir 只保存 similarity_top_k /
+        # verbose / corpus_weight_mask，不保存 token_pattern / skip_stemming，reload
+        # 后会悄悄退回默认英文分词正则，导致 query 侧分词与 build 时不一致（中文检索
+        # 静默失效）。这里手动复原，确保重启/reload 后行为与刚 build 完一致。
+        retriever.token_pattern = _TOKEN_PATTERN
+        retriever.skip_stemming = True
+        idx._retriever = retriever
+        idx._size = int(retriever.bm25.scores.get("num_docs", 0) or 0)
         return idx
 
 
@@ -121,3 +142,4 @@ class Bm25Registry:
     @classmethod
     def invalidate(cls, data_dir: Path) -> None:
         cls._cache.pop(str(data_dir), None)
+

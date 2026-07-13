@@ -15,6 +15,12 @@ class RagSettingsPayload(BaseModel):
     kb_dirs: list[str] | None = None
     retrieval_method: Literal["vector", "bm25", "hybrid"] | None = None
     bm25_top_k: int | None = Field(default=None, ge=1, le=100)
+    hybrid_vector_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    rerank_enabled: bool | None = None
+    rerank_top_n: int | None = Field(default=None, ge=1, le=50)
+    rerank_provider: Literal["openai", "anthropic"] | None = None
+    rerank_model: str | None = None
+    rerank_choice_batch_size: int | None = Field(default=None, ge=1, le=20)
 
 
 class AgentSettingsPayload(BaseModel):

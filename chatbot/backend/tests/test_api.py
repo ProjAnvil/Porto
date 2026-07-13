@@ -157,3 +157,52 @@ def test_trim_to_budget_zero_budget_noop():
 
     parts = ["a", "b"]
     assert _trim_to_budget(parts, 0) == ["a", "b"]
+
+
+# ----------------------------- /api/health 快照 ----------------------------- #
+
+
+def test_api_health_returns_dependency_and_feature_snapshot(monkeypatch, sample_settings):
+    """/api/health 必须返回 HealthMonitor 快照（含 dependencies/features）。
+
+    回归：settings.py 曾遗留一个同名 GET /api/health（返回配置概览，无 dependencies），
+    因在 app.py 中先注册而覆盖了 knowledge.py 的 HealthMonitor 版本，导致前端
+    health.dependencies.map 崩溃。此测试锁住「/api/health 返回依赖级健康快照」契约。
+    """
+    sample_settings.health_probe_timeout = 1
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "dependencies" in data, f"/api/health 缺少 dependencies：{data}"
+        assert isinstance(data["dependencies"], list)
+        assert "features" in data
+        dep_names = {d["name"] for d in data["dependencies"]}
+        assert {"embedding", "agent_llm", "critic_llm"} <= dep_names
+
+
+def test_api_health_probes_db_rag_config_not_env(monkeypatch, sample_settings):
+    """/api/health 探测必须用 db 里的 effective 配置，而非 .env/current_settings。
+
+    回归：HealthMonitor 曾注入 settings_provider=current_settings（读 .env），导致用户
+    在 UI 改的 db 配置（embedding 模型、agent key）不生效，面板显示 .env 旧值的探测结果
+    （embedding down / agent unknown）。修复后 settings_provider 应合并 db 配置再探测。
+    """
+    from porto_chatbot.api.deps import get_config_store
+    from porto_chatbot.models import RagSettingsPayload
+
+    sample_settings.health_probe_timeout = 1
+    # .env 源（current_settings）配成连不上的 ollama —— 若 health 用它，探测必 down
+    sample_settings.embedding_provider = "ollama"
+    sample_settings.embedding_base_url = "http://127.0.0.1:1"  # 端口拒绝，快速失败
+    monkeypatch.setattr(main, "settings", sample_settings)
+    # db 存 local（探测必 ok）—— 实际功能走 effective，应反映这条
+    get_config_store().save_rag_settings(RagSettingsPayload(embedding_provider="local"))
+
+    with TestClient(main.app) as client:
+        data = client.get("/api/health").json()
+    deps = {d["name"]: d for d in data["dependencies"]}
+    assert deps["embedding"]["status"] == "ok", (
+        f"health 探测应使用 db 配置(local→ok)，实际用了 .env(ollama→down)：{deps['embedding']}"
+    )

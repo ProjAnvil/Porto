@@ -19,6 +19,12 @@ RAG_SETTING_KEYS = {
     "kb_dirs",
     "retrieval_method",
     "bm25_top_k",
+    "hybrid_vector_weight",
+    "rerank_enabled",
+    "rerank_top_n",
+    "rerank_provider",
+    "rerank_model",
+    "rerank_choice_batch_size",
 }
 
 AGENT_SETTING_KEYS = {

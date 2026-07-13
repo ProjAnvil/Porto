@@ -45,6 +45,12 @@ def default_rag_settings() -> RagSettingsPayload:
         kb_dirs=[str(d) for d in settings.kb_dirs],
         retrieval_method=settings.retrieval_method,
         bm25_top_k=settings.bm25_top_k,
+        hybrid_vector_weight=settings.hybrid_vector_weight,
+        rerank_enabled=settings.rerank_enabled,
+        rerank_top_n=settings.rerank_top_n,
+        rerank_provider=settings.rerank_provider,
+        rerank_model=settings.rerank_model,
+        rerank_choice_batch_size=settings.rerank_choice_batch_size,
     )
 
 
@@ -139,10 +145,15 @@ def _ensure_rag_singletons() -> dict:
     supervisor = IndexSupervisor(
         lock_store=lock_store,
         store_factory=lambda s: LocalVectorStore(s),
-        settings_provider=current_settings,
+        # RAG 可用性判断必须用「实际生效」配置（db 覆盖 .env），否则 collection metadata
+        # （按 db 配置 build）与 current_settings（.env）的 embedding_model 不匹配，
+        # _is_collection_compatible 误判 → rag_available 恒返回 index_unavailable。
+        settings_provider=apply_rag_settings,
     )
     health = HealthMonitor(
-        settings_provider=current_settings,
+        # 探测必须用「实际生效」的配置（db 覆盖 .env），而非 current_settings（纯 .env）。
+        # 否则用户在 UI 改的 embedding 模型 / agent key 不生效，面板显示 .env 旧值的探测结果。
+        settings_provider=apply_rag_settings,
         rag_available=supervisor.rag_available,
         rag_status=supervisor.get_status,
     )

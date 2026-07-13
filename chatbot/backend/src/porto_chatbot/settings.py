@@ -81,6 +81,16 @@ class Settings(BaseSettings):
     # --- 检索算法（vector / bm25 / hybrid）---
     retrieval_method: Literal["vector", "bm25", "hybrid"] = "hybrid"
     bm25_top_k: int = Field(default=20, ge=1)
+    # hybrid 融合时向量检索的权重（llama-index QueryFusionRetriever RRF），BM25 权重 = 1 - 该值
+    hybrid_vector_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # --- 重排序（llama-index LLMRerank，检索候选的可选二次精排）---
+    rerank_enabled: bool = False
+    rerank_top_n: int = Field(default=5, ge=1, le=50)
+    # 缺省复用 agent_provider / agent_model / agent_api_key / agent_base_url
+    rerank_provider: Literal["openai", "anthropic"] | None = None
+    rerank_model: str | None = None
+    rerank_choice_batch_size: int = Field(default=5, ge=1, le=20)
 
     @field_validator("data_dir", "log_dir", "static_dir", mode="after")
     @classmethod

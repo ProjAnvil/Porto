@@ -1065,7 +1065,95 @@ function RagSettingsForm({
             onChange={(event) => updateRag("bm25_top_k", Number(event.target.value))}
           />
         </label>
+        <label className="block md:col-span-2">
+          <span className="text-xs text-zinc-500">
+            向量 / BM25 融合权重（RRF，hybrid 用）：向量 {ragDraft.hybrid_vector_weight.toFixed(2)} ·
+            BM25 {(1 - ragDraft.hybrid_vector_weight).toFixed(2)}
+          </span>
+          <input
+            className="mt-2 w-full accent-zinc-950"
+            max={1}
+            min={0}
+            step={0.05}
+            type="range"
+            value={ragDraft.hybrid_vector_weight}
+            onChange={(event) =>
+              updateRag("hybrid_vector_weight", Number(event.target.value))
+            }
+          />
+        </label>
       </div>
+
+      <div className="mt-6 border-t border-zinc-200 pt-4">
+        <label className="flex items-center gap-2">
+          <input
+            checked={ragDraft.rerank_enabled}
+            type="checkbox"
+            onChange={(event) => updateRag("rerank_enabled", event.target.checked)}
+          />
+          <span className="text-sm font-medium text-zinc-700">
+            启用重排序（LlamaIndex LLMRerank，检索候选后二次精排）
+          </span>
+        </label>
+        <p className="mt-1 text-xs text-zinc-400">
+          缺省复用 Agent 设置里的 Provider / Model / API Key；下方可单独覆盖。未配置可用 LLM 时自动降级为不重排。
+        </p>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+          <label className="block">
+            <span className="text-xs text-zinc-500">重排序保留数量（Top N）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={1}
+              disabled={!ragDraft.rerank_enabled}
+              value={ragDraft.rerank_top_n}
+              onChange={(event) => updateRag("rerank_top_n", Number(event.target.value))}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">重排序批大小（choice_batch_size）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={1}
+              disabled={!ragDraft.rerank_enabled}
+              value={ragDraft.rerank_choice_batch_size}
+              onChange={(event) =>
+                updateRag("rerank_choice_batch_size", Number(event.target.value))
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">重排序 Provider（留空复用 Agent）</span>
+            <select
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              disabled={!ragDraft.rerank_enabled}
+              value={ragDraft.rerank_provider ?? ""}
+              onChange={(event) =>
+                updateRag(
+                  "rerank_provider",
+                  (event.target.value || null) as RagConfig["rerank_provider"],
+                )
+              }
+            >
+              <option value="">（复用 Agent 设置）</option>
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">重排序 Model（留空复用 Agent）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              disabled={!ragDraft.rerank_enabled}
+              placeholder="可选"
+              value={ragDraft.rerank_model ?? ""}
+              onChange={(event) => updateRag("rerank_model", event.target.value || null)}
+            />
+          </label>
+        </div>
+      </div>
+
       <div className="mt-4 flex items-center gap-3">
         <button
           className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"

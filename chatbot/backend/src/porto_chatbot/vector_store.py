@@ -19,6 +19,7 @@ from .documents import (
 from .embeddings import EmbeddingClient
 from .logging_utils import get_component_logger
 from .models import IndexStats, SourceChunk
+from .retrieval import hybrid_fusion_search, rerank_chunks, vector_search
 from .settings import Settings
 
 COLLECTION_METADATA_KEYS = {
@@ -196,6 +197,8 @@ class ChromaVectorStore:
             rows = self._bm25_search(collection, query, resolved_top_k)
         else:
             rows = self._hybrid_search(collection, query_embedding, query, resolved_top_k)
+        if self.settings.rerank_enabled and rows:
+            rows = rerank_chunks(rows, query, self.settings)
         self.logger.info("search finish method=%s results=%s", method, len(rows))
         return rows
 
@@ -224,20 +227,13 @@ class ChromaVectorStore:
         )
 
     def _vector_search(self, collection, query_embedding, top_k: int) -> list[SourceChunk]:
-        result = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
-        ids = result.get("ids", [[]])[0]
-        docs = result.get("documents", [[]])[0]
-        metadatas = result.get("metadatas", [[]])[0]
-        distances = result.get("distances", [[]])[0]
-        rows: list[SourceChunk] = []
-        for cid, doc, metadata, distance in zip(ids, docs, metadatas, distances, strict=False):
-            score = 1.0 / (1.0 + max(0.0, float(distance)))
-            rows.append(self._to_source(cid, doc or "", dict(metadata), score))
-        return rows
+        nodes = vector_search(collection, query_embedding, top_k)
+        return [
+            self._to_source(
+                n.node.id_, n.node.text or "", dict(n.node.metadata or {}), float(n.score or 0.0)
+            )
+            for n in nodes
+        ]
 
     def _bm25_search(self, collection, query: str, top_k: int) -> list[SourceChunk]:
         bm = Bm25Registry.get(self.settings)
@@ -255,31 +251,21 @@ class ChromaVectorStore:
         return rows
 
     def _hybrid_search(self, collection, query_embedding, query: str, top_k: int) -> list[SourceChunk]:
-        k_rrf = 60
-        cand_k = self.settings.bm25_top_k
-        vec_result = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=cand_k,
-            include=["metadatas"],
-        )
-        vec_ids = vec_result.get("ids", [[]])[0]
         bm = Bm25Registry.get(self.settings)
-        bm_cands = bm.query(query, cand_k) if bm else []
-        bm_ids = [c[0] for c in bm_cands]
-
-        scores: dict[str, float] = {}
-        for rank, cid in enumerate(vec_ids):
-            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k_rrf + rank + 1)
-        for rank, cid in enumerate(bm_ids):
-            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k_rrf + rank + 1)
-
-        ordered = sorted(scores, key=lambda cid: -scores[cid])[:top_k]
-        if not ordered:
-            return []
-        fetched = self._fetch_chunks(collection, ordered)
+        nodes = hybrid_fusion_search(
+            collection=collection,
+            query_embedding=query_embedding,
+            query_text=query,
+            bm25_index=bm,
+            top_k=top_k,
+            candidate_k=self.settings.bm25_top_k,
+            vector_weight=self.settings.hybrid_vector_weight,
+        )
         return [
-            self._to_source(cid, fetched.get(cid, ("", {}))[0], fetched.get(cid, ("", {}))[1], scores[cid])
-            for cid in ordered
+            self._to_source(
+                n.node.id_, n.node.text, dict(n.node.metadata or {}), float(n.score or 0.0)
+            )
+            for n in nodes
         ]
 
     def ensure_index(self) -> IndexStats:
