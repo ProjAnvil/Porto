@@ -129,6 +129,9 @@ export const defaultRagConfig: RagConfig = {
   chunk_size: 1400,
   chunk_overlap: 180,
   top_k: 6,
+  kb_dirs: ["~/.scv/analysis"],
+  retrieval_method: "hybrid",
+  bm25_top_k: 20,
 };
 
 export const defaultAgentConfig: AgentConfig = {

@@ -1619,8 +1619,8 @@ function ChunkList({
       {chunks.map((chunk) => (
         <details className="rounded-lg border border-zinc-200 bg-white" key={chunk.id}>
           <summary className="cursor-pointer px-3 py-2 text-sm">
-            <span className="block truncate">{chunk.title || chunk.path}</span>
-            <span className="text-xs text-zinc-400">score {chunk.score}</span>
+            <span className="block truncate font-medium text-zinc-700">{chunk.path || chunk.title}</span>
+            <span className="text-xs text-zinc-400">{chunk.title} · score {chunk.score}</span>
           </summary>
           <div className="px-3 pb-3 text-xs leading-5 text-zinc-600">
             {chunk.text}

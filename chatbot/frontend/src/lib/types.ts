@@ -64,6 +64,9 @@ export type RagConfig = {
   chunk_size: number;
   chunk_overlap: number;
   top_k: number;
+  kb_dirs: string[];
+  retrieval_method: "vector" | "bm25" | "hybrid";
+  bm25_top_k: number;
 };
 
 export type AgentConfig = {
