@@ -366,12 +366,18 @@ class LLMClient:
             self.logger.info("llm client disabled missing api key provider=%s", self.settings.agent_provider)
             return None
         if self.settings.agent_provider == "openai":
-            kwargs: dict[str, Any] = {"api_key": self.settings.agent_api_key}
+            kwargs: dict[str, Any] = {
+                "api_key": self.settings.agent_api_key,
+                "timeout": self.settings.agent_request_timeout,
+            }
             if self.settings.agent_base_url:
                 kwargs["base_url"] = self.settings.agent_base_url
             return OpenAI(**kwargs)
         if self.settings.agent_provider == "anthropic":
-            kwargs = {"api_key": self.settings.agent_api_key}
+            kwargs = {
+                "api_key": self.settings.agent_api_key,
+                "timeout": self.settings.agent_request_timeout,
+            }
             if self.settings.agent_base_url:
                 kwargs["base_url"] = self.settings.agent_base_url
             return Anthropic(**kwargs)
