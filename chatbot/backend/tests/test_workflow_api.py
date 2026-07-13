@@ -143,3 +143,66 @@ def test_get_detail_404_for_missing(monkeypatch, sample_settings):
     with TestClient(main.app) as client:
         assert client.get("/api/porto/workflows/nope").status_code == 404
         assert client.delete("/api/porto/workflows/nope").status_code == 404
+
+
+def test_advance_past_first_checkpoint_reaches_identify(
+    monkeypatch, sample_settings, sample_prd
+):
+    """回归(跨 checkpoint 推进集成测试):advance 跨过第一个 checkpoint 时,
+    下游节点(identify)必须能消费 ``_rebuild_state`` 重建的 sources/subsystems
+    Pydantic 模型,而非 AttributeError 崩溃。
+
+    pre-fix 复现路径:
+      create → retrieve(写 sources 为 SourceChunk) → understand(checkpoint,persist
+      sources 经 _to_jsonable → dict) → advance → identify 读 state["sources"]
+      → s.text → AttributeError(dict 无 .text)→ status="failed"。
+
+    修复后:_rebuild_state 把 sources/subsystems/spec_results 从 dict 重建为
+    Pydantic 模型,identify 正常消费,workflow 推进到 identify checkpoint
+    (或一路到 completed/evaluate,均无 failed)。
+
+    本测试不 mock WorkflowRunner —— 跑真实 retrieve→understand→identify 节点。
+    """
+    sample_settings.health_probe_timeout = 1
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        client.post("/api/kb/index")
+        _wait_index_done(client)
+
+        resp = client.post(
+            "/api/porto/workflows",
+            json={"text": sample_prd, "project_name": "支付平台", "session_id": "s1"},
+        )
+        assert resp.status_code == 200
+        wid = resp.json()["workflow_id"]
+
+        # ---- 第一段:跑到 understand checkpoint(或降级路径直接 completed)----
+        first = _wait_status(client, wid, {"awaiting_input", "completed"})
+        # 若已 completed(极快路径),则无 checkpoint 间崩溃可言,无需继续
+        if first["status"] == "completed":
+            assert first["current_step"] == "evaluate"
+            return
+
+        assert first["current_step"] == "understand"
+        # 确认 sources 已持久化(retrieve 必跑过)—— 这正是后续 identify 要消费的字段
+        retrieve_out = first["outputs"].get("retrieve", {}).get("output", {})
+        assert "sources" in retrieve_out, "retrieve 输出应有 sources(被 JSON 序列化为 dict)"
+
+        # ---- 第二段:advance,跨过 understand→identify —— pre-fix 在此崩溃 ----
+        adv = client.post(f"/api/porto/workflows/{wid}/advance")
+        assert adv.status_code == 200, f"advance 应被接受,实际 {adv.status_code}: {adv.text}"
+
+        second = _wait_status(
+            client, wid, {"awaiting_input", "completed", "failed"}, timeout=20.0
+        )
+        # 关键断言:不允许 failed(pre-fix 会因 s.text AttributeError 落到 failed)
+        assert second["status"] != "failed", (
+            f"advance 跨 checkpoint 崩溃: status=failed "
+            f"current_step={second.get('current_step')} error={second.get('error')!r}"
+        )
+        # 必须跑到至少 identify(降级快路径可能一路到 evaluate/completed)
+        reached_step = second["current_step"]
+        steps_order = ["retrieve", "understand", "identify", "generate", "evaluate"]
+        assert steps_order.index(reached_step) >= steps_order.index("identify"), (
+            f"advance 应跨过 understand 到达 identify 及以后,实际停在 {reached_step}"
+        )

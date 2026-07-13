@@ -190,7 +190,19 @@ class WorkflowExecutor:
         )
 
     def _rebuild_state(self, row: dict[str, Any]) -> dict[str, Any]:
-        """从 db 行 + 已有 outputs 重建 WorkflowRunner 可消费的 state。"""
+        """从 db 行 + 已有 outputs 重建 WorkflowRunner 可消费的 state。
+
+        ``_persist_state`` 经 ``_to_jsonable`` + ``json.dumps`` 把 Pydantic 模型
+        (SourceChunk/Subsystem/SpecResult)序列化为 plain dict 落库;回填后必须把
+        这些 dict 重建为对应的 Pydantic 模型 —— 否则下游节点
+        (identify/generate/evaluate)按 ``.attribute`` 访问会 AttributeError。
+
+        SpecResult 内嵌 ``attempts: list[SpecAttempt]``,Pydantic 在 ``__init__``
+        校验时会把 list 内的 dict 自动转为 SpecAttempt(递归 validation),故无需
+        再手写嵌套重建。
+        """
+        from .models import SourceChunk, SpecResult, Subsystem
+
         workflow_id = row["workflow_id"]
         outs = self.store.get_outputs(workflow_id)
         state: dict[str, Any] = {
@@ -212,6 +224,22 @@ class WorkflowExecutor:
             out = data["output"]
             for k, v in out.items():
                 state[k] = v
+        # 重建 Pydantic 模型:_persist_state 把它们序列化为 dict 落库,
+        # 下游节点(identify s.text / generate sub.name / evaluate r.attempts[-1].score)
+        # 按 attribute 访问 —— 不重建会 AttributeError。用户 PUT /steps 编辑的产出
+        # 同样以 dict 落库,这里统一兜底转换(dict → model,已是 model 则原样保留)。
+        state["sources"] = [
+            SourceChunk(**s) if isinstance(s, dict) else s
+            for s in state.get("sources", [])
+        ]
+        state["subsystems"] = [
+            Subsystem(**s) if isinstance(s, dict) else s
+            for s in state.get("subsystems", [])
+        ]
+        state["spec_results"] = {
+            k: (SpecResult(**v) if isinstance(v, dict) else v)
+            for k, v in state.get("spec_results", {}).items()
+        }
         return state
 
     def _persist_state(
