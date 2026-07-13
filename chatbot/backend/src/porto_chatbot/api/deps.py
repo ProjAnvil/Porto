@@ -188,3 +188,26 @@ def reset_rag_singletons() -> None:
         except Exception:
             pass
     _rag_singletons = {}
+
+
+def runtime_settings_from_snapshot(
+    rag_snapshot: dict, agent_snapshot: dict, top_k: int | None = None
+):
+    """从创建时的 resolved 配置快照重建 Settings,**不读 db**(免受后续配置改动影响)。
+
+    snapshot 是创建时 effective_rag_settings/agent_settings 的 model_dump;此处以
+    Settings() 默认(.env)为底,用 snapshot 完整覆盖。这样在后台线程跑 workflow 时,
+    即使用户后续在 UI 改了配置,本 workflow 仍按创建时的快照执行。
+
+    与 :func:`apply_rag_settings` 的区别:后者每次调用都读 db 合并最新配置,适合
+    ad-hoc 请求;本函数纯靠 snapshot,适合长生命周期的工作流。
+    """
+    settings = current_settings()
+    updates = {**agent_snapshot, **rag_snapshot}
+    if top_k is not None:
+        updates["top_k"] = top_k
+    if "chunk_size" in updates:
+        updates["max_chunk_chars"] = updates.pop("chunk_size")
+    if updates.get("kb_dirs"):
+        updates["kb_dirs"] = [Path(d) for d in updates["kb_dirs"]]
+    return settings.model_copy(update={k: v for k, v in updates.items() if v is not None})
