@@ -39,9 +39,8 @@ def test_api_chat_and_workflow(monkeypatch, sample_settings, sample_prd):
             json={"text": sample_prd, "project_name": "支付平台"},
         )
         assert wf_resp.status_code == 200
-        data = wf_resp.json()
-        assert data["evaluation"]["passed"] is True
-        assert any(s["name"] == "payment-service" for s in data["subsystems"])
+        assert "workflow_id" in wf_resp.json()
+        assert wf_resp.json()["status"] == "running"
 
 
 def test_api_chat_stream_ai_sdk_format(monkeypatch, sample_settings):

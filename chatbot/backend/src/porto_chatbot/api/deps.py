@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..agent import PortoAgent
 from ..config_store import ConfigStore
@@ -12,6 +13,10 @@ from ..logging_utils import get_component_logger
 from ..memory import MemoryStore
 from ..models import AgentSettingsPayload, RagSettingsPayload
 from ..vector_store import LocalVectorStore
+
+if TYPE_CHECKING:
+    from ..workflow_executor import WorkflowExecutor
+    from ..workflow_store import WorkflowStore
 
 logger = get_component_logger("api")
 
@@ -173,6 +178,38 @@ def get_index_supervisor() -> IndexSupervisor:
 
 def get_health_monitor() -> HealthMonitor:
     return _ensure_rag_singletons()["health"]
+
+
+def get_workflow_store() -> WorkflowStore:
+    """按 data_dir 缓存的 WorkflowStore 单例(懒加载,挂入现有 entry dict)。
+
+    复用 ``_ensure_rag_singletons`` 的 data_dir-keyed entry,避免另起一套并行的
+    单例系统;同一测试的 data_dir 内 store/executor 与其他 rag 单例共享生命周期。
+    """
+    from ..workflow_store import WorkflowStore
+
+    entry = _ensure_rag_singletons()
+    store = entry.get("workflow_store")
+    if store is None:
+        store = WorkflowStore(current_settings())
+        entry["workflow_store"] = store
+    return store
+
+
+def get_workflow_executor() -> WorkflowExecutor:
+    """按 data_dir 缓存的 WorkflowExecutor 单例(懒加载)。
+
+    executor 内部用 per-workflow guard 锁,本身是线程安全的;复用同一实例可让
+    guard 字典跨请求存活,避免并发 advance 时锁状态丢失。
+    """
+    from ..workflow_executor import WorkflowExecutor
+
+    entry = _ensure_rag_singletons()
+    ex = entry.get("workflow_executor")
+    if ex is None:
+        ex = WorkflowExecutor(current_settings(), get_workflow_store())
+        entry["workflow_executor"] = ex
+    return ex
 
 
 def reset_rag_singletons() -> None:
