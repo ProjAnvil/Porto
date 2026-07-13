@@ -30,10 +30,10 @@ PRD 文档 → 业务理解 → 子系统识别 → 上下文图 → 子系统�
 # 2. （可选）在 ~/.porto/config.json 中配置知识库
 
 # 3. 启动新工作流
-/porto.gen docs/requirements.md --name "我的项目"
+/porto gen docs/requirements.md --name "我的项目"
 
 # 4. 查看输出，然后继续
-/porto.continue
+/porto continue
 
 # 5. 重复直到完成（4 个步骤）
 ```
@@ -63,11 +63,11 @@ cd /path/to/Porto
 
 | 命令 | 描述 |
 |------|------|
-| `/porto.gen` | 启动新的 PRD 分解工作流 |
-| `/porto.continue` | 继续到下一步 |
-| `/porto.resume` | 恢复中断的工作流 |
-| `/porto.status` | 查看详细工作流状态 |
-| `/porto.list` | 列出所有工作流（支持过滤） |
+| `/porto gen` | 启动新的 PRD 分解工作流 |
+| `/porto continue` | 继续到下一步 |
+| `/porto resume` | 恢复中断的工作流 |
+| `/porto status` | 查看详细工作流状态 |
+| `/porto list` | 列出所有工作流（支持过滤） |
 
 ---
 
@@ -141,16 +141,17 @@ Porto 使用 **4 步交互式工作流**：
         ├── current_step           # 当前步骤 (1/2/3/4)
         ├── inputs/                # 原始 PRD 文件
         │   └── requirements.md
-        ├── step1_understanding.md # 业务需求
-        ├── step2_subsystems.md    # 子系统定义
-        ├── step3_context.md       # 交互图
-        └── step4/                 # 每个子系统规格
-            ├── imed-process/
-            │   └── REQUIREMENTS.md
-            ├── ircs-notice/
-            │   └── REQUIREMENTS.md
-            └── payment-gateway/
-                └── REQUIREMENTS.md
+    └── md/
+      ├── step1_understanding.md # 业务需求
+      ├── step2_subsystems.md    # 子系统定义
+      ├── step3_context.md       # 交互图
+      └── step4/                 # 每个子系统规格
+        ├── imed-process/
+        │   └── REQUIREMENTS.md
+        ├── ircs-notice/
+        │   └── REQUIREMENTS.md
+        └── payment-gateway/
+          └── REQUIREMENTS.md
 ```
 
 ### Step 3 上下文输出示例
@@ -295,40 +296,40 @@ Porto 引用配置的知识库用于：
 
 ## 命令详情
 
-### `/porto.gen` - 启动工作流
+### `/porto gen` - 启动工作流
 
 ```bash
-/porto.gen docs/requirements.md
-/porto.gen docs/backend.md docs/frontend.md --name "电商平台"
+/porto gen docs/requirements.md
+/porto gen docs/backend.md docs/frontend.md --name "电商平台"
 ```
 
-### `/porto.continue` - 下一步
+### `/porto continue` - 下一步
 
 ```bash
-/porto.continue
+/porto continue
 ```
 
-### `/porto.resume` - 恢复工作流
+### `/porto resume` - 恢复工作流
 
 ```bash
-/porto.resume a7f3c8b1
+/porto resume a7f3c8b1
 ```
 
-### `/porto.status` - 查看状态
+### `/porto status` - 查看状态
 
 ```bash
-/porto.status
-/porto.status a7f3c8b1
-/porto.status --full
+/porto status
+/porto status a7f3c8b1
+/porto status --full
 ```
 
-### `/porto.list` - 列出工作流
+### `/porto list` - 列出工作流
 
 ```bash
-/porto.list
-/porto.list --all
-/porto.list --status in_progress
-/porto.list --detail
+/porto list
+/porto list --all
+/porto list --status in_progress
+/porto list --detail
 ```
 
 ---
@@ -344,30 +345,26 @@ Porto/
 │   └── README_zhcn.md                  # 中文文档
 ├── skills/                             # 执行能力
 │   ├── en/                             # 英文版
-│   │   ├── prd-decomposition.md        # Step 1: 理解
-│   │   ├── subsystem-identification.md # Step 2: 识别
-│   │   ├── subsystem-context-generation.md # Step 3: 上下文
-│   │   ├── subsystem-specification.md  # Step 4: 规格
-    │   └── knowledge-retrieval.md      # 知识库访问
+│   │   ├── SKILL.md
+│   │   └── references/
+│   │       ├── prd-decomposition.md        # Step 1: 理解
+│   │       ├── subsystem-identification.md # Step 2: 识别
+│   │       ├── subsystem-context-generation.md # Step 3: 上下文
+│   │       ├── subsystem-specification.md  # Step 4: 规格
+│   │       └── knowledge-retrieval.md      # 知识库访问
 │   └── zhcn/                           # 中文版
-│       ├── prd-decomposition.md
-│       ├── subsystem-identification.md
-│       ├── subsystem-context-generation.md
-│       ├── subsystem-specification.md
-│       └── knowledge-retrieval.md
-└── commands/                           # 用户入口
-    ├── en/                             # 英文版
-    │   ├── porto.gen.md
-    │   ├── porto.continue.md
-    │   ├── porto.resume.md
-    │   ├── porto.status.md
-    │   └── porto.list.md
-    └── zhcn/                           # 中文版
-        ├── porto.gen.md
-        ├── porto.continue.md
-        ├── porto.resume.md
-        ├── porto.status.md
-        └── porto.list.md
+│       ├── SKILL.md
+│       └── references/
+│           ├── prd-decomposition.md
+│           ├── subsystem-identification.md
+│           ├── subsystem-context-generation.md
+│           ├── subsystem-specification.md
+│           └── knowledge-retrieval.md
+└── agents/
+  ├── en/
+  │   └── prd-analyst.md
+  └── zhcn/
+    └── prd-analyst.md
 ```
 
 ---

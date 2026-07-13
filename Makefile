@@ -1,4 +1,4 @@
-.PHONY: test test-server test-workflow test-verbose serve install clean help
+.PHONY: test test-server test-workflow test-verbose lint compile check serve install clean help
 
 help: ## 显示帮助信息
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -14,6 +14,14 @@ test-server: ## 仅运行 server 测试
 
 test-workflow: ## 仅运行 workflow 测试
 	uv run pytest tests/test_porto_workflow.py -v
+
+lint: ## 运行 Ruff 静态检查
+	uv run ruff check .
+
+compile: ## 编译检查（语法级）
+	uv run python -m compileall -q .
+
+check: lint test compile ## 运行完整校验
 
 serve: ## 启动开发服务器（使用测试 seed 数据）
 	uv run python porto_server.py --porto-home tests/porto_home --port 8090

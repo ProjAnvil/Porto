@@ -1,14 +1,10 @@
 """Tests for porto_workflow.py."""
 
 import json
-import os
-import shutil
 from pathlib import Path
 
-import pytest
-
 import porto_workflow
-
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -179,6 +175,7 @@ class TestStepOperations:
     def _make_args(self, **kwargs):
         class Args:
             pass
+
         a = Args()
         for k, v in kwargs.items():
             setattr(a, k, v)
@@ -205,8 +202,10 @@ class TestStepOperations:
         from contextlib import redirect_stdout
 
         args = self._make_args(
-            workflow="test-wf-001", step=3,
-            output="md/step3_context.md", summary=None,
+            workflow="test-wf-001",
+            step=3,
+            output="md/step3_context.md",
+            summary=None,
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -222,7 +221,8 @@ class TestStepOperations:
         from contextlib import redirect_stdout
 
         args = self._make_args(
-            workflow="test-wf-001", step=3,
+            workflow="test-wf-001",
+            step=3,
             error="Test failure",
         )
         buf = io.StringIO()
@@ -252,6 +252,7 @@ class TestCmdAdvance:
     def _make_args(self, **kwargs):
         class Args:
             pass
+
         a = Args()
         for k, v in kwargs.items():
             setattr(a, k, v)
@@ -265,8 +266,10 @@ class TestCmdAdvance:
 
         # First complete step 3
         args = self._make_args(
-            workflow="test-wf-001", step=3,
-            output="md/step3_context.md", summary=None,
+            workflow="test-wf-001",
+            step=3,
+            output="md/step3_context.md",
+            summary=None,
         )
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -302,9 +305,9 @@ class TestStepDefinitions:
     def test_all_steps_have_md_prefix(self):
         for step_num, defn in porto_workflow.STEP_DEFINITIONS.items():
             output = defn.get("output_file") or defn.get("output_dir")
-            assert output.startswith("md/"), (
-                f"Step {step_num} output '{output}' does not start with 'md/'"
-            )
+            assert output.startswith(
+                "md/"
+            ), f"Step {step_num} output '{output}' does not start with 'md/'"
 
     def test_total_steps_is_4(self):
         assert porto_workflow.TOTAL_STEPS == 4

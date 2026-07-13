@@ -26,7 +26,6 @@ import http.server
 import json
 import os
 import re
-import sys
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -56,6 +55,7 @@ def _get_workflows_dir() -> Path:
 # ---------------------------------------------------------------------------
 # Markdown parsing helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_sections(md_text: str) -> list[dict[str, str]]:
     """Split markdown by ## headings, return list of {id, title, content_preview}."""
@@ -87,11 +87,13 @@ def _extract_subsystems_from_md(md_text: str) -> list[dict[str, Any]]:
             body,
             re.IGNORECASE,
         )
-        subsystems.append({
-            "name": name,
-            "type": type_match.group(1) if type_match else "unknown",
-            "responsibility": resp_match.group(1).strip() if resp_match else "",
-        })
+        subsystems.append(
+            {
+                "name": name,
+                "type": type_match.group(1) if type_match else "unknown",
+                "responsibility": resp_match.group(1).strip() if resp_match else "",
+            }
+        )
     return subsystems
 
 
@@ -105,10 +107,12 @@ def _extract_subsystem_specs(step_dir: Path) -> list[dict[str, Any]]:
         if child.is_dir() and req.exists():
             text = req.read_text(encoding="utf-8")
             sections = _extract_sections(text)
-            specs.append({
-                "name": child.name,
-                "sections": [s["title"] for s in sections],
-            })
+            specs.append(
+                {
+                    "name": child.name,
+                    "sections": [s["title"] for s in sections],
+                }
+            )
     return specs
 
 
@@ -169,17 +173,21 @@ def _list_all_workflows() -> list[dict[str, Any]]:
                 info = steps_info.get(str(n), {})
                 step_statuses[n] = info.get("status", "not_started")
             completed = sum(1 for s in step_statuses.values() if s == "completed")
-            workflows.append({
-                "workflow_id": wf.get("workflow_id", d.name),
-                "project_name": wf.get("project_name", wf.get("name", d.name)),
-                "status": wf.get("status", "unknown"),
-                "created_at": wf.get("created_at", ""),
-                "step_statuses": step_statuses,
-                "completed_steps": completed,
-                "total_steps": 4,
-                "subsystems": [s.get("name", s) if isinstance(s, dict) else s
-                               for s in wf.get("subsystems", [])],
-            })
+            workflows.append(
+                {
+                    "workflow_id": wf.get("workflow_id", d.name),
+                    "project_name": wf.get("project_name", wf.get("name", d.name)),
+                    "status": wf.get("status", "unknown"),
+                    "created_at": wf.get("created_at", ""),
+                    "step_statuses": step_statuses,
+                    "completed_steps": completed,
+                    "total_steps": 4,
+                    "subsystems": [
+                        s.get("name", s) if isinstance(s, dict) else s
+                        for s in wf.get("subsystems", [])
+                    ],
+                }
+            )
     return workflows
 
 
@@ -231,6 +239,7 @@ def _get_step_info(wf_dir: Path, workflow: dict, step: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
+
 
 class PortoHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for the Porto workflow server."""
@@ -293,15 +302,21 @@ class PortoHandler(http.server.BaseHTTPRequestHandler):
             return
         workflow = _load_workflow_json(wf_dir)
         steps = [_get_step_info(wf_dir, workflow, n) for n in range(1, 5)]
-        self._json_response({
-            "workflow_id": workflow.get("workflow_id", wf_id),
-            "project_name": workflow.get("project_name", workflow.get("name", wf_id)),
-            "status": workflow.get("status", "unknown"),
-            "created_at": workflow.get("created_at", ""),
-            "subsystems": [s.get("name", s) if isinstance(s, dict) else s
-                           for s in workflow.get("subsystems", [])],
-            "steps": steps,
-        })
+        self._json_response(
+            {
+                "workflow_id": workflow.get("workflow_id", wf_id),
+                "project_name": workflow.get(
+                    "project_name", workflow.get("name", wf_id)
+                ),
+                "status": workflow.get("status", "unknown"),
+                "created_at": workflow.get("created_at", ""),
+                "subsystems": [
+                    s.get("name", s) if isinstance(s, dict) else s
+                    for s in workflow.get("subsystems", [])
+                ],
+                "steps": steps,
+            }
+        )
 
     def _handle_get_step(self, wf_id: str, step: int):
         wf_dir = _get_workflows_dir() / wf_id
@@ -935,11 +950,14 @@ def _build_spa_html() -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Porto Workflow Server — browse and edit workflows in your browser"
     )
-    parser.add_argument("--port", type=int, default=8090, help="Port to listen on (default: 8090)")
+    parser.add_argument(
+        "--port", type=int, default=8090, help="Port to listen on (default: 8090)"
+    )
     parser.add_argument("--porto-home", type=str, help="Override Porto home directory")
     args = parser.parse_args()
 

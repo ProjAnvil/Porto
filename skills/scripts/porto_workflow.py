@@ -52,6 +52,7 @@ def _set_porto_home(path: Path) -> None:
 def _get_workflows_dir() -> Path:
     return _get_porto_home() / "workflows"
 
+
 STEP_DEFINITIONS = {
     1: {
         "name": "understanding",
@@ -491,7 +492,6 @@ def cmd_advance(args):
     state["current_step"] = next_step
     state["status"] = "paused"  # Paused = waiting for user to run continue
 
-    next_step_data = state["steps"][str(next_step)]
     next_defn = STEP_DEFINITIONS[next_step]
 
     # Check prerequisite files
@@ -558,8 +558,8 @@ def cmd_status(args):
     for i in range(1, TOTAL_STEPS + 1):
         step = state["steps"].get(str(i), {})
         defn = STEP_DEFINITIONS.get(i, {})
-        output_file = step.get("output") or defn.get("output_file") or defn.get(
-            "output_dir"
+        output_file = (
+            step.get("output") or defn.get("output_file") or defn.get("output_dir")
         )
         output_path = wf_dir_path / output_file if output_file else None
         steps_detail.append(
@@ -570,7 +570,9 @@ def cmd_status(args):
                 "output": output_file,
                 "output_exists": output_path.exists() if output_path else False,
                 "output_size": (
-                    output_path.stat().st_size if output_path and output_path.exists() else None
+                    output_path.stat().st_size
+                    if output_path and output_path.exists()
+                    else None
                 ),
                 "started_at": step.get("started_at"),
                 "completed_at": step.get("completed_at"),
@@ -604,9 +606,7 @@ def cmd_status(args):
                         content = fpath.read_text(encoding="utf-8")
                         lines = content.splitlines()
                         previews[f"step{sd['step']}"] = (
-                            "\n".join(lines[:50])
-                            if len(lines) > 50
-                            else content
+                            "\n".join(lines[:50]) if len(lines) > 50 else content
                         )
                     except OSError:
                         pass
@@ -641,14 +641,10 @@ def cmd_list(args):
 
     if args.name:
         kw = args.name.lower()
-        workflows = [
-            w for w in workflows if kw in w.get("project_name", "").lower()
-        ]
+        workflows = [w for w in workflows if kw in w.get("project_name", "").lower()]
 
     if args.step is not None:
-        workflows = [
-            w for w in workflows if w.get("current_step") == args.step
-        ]
+        workflows = [w for w in workflows if w.get("current_step") == args.step]
 
     if not args.all:
         days = args.recent or 3
@@ -832,7 +828,11 @@ def cmd_cleanup(args):
             # Only remove completed or failed workflows
             if state.get("status") not in ("completed", "failed"):
                 continue
-            updated = state.get("updated_at") or state.get("completed_at") or state.get("created_at")
+            updated = (
+                state.get("updated_at")
+                or state.get("completed_at")
+                or state.get("created_at")
+            )
             if updated:
                 dt = datetime.fromisoformat(updated)
                 if dt < cutoff:
@@ -896,29 +896,39 @@ def main():
 
     # status
     p_stat = sub.add_parser("status", help="Display workflow status")
-    p_stat.add_argument("--workflow", default=None, help="Workflow ID (omit for active)")
+    p_stat.add_argument(
+        "--workflow", default=None, help="Workflow ID (omit for active)"
+    )
     p_stat.add_argument("--full", action="store_true", help="Include output previews")
 
     # list
     p_list = sub.add_parser("list", help="List workflows")
     p_list.add_argument("--all", action="store_true", help="Show all workflows")
-    p_list.add_argument("--recent", type=int, default=None, help="Last N days (default 3)")
+    p_list.add_argument(
+        "--recent", type=int, default=None, help="Last N days (default 3)"
+    )
     p_list.add_argument("--status", default=None, help="Filter by status")
     p_list.add_argument("--name", default=None, help="Filter by project name")
     p_list.add_argument("--step", type=int, default=None, help="Filter by step number")
 
     # resume
     p_res = sub.add_parser("resume", help="Resume a workflow")
-    p_res.add_argument("--workflow", default=None, help="Workflow ID (omit to list resumable)")
+    p_res.add_argument(
+        "--workflow", default=None, help="Workflow ID (omit to list resumable)"
+    )
 
     # set-subsystems
     p_subsys = sub.add_parser("set-subsystems", help="Record identified subsystems")
     p_subsys.add_argument("--workflow", required=True)
-    p_subsys.add_argument("--subsystems", required=True, help="JSON array of subsystems")
+    p_subsys.add_argument(
+        "--subsystems", required=True, help="JSON array of subsystems"
+    )
 
     # cleanup
     p_clean = sub.add_parser("cleanup", help="Remove old workflows")
-    p_clean.add_argument("--older-than", type=int, default=30, help="Remove older than N days")
+    p_clean.add_argument(
+        "--older-than", type=int, default=30, help="Remove older than N days"
+    )
 
     args = parser.parse_args()
 

@@ -3,14 +3,12 @@
 import http.client
 import json
 import threading
-import time
 from http.server import HTTPServer
 from pathlib import Path
 
 import pytest
 
 import porto_server
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,10 +46,15 @@ def _get(port, path):
 def _post(port, path, body_text):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     data = body_text.encode("utf-8")
-    conn.request("POST", path, body=data, headers={
-        "Content-Type": "text/plain; charset=utf-8",
-        "Content-Length": str(len(data)),
-    })
+    conn.request(
+        "POST",
+        path,
+        body=data,
+        headers={
+            "Content-Type": "text/plain; charset=utf-8",
+            "Content-Length": str(len(data)),
+        },
+    )
     resp = conn.getresponse()
     body = resp.read().decode("utf-8")
     conn.close()
@@ -163,7 +166,7 @@ class TestExtractSubsystemSpecs:
 
 class TestHtmlEscape:
     def test_escapes_special_chars(self):
-        assert porto_server._html_escape('<script>"hello"&\'world\'') == (
+        assert porto_server._html_escape("<script>\"hello\"&'world'") == (
             "&lt;script&gt;&quot;hello&quot;&amp;&#039;world&#039;"
         )
 
@@ -319,12 +322,20 @@ class TestAPIGetSubsystemSpec:
 class TestAPISaveStep:
     def test_save_step(self, server, porto_home):
         new_content = "# Updated Step 1\n\nNew content here."
-        status, body = _post(server, "/api/workflows/test-wf-payment/step/1", new_content)
+        status, body = _post(
+            server, "/api/workflows/test-wf-payment/step/1", new_content
+        )
         assert status == 200
         data = json.loads(body)
         assert data["ok"] is True
         # Verify file was written
-        md_path = porto_home / "workflows" / "test-wf-payment" / "md" / "step1_understanding.md"
+        md_path = (
+            porto_home
+            / "workflows"
+            / "test-wf-payment"
+            / "md"
+            / "step1_understanding.md"
+        )
         assert md_path.read_text(encoding="utf-8") == new_content
 
     def test_save_nonexistent_workflow(self, server):
@@ -335,12 +346,22 @@ class TestAPISaveStep:
 class TestAPISaveSubsystemSpec:
     def test_save_spec(self, server, porto_home):
         new_content = "# Updated risk-engine\n\nNew spec."
-        status, body = _post(server, "/api/workflows/test-wf-payment/step/4/risk-engine", new_content)
+        status, body = _post(
+            server, "/api/workflows/test-wf-payment/step/4/risk-engine", new_content
+        )
         assert status == 200
         data = json.loads(body)
         assert data["ok"] is True
         # Verify
-        spec_path = porto_home / "workflows" / "test-wf-payment" / "md" / "step4" / "risk-engine" / "REQUIREMENTS.md"
+        spec_path = (
+            porto_home
+            / "workflows"
+            / "test-wf-payment"
+            / "md"
+            / "step4"
+            / "risk-engine"
+            / "REQUIREMENTS.md"
+        )
         assert spec_path.read_text(encoding="utf-8") == new_content
 
     def test_save_path_traversal(self, server):
@@ -348,6 +369,7 @@ class TestAPISaveSubsystemSpec:
         # The handler rejects subsystem names containing ".."
         # We test the function directly instead
         import porto_server as ps
+
         assert ps._get_subsystem_spec_path(Path("/dummy"), "../etc") is None
         assert ps._get_subsystem_spec_path(Path("/dummy"), "foo/bar") is None
 

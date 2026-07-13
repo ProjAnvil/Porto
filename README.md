@@ -4,6 +4,13 @@
 
 **English** | [中文](docs/README_zhcn.md)
 
+## Project Governance
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [License](LICENSE)
+
 Porto is an AI-native system that decomposes Product Requirement Documents (PRDs) into detailed subsystem-level requirement specifications.
 
 ## Core Concept

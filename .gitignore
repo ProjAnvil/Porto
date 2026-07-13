@@ -8,3 +8,18 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Environment files
+.env
+.env.*
+!.env.example
+chatbot/backend/.env
+
+# Node/Bun frontend artifacts
+node_modules/
+chatbot/frontend/dist/
+chatbot/frontend/.vite/
+
+# Python local artifacts
+.ruff_cache/
+.pytest_cache/

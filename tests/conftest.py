@@ -1,7 +1,5 @@
 """Shared test fixtures for Porto tests."""
 
-import json
-import os
 import shutil
 from pathlib import Path
 
