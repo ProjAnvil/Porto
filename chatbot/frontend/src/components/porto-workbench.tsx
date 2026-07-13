@@ -826,6 +826,54 @@ function SettingsPage({
               </div>
             </div>
 
+            <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+              <p className="text-xs text-zinc-500">知识库目录</p>
+              <ul className="mt-2 space-y-1 text-sm">
+                {ragConfig.kb_dirs.map((d, i) => (
+                  <li key={`${d}-${i}`} className="flex items-center justify-between gap-2">
+                    <span className="truncate text-zinc-700">{d}</span>
+                    <button
+                      className="text-xs text-rose-500 hover:underline"
+                      type="button"
+                      onClick={() =>
+                        onSaveRag({
+                          ...ragConfig,
+                          kb_dirs: ragConfig.kb_dirs.filter((_, j) => j !== i),
+                        })
+                      }
+                    >
+                      删除
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <form
+                className="mt-2 flex gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const input = event.currentTarget.elements.namedItem("dir") as HTMLInputElement | null;
+                  const value = input?.value.trim();
+                  if (value && !ragConfig.kb_dirs.includes(value)) {
+                    void onSaveRag({ ...ragConfig, kb_dirs: [...ragConfig.kb_dirs, value] });
+                    if (input) input.value = "";
+                  }
+                }}
+              >
+                <input
+                  className="flex-1 rounded-md border border-zinc-200 px-2 py-1 text-sm"
+                  name="dir"
+                  placeholder="添加目录路径，如 ~/Documents/repo"
+                />
+                <button
+                  className="rounded-md bg-zinc-950 px-3 py-1 text-sm text-white"
+                  type="submit"
+                >
+                  添加
+                </button>
+              </form>
+              <p className="mt-2 text-xs text-zinc-400">添加/删除目录后需点 Re-index 生效</p>
+            </div>
+
             {ri ? (
               <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -911,15 +959,13 @@ function RagSettingsForm({
 
   async function saveRag() {
     const saved = await onSaveRag(ragDraft);
-    if (!saved) return;
-    await onRefreshIndex(saved);
-    onSaved();
+    if (saved) onSaved();
   }
 
   return (
     <SettingsCard
       busy={busy}
-      saveLabel="Save & Re-index"
+      saveLabel="保存配置"
       title="RAG Settings"
       onSave={saveRag}
     >
@@ -995,6 +1041,41 @@ function RagSettingsForm({
             onChange={(event) => updateRag("top_k", Number(event.target.value))}
           />
         </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">检索算法</span>
+          <select
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={ragDraft.retrieval_method}
+            onChange={(event) =>
+              updateRag("retrieval_method", event.target.value as RagConfig["retrieval_method"])
+            }
+          >
+            <option value="hybrid">hybrid（向量 + BM25）</option>
+            <option value="vector">vector（仅向量）</option>
+            <option value="bm25">bm25（仅关键词）</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">BM25 候选数（hybrid 用）</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            type="number"
+            min={1}
+            value={ragDraft.bm25_top_k}
+            onChange={(event) => updateRag("bm25_top_k", Number(event.target.value))}
+          />
+        </label>
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <button
+          className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+          type="button"
+          disabled={busy}
+          onClick={() => onRefreshIndex(ragDraft)}
+        >
+          Re-index
+        </button>
+        <span className="text-xs text-zinc-400">改动目录或切分参数后需手动 Re-index 生效</span>
       </div>
     </SettingsCard>
   );
@@ -1106,13 +1187,13 @@ function AgentSettingsForm({
           />
         </label>
       </div>
-      <details className="mt-4">
-        <summary className="cursor-pointer text-xs text-zinc-500">
-          高级配置（Critic · Spec loop · Workflow · Memory · Context）
-        </summary>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
+
+      <div className="mt-5 rounded-lg border border-zinc-200 p-4">
+        <p className="text-sm font-semibold text-zinc-700">Critic LLM</p>
+        <p className="text-xs text-zinc-400">独立评审模型，留空复用 generator</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
           <label className="block">
-            <span className="text-xs text-zinc-500">Critic Provider（留空复用 generator）</span>
+            <span className="text-xs text-zinc-500">Provider</span>
             <select
               className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
               value={agentDraft.critic_provider ?? ""}
@@ -1129,36 +1210,60 @@ function AgentSettingsForm({
             </select>
           </label>
           <label className="block">
-            <span className="text-xs text-zinc-500">Critic Model</span>
+            <span className="text-xs text-zinc-500">Model</span>
             <input
               className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
               value={agentDraft.critic_model ?? ""}
-              onChange={(event) =>
-                updateAgent("critic_model", event.target.value || null)
-              }
+              onChange={(event) => updateAgent("critic_model", event.target.value || null)}
             />
           </label>
           <label className="block md:col-span-2">
-            <span className="text-xs text-zinc-500">Critic Base URL（留空复用 generator）</span>
+            <span className="text-xs text-zinc-500">Base URL</span>
             <input
               className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
               value={agentDraft.critic_base_url ?? ""}
-              onChange={(event) =>
-                updateAgent("critic_base_url", event.target.value || null)
-              }
+              onChange={(event) => updateAgent("critic_base_url", event.target.value || null)}
             />
           </label>
           <label className="block md:col-span-2">
-            <span className="text-xs text-zinc-500">Critic API Key（留空复用 generator）</span>
+            <span className="text-xs text-zinc-500">API Key</span>
             <input
               className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
               type="password"
               value={agentDraft.critic_api_key ?? ""}
-              onChange={(event) =>
-                updateAgent("critic_api_key", event.target.value || null)
-              }
+              onChange={(event) => updateAgent("critic_api_key", event.target.value || null)}
             />
           </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Temperature</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              step="0.1"
+              min="0"
+              max="2"
+              value={agentDraft.critic_temperature ?? 0.1}
+              onChange={(event) => updateAgent("critic_temperature", Number(event.target.value))}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Max Tokens</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min="1"
+              value={agentDraft.critic_max_tokens ?? 1500}
+              onChange={(event) => updateAgent("critic_max_tokens", Number(event.target.value))}
+            />
+          </label>
+        </div>
+      </div>
+
+      <details className="mt-4">
+        <summary className="cursor-pointer text-xs text-zinc-500">
+          高级配置（Spec loop · Workflow · Memory · Context）
+        </summary>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
           <label className="block">
             <span className="text-xs text-zinc-500">Spec refine 启用</span>
             <input
