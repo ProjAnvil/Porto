@@ -112,39 +112,75 @@ def test_advance_from_checkpoint_runs_next(tmp_path, monkeypatch):
 def test_two_rapid_advances_first_wins(tmp_path, monkeypatch):
     """回归:两次 rapid advance() 同一 workflow,第一次必须 True,第二次必须 False。
 
-    修复前 _run_async 模式:acquire(non-blocking) → release → blocking acquire
-    在 release 与 re-acquire 之间出现 TOCTOU 窗口,两次并发 advance 都能拿到 True
-    并各起 worker,跳过 checkpoint。修复后 guard 跨越 Thread.start() 不被 release,
-    第二次 advance 的非阻塞 acquire 必然失败。
+    关键点:第一次 True 必须由 **advance()** 返回(不是 start_workflow 预占 guard)。
+    否则 release-reacquire race 无法被检出 —— start_workflow 持有 guard 时两次 advance
+    都返回 False,即便旧实现的 _run_async release→blocking acquire race 也不会暴露。
+
+    场景:
+    1. start_workflow + FAST runner 把 workflow 推到 understand checkpoint 并结束
+       (guard 已释放,无 worker 在跑)。
+    2. 换 SLOW runner:进入时 set(running),阻塞于 release.wait() —— worker 长时间持有 guard。
+    3. 第一次 advance():guard 空闲 → 拿到 → 起 worker → 返回 **True**(关键断言)。
+    4. 等 running 被 set → 确认 worker 已进入 runner、guard 被持有。
+    5. 第二次 advance():guard 被持 → 非阻塞 acquire 失败 → 返回 **False**(关键断言)。
+    6. set(release) 让 worker 完成;最终 current_step == "identify" 证明第一次 advance
+       确实驱动了一步。
+
+    若有人回滚到 release-reacquire 模式(advance 内部先 release 再 blocking acquire),
+    第二次 advance 可能抢到 True → 测试失败。
     """
     ex, store = _make(tmp_path)
     import porto_chatbot.workflow_executor as we
 
-    started = threading.Event()
-
-    def slow_run(agent, state):
-        # 模拟长任务:先发信号告知 worker 已进入,再 sleep;此时第二次 advance 必然失败
-        started.set()
-        time.sleep(0.5)
+    # ---- Step 1: FAST runner,只为 start_workflow 把 workflow 推到 understand checkpoint
+    def fast_run(agent, state):
         state["current_step"] = "understand"
         state["status"] = "awaiting_input"
         state["sources"] = []
         state["understanding"] = "U"
         return state
 
-    monkeypatch.setattr(we.WorkflowRunner, "run_to_next_checkpoint", staticmethod(slow_run))
+    monkeypatch.setattr(we.WorkflowRunner, "run_to_next_checkpoint", staticmethod(fast_run))
     wid = store.create(
         "s", "p", "prd", 6, {"embedding_provider": "local"}, {"agent_provider": "openai"}
     )
     ex.start_workflow(wid)
-    # 等 worker 真正进入 slow_run(此时 guard 被持有)
-    assert started.wait(timeout=2.0), "worker 未启动"
-    # 此时两次 advance 都应被拒绝(workflow 在 running)
-    r1 = ex.advance(wid)
-    r2 = ex.advance(wid)
-    assert r1 is False, f"第一次 advance 期望 False,实际 {r1}"
-    assert r2 is False, f"第二次 advance 期望 False,实际 {r2}"
     ex.wait(wid, timeout=5)
+    # 现在 workflow 停在 understand checkpoint,guard 空闲,无 worker 在跑
+    assert store.get(wid)["current_step"] == "understand"
+
+    # ---- Step 2: 换 SLOW runner,worker 进入后阻塞,持续持有 guard
+    running = threading.Event()
+    release = threading.Event()
+
+    def slow_run(agent, state):
+        running.set()
+        release.wait(timeout=5.0)
+        # 从 understand 推进到 identify
+        state["current_step"] = "identify"
+        state["status"] = "awaiting_input"
+        state["subsystems"] = []
+        return state
+
+    monkeypatch.setattr(we.WorkflowRunner, "run_to_next_checkpoint", staticmethod(slow_run))
+
+    # ---- Step 3: 第一次 advance 必须返回 True(advance 自己拿到 guard 并起 worker)
+    r1 = ex.advance(wid)
+    assert r1 is True, f"第一次 advance 期望 True,实际 {r1}(race 检测已失效)"
+
+    # ---- Step 4: 等 worker 进入 slow_run(guard 已被 worker 持有)
+    assert running.wait(timeout=2.0), "worker 未进入 slow_run"
+
+    # ---- Step 5: 第二次 advance 必须返回 False(guard 被 worker 持有)
+    r2 = ex.advance(wid)
+    assert r2 is False, f"第二次 advance 期望 False,实际 {r2}(guard 未跨 Thread.start 持有)"
+
+    # ---- Step 6: 唤醒 worker 完成,验证第一次 advance 驱动了一步
+    release.set()
+    ex.wait(wid, timeout=5)
+    row = store.get(wid)
+    assert row["status"] == "awaiting_input", f"期望 awaiting_input,实际 {row['status']}"
+    assert row["current_step"] == "identify", f"期望 identify,实际 {row['current_step']}"
 
 
 def test_persist_state_preserves_user_produced_by(tmp_path, monkeypatch):
