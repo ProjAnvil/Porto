@@ -62,17 +62,29 @@ def read_document(path: Path) -> str:
     raise ValueError(f"Unsupported document type: {path.suffix}")
 
 
-def iter_documents(root: Path) -> list[Path]:
-    if not root.exists():
-        logger.info("iter documents root missing root=%s", root)
-        return []
-    documents = sorted(
-        p
-        for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS and not p.name.startswith("~$")
-    )
-    logger.info("iter documents root=%s count=%s", root, len(documents))
-    return documents
+def iter_documents(roots: list[Path]) -> list[tuple[Path, Path]]:
+    """遍历多个根目录，返回 ``(root, file)`` 列表，按文件绝对路径去重。
+
+    返回 root 是为了让上层生成 ``{root.name}/{相对 root 的路径}`` 显示标识。
+    """
+    seen: set[Path] = set()
+    out: list[tuple[Path, Path]] = []
+    for root in roots:
+        if not root.exists():
+            logger.info("iter documents root missing root=%s", root)
+            continue
+        for p in sorted(root.rglob("*")):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in SUPPORTED_EXTENSIONS or p.name.startswith("~$"):
+                continue
+            real = p.resolve()
+            if real in seen:
+                continue
+            seen.add(real)
+            out.append((root, p))
+    logger.info("iter documents roots=%s count=%s", [str(r) for r in roots], len(out))
+    return out
 
 
 def detect_content_format(path: Path) -> ContentFormat:

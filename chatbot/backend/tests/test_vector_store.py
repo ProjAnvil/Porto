@@ -12,7 +12,7 @@ def test_build_and_search(sample_settings):
 
     results = store.search("支付 风控 refund", top_k=2)
     assert results
-    assert results[0].path == "payment-platform.md"
+    assert results[0].path == "kb/payment-platform.md"
     assert results[0].score > 0
 
 
@@ -35,3 +35,30 @@ def test_ensure_index_no_rebuild_on_dimension_change(sample_settings):
 
     assert stats.embedding_dimensions == 128  # 旧维度，未重建
     assert results == []  # 维度不匹配 → 不可用，返回空
+
+
+def test_build_multi_root_same_filename(tmp_path):
+    """多目录同名文件：chunk id 含 root 前缀防冲突，两个都保留，path 带 root.name。"""
+    a = tmp_path / "kb1"
+    b = tmp_path / "kb2"
+    a.mkdir()
+    b.mkdir()
+    (a / "dup.md").write_text("# alpha\n支付内容一", encoding="utf-8")
+    (b / "dup.md").write_text("# beta\n风控内容二", encoding="utf-8")
+    s = Settings(
+        kb_dirs=[a, b],
+        data_dir=tmp_path / "data",
+        log_dir=tmp_path / "logs",
+        embedding_dimensions=128,
+        embedding_provider="local",
+    )
+    store = LocalVectorStore(s)
+    stats = store.build()
+    assert stats.documents == 2  # 两个同名文件都建索引（id 防冲突）
+
+    results = store.search("支付", top_k=5)
+    paths = {r.metadata.get("path") for r in results}
+    assert any("kb1/" in (p or "") for p in paths)
+    results2 = store.search("风控", top_k=5)
+    paths2 = {r.metadata.get("path") for r in results2}
+    assert any("kb2/" in (p or "") for p in paths2)

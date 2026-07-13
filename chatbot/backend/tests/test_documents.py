@@ -8,6 +8,7 @@ from porto_chatbot.documents import (
     chunk_document,
     chunk_text,
     detect_content_format,
+    iter_documents,
 )
 
 
@@ -92,3 +93,28 @@ def test_chunk_text_wrapper_returns_strings_only():
 def test_chunk_empty_returns_empty():
     assert chunk_document("   \n\n   ", content_format="markdown", max_chars=100, overlap=0) == []
     assert chunk_document("", content_format="text", max_chars=100, overlap=0) == []
+
+
+def test_iter_documents_multi_root(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "x.md").write_text("# A", encoding="utf-8")
+    (b / "x.md").write_text("# B", encoding="utf-8")
+    (a / "ignore.log").write_text("nope", encoding="utf-8")
+
+    result = iter_documents([a, b])
+    roots = {r.name for r, _ in result}
+    files = [p.name for _, p in result]
+    assert roots == {"a", "b"}
+    assert files.count("x.md") == 2  # 两个同名文件都保留
+    assert "ignore.log" not in files  # 非支持扩展名过滤
+
+
+def test_iter_documents_missing_root_skipped(tmp_path):
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "x.md").write_text("# A", encoding="utf-8")
+    result = iter_documents([a, tmp_path / "missing"])
+    assert len(result) == 1 and result[0][1].name == "x.md"

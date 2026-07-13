@@ -83,7 +83,7 @@ class ChromaVectorStore:
             metadata=self._expected_collection_metadata(),
         )
 
-        documents = iter_documents(self.settings.kb_path)
+        documents = iter_documents(self.settings.kb_dirs)
         total = len(documents)
         self.logger.info("index documents discovered count=%s", total)
         chunk_count = 0
@@ -91,7 +91,7 @@ class ChromaVectorStore:
         batch_texts: list[str] = []
         batch_metadata: list[dict[str, Any]] = []
 
-        for idx, path in enumerate(documents):
+        for idx, (root, path) in enumerate(documents):
             if progress_cb is not None:
                 progress_cb(idx + 1, total, chunk_count)
             try:
@@ -99,7 +99,9 @@ class ChromaVectorStore:
             except Exception:
                 self.logger.exception("document read failed path=%s", path)
                 continue
-            rel = str(path.relative_to(self.settings.kb_path))
+            rel = str(path.relative_to(root))
+            root_name = root.name or "root"
+            display_path = f"{root_name}/{rel}"
             content_format = detect_content_format(path)
             chunks = chunk_document(
                 text,
@@ -108,11 +110,12 @@ class ChromaVectorStore:
                 overlap=self.settings.chunk_overlap,
             )
             for i, chunk in enumerate(chunks):
-                batch_ids.append(hashlib.sha1(f"{rel}:{i}:{chunk.text[:120]}".encode()).hexdigest())
+                batch_ids.append(hashlib.sha1(f"{display_path}:{i}:{chunk.text[:120]}".encode()).hexdigest())
                 batch_texts.append(chunk.text)
                 metadata = {
-                    "path": rel,
+                    "path": display_path,
                     "title": path.stem,
+                    "root": root_name,
                     "chunk": i,
                     "source_mtime": path.stat().st_mtime,
                 }
@@ -149,7 +152,7 @@ class ChromaVectorStore:
         collection = self._compatible_collection()
         stats = IndexStats(
             kb_path=str(self.settings.kb_path),
-            documents=len(iter_documents(self.settings.kb_path)),
+            documents=len(iter_documents(self.settings.kb_dirs)),
             chunks=collection.count(),
             backend="chroma",
             embedding_provider=self.settings.embedding_provider,
