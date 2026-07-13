@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 import chromadb
 
+from .bm25_index import Bm25Registry, ChunkRecord
 from .documents import (
     SPLITTER_VERSION,
     chunk_document,
@@ -87,6 +88,7 @@ class ChromaVectorStore:
         total = len(documents)
         self.logger.info("index documents discovered count=%s", total)
         chunk_count = 0
+        all_chunks: list[ChunkRecord] = []
         batch_ids: list[str] = []
         batch_texts: list[str] = []
         batch_metadata: list[dict[str, Any]] = []
@@ -110,7 +112,8 @@ class ChromaVectorStore:
                 overlap=self.settings.chunk_overlap,
             )
             for i, chunk in enumerate(chunks):
-                batch_ids.append(hashlib.sha1(f"{display_path}:{i}:{chunk.text[:120]}".encode()).hexdigest())
+                chunk_id = hashlib.sha1(f"{display_path}:{i}:{chunk.text[:120]}".encode()).hexdigest()
+                batch_ids.append(chunk_id)
                 batch_texts.append(chunk.text)
                 metadata = {
                     "path": display_path,
@@ -121,6 +124,7 @@ class ChromaVectorStore:
                 }
                 metadata.update(chunk.metadata)
                 batch_metadata.append(metadata)
+                all_chunks.append(ChunkRecord(chunk_id, chunk.text, metadata))
                 chunk_count += 1
                 if len(batch_ids) >= 64:
                     self._add_batch(collection, batch_ids, batch_texts, batch_metadata)
@@ -133,6 +137,9 @@ class ChromaVectorStore:
 
         if progress_cb is not None:
             progress_cb(total, total, chunk_count)
+
+        # BM25 与 chroma 同源同序同生命周期：build 结束即构建并落盘
+        Bm25Registry.build_and_save(self.settings, all_chunks)
 
         stats = IndexStats(
             kb_path=str(self.settings.kb_path),
@@ -170,7 +177,10 @@ class ChromaVectorStore:
             self.logger.info("search skipped index unavailable query_chars=%s", len(query))
             return []
         resolved_top_k = top_k or self.settings.top_k
-        self.logger.info("search start query_chars=%s top_k=%s", len(query), resolved_top_k)
+        method = self.settings.retrieval_method
+        self.logger.info(
+            "search start query_chars=%s top_k=%s method=%s", len(query), resolved_top_k, method
+        )
         query_embedding = self.embeddings.embed_query(query)
         stored_dimensions = self._collection_embedding_dimensions(collection)
         if stored_dimensions is not None and stored_dimensions != len(query_embedding):
@@ -180,30 +190,97 @@ class ChromaVectorStore:
                 len(query_embedding),
             )
             return []
+        if method == "vector":
+            rows = self._vector_search(collection, query_embedding, resolved_top_k)
+        elif method == "bm25":
+            rows = self._bm25_search(collection, query, resolved_top_k)
+        else:
+            rows = self._hybrid_search(collection, query_embedding, query, resolved_top_k)
+        self.logger.info("search finish method=%s results=%s", method, len(rows))
+        return rows
+
+    def _fetch_chunks(self, collection, ids: list[str]) -> dict[str, tuple[str, dict]]:
+        if not ids:
+            return {}
+        fetched = collection.get(ids=ids, include=["documents", "metadatas"])
+        return {
+            cid: (doc or "", dict(meta or {}))
+            for cid, doc, meta in zip(
+                fetched.get("ids", []),
+                fetched.get("documents", []),
+                fetched.get("metadatas", []),
+                strict=False,
+            )
+        }
+
+    def _to_source(self, cid: str, text: str, metadata: dict, score: float) -> SourceChunk:
+        return SourceChunk(
+            id=cid,
+            path=str(metadata.get("path", "")),
+            title=str(metadata.get("title", "")),
+            text=text,
+            score=round(score, 4),
+            metadata=metadata,
+        )
+
+    def _vector_search(self, collection, query_embedding, top_k: int) -> list[SourceChunk]:
         result = collection.query(
             query_embeddings=[query_embedding],
-            n_results=resolved_top_k,
+            n_results=top_k,
             include=["documents", "metadatas", "distances"],
         )
-        rows: list[SourceChunk] = []
         ids = result.get("ids", [[]])[0]
         docs = result.get("documents", [[]])[0]
         metadatas = result.get("metadatas", [[]])[0]
         distances = result.get("distances", [[]])[0]
-        for item_id, doc, metadata, distance in zip(ids, docs, metadatas, distances, strict=False):
+        rows: list[SourceChunk] = []
+        for cid, doc, metadata, distance in zip(ids, docs, metadatas, distances, strict=False):
             score = 1.0 / (1.0 + max(0.0, float(distance)))
-            rows.append(
-                SourceChunk(
-                    id=item_id,
-                    path=str(metadata.get("path", "")),
-                    title=str(metadata.get("title", "")),
-                    text=doc or "",
-                    score=round(score, 4),
-                    metadata=dict(metadata),
-                )
-            )
-        self.logger.info("search finish results=%s", len(rows))
+            rows.append(self._to_source(cid, doc or "", dict(metadata), score))
         return rows
+
+    def _bm25_search(self, collection, query: str, top_k: int) -> list[SourceChunk]:
+        bm = Bm25Registry.get(self.settings)
+        if bm is None:
+            self.logger.info("bm25 search skipped index absent")
+            return []
+        candidates = bm.query(query, top_k)  # [(chroma_id, metadata, score)]
+        if not candidates:
+            return []
+        fetched = self._fetch_chunks(collection, [c[0] for c in candidates])
+        rows: list[SourceChunk] = []
+        for cid, meta, _score in candidates:
+            text, metadata = fetched.get(cid, ("", meta))
+            rows.append(self._to_source(cid, text, metadata, 0.0))
+        return rows
+
+    def _hybrid_search(self, collection, query_embedding, query: str, top_k: int) -> list[SourceChunk]:
+        k_rrf = 60
+        cand_k = self.settings.bm25_top_k
+        vec_result = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=cand_k,
+            include=["metadatas"],
+        )
+        vec_ids = vec_result.get("ids", [[]])[0]
+        bm = Bm25Registry.get(self.settings)
+        bm_cands = bm.query(query, cand_k) if bm else []
+        bm_ids = [c[0] for c in bm_cands]
+
+        scores: dict[str, float] = {}
+        for rank, cid in enumerate(vec_ids):
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k_rrf + rank + 1)
+        for rank, cid in enumerate(bm_ids):
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k_rrf + rank + 1)
+
+        ordered = sorted(scores, key=lambda cid: -scores[cid])[:top_k]
+        if not ordered:
+            return []
+        fetched = self._fetch_chunks(collection, ordered)
+        return [
+            self._to_source(cid, fetched.get(cid, ("", {}))[0], fetched.get(cid, ("", {}))[1], scores[cid])
+            for cid in ordered
+        ]
 
     def ensure_index(self) -> IndexStats:
         """只读：返回当前索引统计；**不触发 build**。重建由 IndexSupervisor 统一调度。"""
@@ -244,12 +321,18 @@ class ChromaVectorStore:
         )
 
     def is_rag_ready(self) -> bool:
-        """索引是否可用于检索：collection 存在、元数据兼容、且非空。"""
+        """索引是否可用于检索：collection 存在、元数据兼容、非空；含 bm25 时还要求 BM25 就绪。"""
         try:
             collection = self._compatible_collection()
         except Exception:
             return False
-        return self._is_collection_compatible(collection) and collection.count() > 0
+        if not self._is_collection_compatible(collection) or collection.count() == 0:
+            return False
+        if self.settings.retrieval_method in ("bm25", "hybrid"):
+            bm = Bm25Registry.get(self.settings)
+            if bm is None or len(bm) != collection.count():
+                return False
+        return True
 
     def _is_collection_compatible(self, collection) -> bool:
         metadata = collection.metadata or {}

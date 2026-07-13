@@ -62,3 +62,19 @@ def test_build_multi_root_same_filename(tmp_path):
     results2 = store.search("风控", top_k=5)
     paths2 = {r.metadata.get("path") for r in results2}
     assert any("kb2/" in (p or "") for p in paths2)
+
+
+def test_search_retrieval_methods(sample_settings):
+    """vector / bm25 / hybrid 三种检索算法各自可用。"""
+    store = LocalVectorStore(sample_settings)
+    store.build()
+
+    sample_settings.retrieval_method = "vector"
+    vec = store.search("支付 退款", top_k=2)
+    sample_settings.retrieval_method = "bm25"
+    bm = store.search("支付 退款", top_k=2)
+    sample_settings.retrieval_method = "hybrid"
+    hy = store.search("支付 退款", top_k=2)
+
+    assert vec and bm and hy
+    sample_settings.retrieval_method = "hybrid"  # 复位
