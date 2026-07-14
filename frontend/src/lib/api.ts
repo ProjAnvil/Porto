@@ -6,7 +6,9 @@ import type {
   IndexJobStatus,
   KbStats,
   MemoryRecord,
+  Paginated,
   RagConfig,
+  SessionItem,
   SourceChunk,
   WorkflowDetail,
   WorkflowListItem,
@@ -107,10 +109,30 @@ export async function createWorkflowUpload(
   );
 }
 
-export async function listWorkflows(sessionId?: string) {
-  const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-  return parseJson<{ items: WorkflowListItem[] }>(
-    await fetch(`/api/porto/workflows${q}`),
+export async function listWorkflows(params?: {
+  sessionId?: string;
+  date?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  const q = new URLSearchParams();
+  const p = params ?? {};
+  if (p.sessionId) q.set("session_id", p.sessionId);
+  if (p.date) q.set("date", p.date);
+  q.set("limit", String(p.limit ?? 20));
+  q.set("offset", String(p.offset ?? 0));
+  return parseJson<Paginated<WorkflowListItem>>(
+    await fetch(`/api/porto/workflows?${q.toString()}`),
+  );
+}
+
+export async function listSessions(date?: string, limit = 20, offset = 0) {
+  const q = new URLSearchParams();
+  if (date) q.set("date", date);
+  q.set("limit", String(limit));
+  q.set("offset", String(offset));
+  return parseJson<Paginated<SessionItem>>(
+    await fetch(`/api/sessions?${q.toString()}`),
   );
 }
 

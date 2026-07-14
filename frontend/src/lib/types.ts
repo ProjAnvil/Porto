@@ -203,9 +203,24 @@ export type WorkflowDetail = {
 
 export type WorkflowListItem = {
   workflow_id: string;
+  session_id: string;
   project_name: string | null;
   status: WorkflowStatus;
   current_step: WorkflowStepName | null;
   created_at: string;
   score: number | null;
+};
+
+export type SessionItem = {
+  session_id: string;
+  first_at: string;
+  last_at: string;
+  message_count: number;
+  preview: string;
+};
+
+export type Paginated<T> = {
+  items: T[];
+  total: number;
+  has_more: boolean;
 };

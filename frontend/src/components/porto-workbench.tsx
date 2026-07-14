@@ -219,7 +219,7 @@ export function PortoWorkbench() {
 
   const refreshWorkflowList = useCallback(async () => {
     try {
-      const result = await listWorkflows(sessionId);
+      const result = await listWorkflows({ sessionId });
       setWorkflowList(result.items);
     } catch {
       /* 历史列表非关键，失败静默 */
@@ -231,7 +231,7 @@ export function PortoWorkbench() {
     let cancelled = false;
     async function load() {
       try {
-        const result = await listWorkflows(sessionId);
+        const result = await listWorkflows({ sessionId });
         if (!cancelled) setWorkflowList(result.items);
       } catch {
         /* 历史列表非关键，失败静默 */
