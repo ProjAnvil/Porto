@@ -13,12 +13,14 @@ wheels/
 .env
 .env.*
 !.env.example
-chatbot/backend/.env
 
-# Node/Bun frontend artifacts
+# Node frontend artifacts
 node_modules/
-chatbot/frontend/dist/
-chatbot/frontend/.vite/
+.next/
+out/
+
+# Local run artifacts (make start 日志/pid 在 ~/.porto)
+.run/
 
 # Python local artifacts
 .ruff_cache/
