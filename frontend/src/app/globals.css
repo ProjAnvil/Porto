@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "highlight.js/styles/github-dark.css";
+@import "react-day-picker/style.css";
 
 :root {
   --background: #ffffff;
