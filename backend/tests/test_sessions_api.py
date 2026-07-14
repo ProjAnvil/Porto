@@ -51,3 +51,23 @@ def test_list_sessions_date_filter(sample_settings):
     items_empty, total_empty = s.list_sessions(date="2099-01-01", limit=20, offset=0)
     assert total_empty == 0
     assert len(items_empty) == 0
+
+
+def test_list_sessions_date_filter_uses_last_at(sample_settings):
+    """spec: date 过滤 last_at 所在日期。多日期 session 按非最后日期不应匹配。"""
+    import sqlite3
+    from porto_chatbot.memory.store import MemoryStore
+    s = MemoryStore(sample_settings)
+    r1 = s.add(session_id="s1", role="user", content="day1 msg")
+    r2 = s.add(session_id="s1", role="assistant", content="day2 msg")
+    # 改 created_at 模拟跨日期（s1 的 last_at = 2026-07-15）
+    with sqlite3.connect(s.settings.memory_db_path) as conn:
+        conn.execute("UPDATE memories SET created_at=? WHERE id=?", ("2026-07-13T10:00:00+00:00", r1.id))
+        conn.execute("UPDATE memories SET created_at=? WHERE id=?", ("2026-07-15T10:00:00+00:00", r2.id))
+    # 按 last_at 日期(07-15)过滤 → 应匹配 s1
+    items, total = s.list_sessions(date="2026-07-15", limit=20, offset=0)
+    assert total == 1
+    assert items[0]["session_id"] == "s1"
+    # 按非最后日期(07-13)过滤 → 不应匹配 s1（last_at 是 07-15）
+    items, total = s.list_sessions(date="2026-07-13", limit=20, offset=0)
+    assert total == 0

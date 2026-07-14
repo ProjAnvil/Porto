@@ -125,17 +125,23 @@ class MemoryStore:
         date 过滤 last_at 所在日期(YYYY-MM-DD)。返回 (items, total)。
         items: [{session_id, first_at, last_at, message_count, preview}]
         preview = 最后一条消息 content 截断 80 字符。
+
+        date 过滤在 HAVING（聚合后按 MAX(created_at) 即 last_at 所在日期），
+        而非 WHERE（会按任意单条消息日期过滤，多日期 session 语义错误）。
+        where 保留结构以备未来按 session_id/status 等直接字段过滤扩展。
         """
         where: list[str] = []
+        having: list[str] = []
         params: list[object] = []
         if date:
-            where.append("substr(created_at, 1, 10) = ?")
+            having.append("substr(MAX(created_at), 1, 10) = ?")
             params.append(date)
         where_sql = " WHERE " + " AND ".join(where) if where else ""
+        having_sql = " HAVING " + " AND ".join(having) if having else ""
         with sqlite3.connect(self.settings.memory_db_path) as conn:
             conn.row_factory = sqlite3.Row
             total = conn.execute(
-                f"SELECT COUNT(*) FROM (SELECT session_id FROM memories{where_sql} GROUP BY session_id)",
+                f"SELECT COUNT(*) FROM (SELECT session_id FROM memories{where_sql} GROUP BY session_id{having_sql})",
                 params,
             ).fetchone()[0]
             rows = conn.execute(
@@ -144,7 +150,7 @@ class MemoryStore:
                            MAX(created_at) AS last_at,
                            COUNT(*) AS message_count
                     FROM memories{where_sql}
-                    GROUP BY session_id
+                    GROUP BY session_id{having_sql}
                     ORDER BY last_at DESC
                     LIMIT ? OFFSET ?""",
                 [*params, limit, offset],
