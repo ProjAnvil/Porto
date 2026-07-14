@@ -45,10 +45,8 @@ import {
   getWorkflow,
   indexKnowledgeBase,
   listMemory,
-  listWorkflows,
   saveAppSettings,
   saveStepOutput,
-  searchMemory,
 } from "@/lib/api";
 import type {
   AgentConfig,
@@ -61,9 +59,10 @@ import type {
   SourceChunk,
   Subsystem,
   WorkflowDetail,
-  WorkflowListItem,
   WorkflowStepName,
 } from "@/lib/types";
+import { SessionList } from "@/components/session-list";
+import { WorkflowList } from "@/components/workflow-list";
 
 type Mode = "chat" | "workflow";
 type View = "workbench" | "settings";
@@ -199,7 +198,6 @@ export function PortoWorkbench() {
   const [kbStats, setKbStats] = useState<KbStats | null>(null);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
-  const [memoryQuery, setMemoryQuery] = useState("");
   const [inspector, setInspector] = useState<InspectorState>(emptyInspector);
   const [projectName, setProjectName] = useState("");
   const [workflowText, setWorkflowText] = useState("");
@@ -208,39 +206,12 @@ export function PortoWorkbench() {
   const [error, setError] = useState("");
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [workflowDetail, setWorkflowDetail] = useState<WorkflowDetail | null>(null);
-  const [workflowList, setWorkflowList] = useState<WorkflowListItem[]>([]);
   const [draft, setDraft] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshMemory = useCallback(async () => {
     const data = await listMemory(sessionId);
     setMemoryItems(data.items);
-  }, [sessionId]);
-
-  const refreshWorkflowList = useCallback(async () => {
-    try {
-      const result = await listWorkflows({ sessionId });
-      setWorkflowList(result.items);
-    } catch {
-      /* 历史列表非关键，失败静默 */
-    }
-  }, [sessionId]);
-
-  // 工作流历史：sessionId 变化时拉取一次
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const result = await listWorkflows({ sessionId });
-        if (!cancelled) setWorkflowList(result.items);
-      } catch {
-        /* 历史列表非关键，失败静默 */
-      }
-    }
-    load();
-    return () => {
-      cancelled = true;
-    };
   }, [sessionId]);
 
   // 工作流详情轮询：仅在 workflowId 存在时启动；status 回到 running 时（如 advance 后）
@@ -265,9 +236,6 @@ export function PortoWorkbench() {
         }
         if (detail.status === "running") {
           timer = setTimeout(poll, 2000);
-        } else {
-          // 终态时刷新历史列表
-          void refreshWorkflowList();
         }
       } catch {
         if (active) timer = setTimeout(poll, 2000);
@@ -278,7 +246,7 @@ export function PortoWorkbench() {
       active = false;
       clearTimeout(timer);
     };
-  }, [workflowId, workflowDetail?.status, refreshWorkflowList]);
+  }, [workflowId, workflowDetail?.status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -458,20 +426,6 @@ export function PortoWorkbench() {
     }
   }
 
-  async function runMemorySearch() {
-    if (!memoryQuery.trim()) return;
-    setBusyLabel("搜索记忆");
-    setError("");
-    try {
-      const data = await searchMemory(memoryQuery.trim(), sessionId);
-      setInspector((current) => ({ ...current, memory: data.results }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "记忆搜索失败");
-    } finally {
-      setBusyLabel("");
-    }
-  }
-
   async function runWorkflowAction() {
     if (!workflowText.trim() && !selectedFile) return;
     setBusyLabel("提交拆解");
@@ -490,7 +444,6 @@ export function PortoWorkbench() {
           });
       setWorkflowId(resp.workflow_id);
       setDraft("");
-      void refreshWorkflowList();
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交拆解失败");
     } finally {
@@ -564,19 +517,14 @@ export function PortoWorkbench() {
         <Sidebar
           busy={Boolean(busyLabel)}
           kbStats={kbStats}
-          memoryItems={memoryItems}
-          memoryQuery={memoryQuery}
           mode={mode}
           onPickWorkflow={onPickWorkflow}
-          onRunMemorySearch={runMemorySearch}
           sessionId={sessionId}
           view={view}
-          setMemoryQuery={setMemoryQuery}
+          workflowId={workflowId}
           setMode={setMode}
           setSessionId={setSessionId}
           setView={setView}
-          workflowId={workflowId}
-          workflows={workflowList}
         />
 
         <main className="flex min-h-[70vh] min-w-0 flex-col border-x border-zinc-200 bg-white">
@@ -652,35 +600,25 @@ export function PortoWorkbench() {
 function Sidebar({
   busy,
   kbStats,
-  memoryItems,
-  memoryQuery,
   mode,
   onPickWorkflow,
-  onRunMemorySearch,
   sessionId,
   view,
-  setMemoryQuery,
+  workflowId,
   setMode,
   setSessionId,
   setView,
-  workflowId,
-  workflows,
 }: {
   busy: boolean;
   kbStats: KbStats | null;
-  memoryItems: MemoryRecord[];
-  memoryQuery: string;
   mode: Mode;
   onPickWorkflow: (id: string) => void;
   sessionId: string;
   view: View;
-  setMemoryQuery: (value: string) => void;
+  workflowId: string | null;
   setMode: (value: Mode) => void;
   setSessionId: (value: string) => void;
   setView: (value: View) => void;
-  workflowId: string | null;
-  workflows: WorkflowListItem[];
-  onRunMemorySearch: () => void;
 }) {
   return (
     <aside className="min-w-0 border-b border-zinc-200 bg-zinc-50 p-4 lg:border-b-0">
@@ -754,94 +692,17 @@ function Sidebar({
           value={sessionId}
           onChange={(event) => setSessionId(event.target.value)}
         />
-        <div className="mt-3 flex gap-2">
-          <input
-            className="min-w-0 flex-1 rounded-md border border-zinc-200 px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
-            placeholder="搜索记忆"
-            value={memoryQuery}
-            onChange={(event) => setMemoryQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") onRunMemorySearch();
-            }}
-          />
-          <button
-            className="rounded-md border border-zinc-200 px-2.5 text-zinc-600 hover:bg-zinc-100"
-            onClick={onRunMemorySearch}
-          >
-            <Search size={14} />
-          </button>
-        </div>
-        <p className="mt-2 text-xs text-zinc-500">
-          {memoryItems.length} records
-        </p>
       </section>
 
-      <section className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
-          <History size={15} />
-          Chat Records
-        </h2>
-        <div className="max-h-72 space-y-2 overflow-y-auto">
-          {memoryItems.map((item) => (
-            <button
-              className="block w-full rounded-md border border-zinc-200 p-2 text-left hover:bg-zinc-50"
-              key={item.id}
-              onClick={() => setView("workbench")}
-            >
-              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-                <span className="font-medium">{item.role}</span>
-                <span className="truncate text-zinc-400">{item.created_at}</span>
-              </div>
-              <p className="line-clamp-2 text-xs leading-5 text-zinc-600">
-                {item.content}
-              </p>
-            </button>
-          ))}
-          {memoryItems.length === 0 ? (
-            <p className="text-sm text-zinc-400">暂无聊天记录。</p>
-          ) : null}
-        </div>
-      </section>
+      <SessionList
+        activeSessionId={sessionId}
+        onPickSession={(sid) => {
+          setSessionId(sid);
+          setView("workbench");
+        }}
+      />
 
-      <section className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
-          <Braces size={15} />
-          Workflows
-        </h2>
-        <div className="max-h-72 space-y-2 overflow-y-auto">
-          {workflows.map((wf) => {
-            const active = wf.workflow_id === workflowId;
-            const stepLabel = wf.current_step
-              ? STEP_LABELS[wf.current_step] ?? wf.current_step
-              : "—";
-            return (
-              <button
-                className={`block w-full rounded-md border p-2 text-left ${
-                  active
-                    ? "border-zinc-950 bg-zinc-50"
-                    : "border-zinc-200 hover:bg-zinc-50"
-                }`}
-                key={wf.workflow_id}
-                onClick={() => onPickWorkflow(wf.workflow_id)}
-              >
-                <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-                  <span className="truncate font-medium">
-                    {wf.project_name || wf.workflow_id.slice(0, 8)}
-                  </span>
-                  <span className="truncate text-zinc-400">{stepLabel}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs text-zinc-500">
-                  <span>{wf.status}</span>
-                  <span className="truncate">{wf.created_at}</span>
-                </div>
-              </button>
-            );
-          })}
-          {workflows.length === 0 ? (
-            <p className="text-sm text-zinc-400">暂无拆解记录。</p>
-          ) : null}
-        </div>
-      </section>
+      <WorkflowList activeWorkflowId={workflowId} onPickWorkflow={onPickWorkflow} />
     </aside>
   );
 }
