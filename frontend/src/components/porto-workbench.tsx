@@ -197,6 +197,7 @@ export function PortoWorkbench() {
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(defaultAgentConfig);
   const [kbStats, setKbStats] = useState<KbStats | null>(null);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
+  const [backendOnline, setBackendOnline] = useState(true);
   const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
   const [inspector, setInspector] = useState<InspectorState>(emptyInspector);
   const [projectName, setProjectName] = useState("");
@@ -273,15 +274,19 @@ export function PortoWorkbench() {
   }, [sessionId]);
 
   // 健康面板：周期轮询 /api/health（依赖级 + 功能级可用度）
+  // 失败时切换 backendOnline=false，触发顶部离线横幅 + 禁用 Composer
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
         const snap = await getHealth();
-        if (active) setHealth(snap);
+        if (active) {
+          setHealth(snap);
+          setBackendOnline(true);
+        }
       } catch {
-        /* 健康面板非关键，失败静默 */
+        if (active) setBackendOnline(false);
       }
       if (active) timer = setTimeout(poll, 15000);
     }
@@ -513,7 +518,14 @@ export function PortoWorkbench() {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="grid min-h-screen grid-cols-1 bg-zinc-100 text-zinc-950 lg:grid-cols-[300px_minmax(0,1fr)_380px]">
+      <div className="flex min-h-screen flex-col">
+        {!backendOnline ? (
+          <div className="flex items-center justify-center gap-2 bg-rose-600 px-4 py-2 text-sm font-medium text-white">
+            <Loader2 size={14} className="animate-spin" />
+            后端未连接，请检查 make status
+          </div>
+        ) : null}
+        <div className="grid flex-1 grid-cols-1 bg-zinc-100 text-zinc-950 lg:grid-cols-[300px_minmax(0,1fr)_380px]">
         <Sidebar
           busy={Boolean(busyLabel)}
           kbStats={kbStats}
@@ -568,7 +580,7 @@ export function PortoWorkbench() {
               onSaveRag={saveRagConfig}
             />
           ) : mode === "chat" ? (
-            <ThreadView error={error} />
+            <ThreadView error={error} disabled={!backendOnline} />
           ) : (
             <WorkflowPanel
               busy={Boolean(busyLabel)}
@@ -592,6 +604,7 @@ export function PortoWorkbench() {
         </main>
 
         <Inspector inspector={inspector} memoryItems={memoryItems} />
+        </div>
       </div>
     </AssistantRuntimeProvider>
   );
@@ -707,7 +720,7 @@ function Sidebar({
   );
 }
 
-function ThreadView({ error }: { error: string }) {
+function ThreadView({ error, disabled }: { error: string; disabled: boolean }) {
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
@@ -726,7 +739,7 @@ function ThreadView({ error }: { error: string }) {
             {error}
           </div>
         ) : null}
-        <Composer />
+        <Composer disabled={disabled} />
       </div>
     </ThreadPrimitive.Root>
   );
@@ -816,15 +829,19 @@ function ToolPart({ toolName, args, result }: Record<string, unknown>) {
   );
 }
 
-function Composer() {
+function Composer({ disabled }: { disabled: boolean }) {
   return (
     <ComposerPrimitive.Root className="mx-auto flex max-w-4xl items-end gap-2">
       <ComposerPrimitive.Input
-        className="min-h-12 flex-1 resize-none rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm outline-none focus:border-zinc-400"
+        className="min-h-12 flex-1 resize-none rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm outline-none focus:border-zinc-400 disabled:opacity-50"
         placeholder="询问 ~/.scv/analysis 知识库..."
         rows={1}
+        disabled={disabled}
       />
-      <ComposerPrimitive.Send className="flex size-12 items-center justify-center rounded-xl bg-zinc-950 text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">
+      <ComposerPrimitive.Send
+        className="flex size-12 items-center justify-center rounded-xl bg-zinc-950 text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={disabled}
+      >
         <Send size={17} />
       </ComposerPrimitive.Send>
     </ComposerPrimitive.Root>
