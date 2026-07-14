@@ -45,9 +45,34 @@ def test_list_filters(tmp_path):
     w1 = s.create("s1", "p1", "prd", 6, {}, {})
     s.update_status(w1, "completed", current_step="evaluate")
     w2 = s.create("s2", "p2", "prd", 6, {}, {})
-    assert len(s.list_workflows()) == 2
-    assert len(s.list_workflows(session_id="s1")) == 1
-    assert len(s.list_workflows(status="completed")) == 1
+    rows, total = s.list_workflows()
+    assert total == 2
+    assert len(rows) == 2
+    rows, total = s.list_workflows(session_id="s1")
+    assert total == 1
+    assert rows[0]["workflow_id"] == w1
+    rows, total = s.list_workflows(status="completed")
+    assert total == 1
+
+
+def test_list_pagination_and_date(tmp_path):
+    s = _store(tmp_path)
+    for i in range(5):
+        s.create(f"s{i}", f"p{i}", "prd", 6, {}, {})
+    rows, total = s.list_workflows(limit=2, offset=0)
+    assert total == 5
+    assert len(rows) == 2
+    rows2, _ = s.list_workflows(limit=2, offset=2)
+    assert len(rows2) == 2
+    # 倒序：offset=0 的应比 offset=2 的新
+    assert rows[0]["created_at"] >= rows2[0]["created_at"]
+    # date 过滤：今天创建的
+    from datetime import UTC, datetime
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    rows, total = s.list_workflows(date=today, limit=20, offset=0)
+    assert total == 5
+    rows, total = s.list_workflows(date="2099-01-01", limit=20, offset=0)
+    assert total == 0
 
 
 def test_mark_running_interrupted_on_startup(tmp_path):

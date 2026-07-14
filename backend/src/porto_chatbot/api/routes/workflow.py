@@ -47,6 +47,7 @@ class WorkflowCreated(BaseModel):
 
 class WorkflowListItem(BaseModel):
     workflow_id: str
+    session_id: str
     project_name: str | None
     status: str
     current_step: str | None
@@ -56,6 +57,8 @@ class WorkflowListItem(BaseModel):
 
 class WorkflowListResponse(BaseModel):
     items: list[WorkflowListItem]
+    total: int
+    has_more: bool
 
 
 class WorkflowDetail(BaseModel):
@@ -158,13 +161,21 @@ async def upload_workflow(
 
 
 @router.get("/api/porto/workflows", response_model=WorkflowListResponse)
-def list_workflows(session_id: str | None = None, status: str | None = None, limit: int = 50):
-    """列表(按 created_at DESC),可按 session_id / status 过滤。
+def list_workflows(
+    session_id: str | None = None,
+    status: str | None = None,
+    date: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+):
+    """列表(按 created_at DESC),可按 session_id / status / date 过滤,分页。
 
     每条附 evaluation score(若有)——list 不展开完整 outputs,避免大 payload。
     """
     store = get_workflow_store()
-    rows = store.list_workflows(session_id=session_id, status=status, limit=limit)
+    rows, total = store.list_workflows(
+        session_id=session_id, status=status, date=date, limit=limit, offset=offset
+    )
     items: list[WorkflowListItem] = []
     for r in rows:
         score = None
@@ -174,6 +185,7 @@ def list_workflows(session_id: str | None = None, status: str | None = None, lim
         items.append(
             WorkflowListItem(
                 workflow_id=r["workflow_id"],
+                session_id=r["session_id"],
                 project_name=r["project_name"],
                 status=r["status"],
                 current_step=r["current_step"],
@@ -181,7 +193,9 @@ def list_workflows(session_id: str | None = None, status: str | None = None, lim
                 score=score,
             )
         )
-    return WorkflowListResponse(items=items)
+    return WorkflowListResponse(
+        items=items, total=total, has_more=offset + len(items) < total
+    )
 
 
 @router.get("/api/porto/workflows/{workflow_id}", response_model=WorkflowDetail)

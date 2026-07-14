@@ -82,19 +82,35 @@ class WorkflowStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def list_workflows(self, session_id=None, status=None, limit=50) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM workflows"
-        where, params = [], []
+    def list_workflows(
+        self,
+        session_id=None,
+        status=None,
+        date=None,
+        limit=50,
+        offset=0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        where: list[str] = []
+        params: list[object] = []
         if session_id:
-            where.append("session_id=?"); params.append(session_id)
+            where.append("session_id=?")
+            params.append(session_id)
         if status:
-            where.append("status=?"); params.append(status)
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+            where.append("status=?")
+            params.append(status)
+        if date:
+            where.append("substr(created_at, 1, 10)=?")
+            params.append(date)
+        where_sql = " WHERE " + " AND ".join(where) if where else ""
         with self._conn() as conn:
-            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM workflows{where_sql}", params
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM workflows{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [dict(r) for r in rows], total
 
     def save_output(self, workflow_id, step_name, output: dict, produced_by) -> None:
         now = datetime.now(UTC).isoformat()
