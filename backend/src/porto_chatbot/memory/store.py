@@ -117,6 +117,59 @@ class MemoryStore:
             for row in rows
         ]
 
+    def list_sessions(
+        self, date: str | None = None, limit: int = 20, offset: int = 0
+    ) -> tuple[list[dict], int]:
+        """聚合所有 session（按 last_at 倒序），供前端 Sessions 列表分页。
+
+        date 过滤 last_at 所在日期(YYYY-MM-DD)。返回 (items, total)。
+        items: [{session_id, first_at, last_at, message_count, preview}]
+        preview = 最后一条消息 content 截断 80 字符。
+        """
+        where: list[str] = []
+        params: list[object] = []
+        if date:
+            where.append("substr(created_at, 1, 10) = ?")
+            params.append(date)
+        where_sql = " WHERE " + " AND ".join(where) if where else ""
+        with sqlite3.connect(self.settings.memory_db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM (SELECT session_id FROM memories{where_sql} GROUP BY session_id)",
+                params,
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"""SELECT session_id,
+                           MIN(created_at) AS first_at,
+                           MAX(created_at) AS last_at,
+                           COUNT(*) AS message_count
+                    FROM memories{where_sql}
+                    GROUP BY session_id
+                    ORDER BY last_at DESC
+                    LIMIT ? OFFSET ?""",
+                [*params, limit, offset],
+            ).fetchall()
+            items: list[dict] = []
+            for r in rows:
+                last = conn.execute(
+                    "SELECT content FROM memories WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
+                    (r["session_id"],),
+                ).fetchone()
+                preview = (last["content"] if last else "")[:80]
+                items.append(
+                    {
+                        "session_id": r["session_id"],
+                        "first_at": r["first_at"],
+                        "last_at": r["last_at"],
+                        "message_count": r["message_count"],
+                        "preview": preview,
+                    }
+                )
+        self.logger.info(
+            "sessions list date=%s limit=%s offset=%s total=%s", date, limit, offset, total
+        )
+        return items, total
+
     def search(self, query: str, *, session_id: str | None = None, top_k: int = 5) -> list[SourceChunk]:
         if self.collection.count() == 0:
             self.logger.info("memory search skipped empty collection query_chars=%s", len(query))

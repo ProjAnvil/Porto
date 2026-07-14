@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from ...logging_utils import get_component_logger
 from ...models import MemorySearchResponse
@@ -9,6 +10,30 @@ from ..deps import get_memory
 logger = get_component_logger("api")
 
 router = APIRouter()
+
+
+class SessionItem(BaseModel):
+    session_id: str
+    first_at: str
+    last_at: str
+    message_count: int
+    preview: str
+
+
+class SessionListResponse(BaseModel):
+    items: list[SessionItem]
+    total: int
+    has_more: bool
+
+
+@router.get("/api/sessions", response_model=SessionListResponse)
+def list_sessions(date: str | None = None, limit: int = 20, offset: int = 0):
+    items, total = get_memory().list_sessions(date=date, limit=limit, offset=offset)
+    return SessionListResponse(
+        items=[SessionItem(**m) for m in items],
+        total=total,
+        has_more=offset + len(items) < total,
+    )
 
 
 @router.get("/api/memory/{session_id}")
