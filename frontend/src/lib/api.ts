@@ -164,6 +164,20 @@ export async function saveStepOutput(
   );
 }
 
+export async function updateWorkflowSpec(
+  id: string,
+  name: string,
+  body: string,
+) {
+  return parseJson<WorkflowDetail>(
+    await fetch(`/api/porto/workflows/${encodeURIComponent(id)}/specs`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, body }),
+    }),
+  );
+}
+
 export async function deleteWorkflow(id: string) {
   const r = await fetch(`/api/porto/workflows/${encodeURIComponent(id)}`, {
     method: "DELETE",
