@@ -25,7 +25,7 @@ export function SpecMdxEditor({
   className,
 }: {
   value: string;
-  onChange: (markdown: string) => void;
+  onChange?: (markdown: string) => void;
   readOnly?: boolean;
   className?: string;
 }) {
