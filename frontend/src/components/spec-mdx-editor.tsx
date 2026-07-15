@@ -55,7 +55,13 @@ export function SpecMdxEditor({
         }),
       ];
   return (
-    <div className={`mdx-editor-scroll ${className ?? ""}`}>
+    <div
+      className={
+        readOnly
+          ? `min-h-0 overflow-y-auto ${className ?? ""}`
+          : `mdx-editor-scroll ${className ?? ""}`
+      }
+    >
       <MDXEditor
         readOnly={readOnly}
         markdown={value}
