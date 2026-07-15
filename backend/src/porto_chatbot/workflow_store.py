@@ -149,6 +149,33 @@ class WorkflowStore:
                 (workflow_id, *victims),
             )
 
+    def update_spec(self, workflow_id, name, body) -> bool:
+        """轻量更新 generate 步 output 中的 specs[name]。
+
+        不动 produced_by/produced_at、不清下游、不改 status/current_step。
+        返回 True 表示找到并更新；False 表示无 generate output、specs 非 dict
+        或 name 不在 specs 中。
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT output FROM workflow_outputs"
+                " WHERE workflow_id=? AND step_name='generate'",
+                (workflow_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            output = json.loads(row["output"])
+            specs = output.get("specs")
+            if not isinstance(specs, dict) or name not in specs:
+                return False
+            specs[name] = body
+            conn.execute(
+                "UPDATE workflow_outputs SET output=?"
+                " WHERE workflow_id=? AND step_name='generate'",
+                (json.dumps(output, ensure_ascii=False), workflow_id),
+            )
+        return True
+
     def update_status(self, workflow_id, status, current_step=None, error=None) -> None:
         now = datetime.now(UTC).isoformat()
         with self._conn() as conn:

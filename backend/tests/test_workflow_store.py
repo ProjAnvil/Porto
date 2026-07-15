@@ -94,3 +94,29 @@ def test_delete(tmp_path):
     s.delete(wid)
     assert s.get(wid) is None
     assert s.get_outputs(wid) == {}
+
+
+def test_update_spec_updates_only_named_spec(tmp_path):
+    s = _store(tmp_path)
+    wid = s.create("sess", "p", "prd", 6, {}, {})
+    s.save_output(wid, "generate", {"specs": {"Auth": "原", "Pay": "原Pay"}}, "ai")
+    s.save_output(wid, "evaluate", {"score": 8}, "ai")
+
+    ok = s.update_spec(wid, "Auth", "新正文")
+    assert ok is True
+    outs = s.get_outputs(wid)
+    assert outs["generate"]["output"]["specs"]["Auth"] == "新正文"
+    assert outs["generate"]["output"]["specs"]["Pay"] == "原Pay"  # 其他 spec 不变
+    assert outs["generate"]["produced_by"] == "ai"  # 审计字段不变
+    assert outs["evaluate"]["output"]["score"] == 8  # 下游不变
+    assert "evaluate" in outs
+
+
+def test_update_spec_missing_returns_false(tmp_path):
+    s = _store(tmp_path)
+    wid = s.create("sess", "p", "prd", 6, {}, {})
+    assert s.update_spec(wid, "Auth", "x") is False  # 无 generate output
+    s.save_output(wid, "generate", {"specs": {"Auth": "原"}}, "ai")
+    assert s.update_spec(wid, "Nope", "x") is False  # name 不在 specs
+    s.save_output(wid, "generate", {"specs": "not a dict"}, "ai")
+    assert s.update_spec(wid, "Auth", "x") is False  # specs 非 dict
