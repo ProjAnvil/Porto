@@ -17,10 +17,12 @@ import {
   CheckCircle2,
   ChevronDown,
   Database,
+  Download,
   FileInput,
   Gauge,
   History,
   Loader2,
+  Pencil,
   Play,
   Plus,
   Search,
@@ -47,6 +49,7 @@ import {
   listMemory,
   saveAppSettings,
   saveStepOutput,
+  updateWorkflowSpec,
 } from "@/lib/api";
 import type {
   AgentConfig,
@@ -63,6 +66,13 @@ import type {
 } from "@/lib/types";
 import { SessionList } from "@/components/session-list";
 import { WorkflowList } from "@/components/workflow-list";
+import dynamic from "next/dynamic";
+import { sanitizeFilename, triggerDownload } from "@/lib/download";
+
+const SpecMdxEditor = dynamic(
+  () => import("./spec-mdx-editor").then((m) => m.SpecMdxEditor),
+  { ssr: false, loading: () => <Loader2 size={16} className="animate-spin" /> },
+);
 
 type Mode = "chat" | "workflow";
 type View = "workbench" | "settings";
@@ -199,6 +209,7 @@ export function PortoWorkbench() {
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [backendOnline, setBackendOnline] = useState(true);
   const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
+  const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const [inspector, setInspector] = useState<InspectorState>(emptyInspector);
   const [projectName, setProjectName] = useState("");
   const [workflowText, setWorkflowText] = useState("");
@@ -214,6 +225,26 @@ export function PortoWorkbench() {
     const data = await listMemory(sessionId);
     setMemoryItems(data.items);
   }, [sessionId]);
+
+  function onNewSession() {
+    const d = new Date();
+    const date = d.toISOString().slice(0, 10);
+    const time = `${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+    setSessionId(`porto-${date}-${time}`);
+    setMode("chat");
+    setView("workbench");
+  }
+
+  function onNewWorkflow() {
+    setWorkflowId(null);
+    setWorkflowDetail(null);
+    setDraft("");
+    setProjectName("");
+    setWorkflowText("");
+    setSelectedFile(null);
+    setMode("workflow");
+    setView("workbench");
+  }
 
   // 工作流详情轮询：仅在 workflowId 存在时启动；status 回到 running 时（如 advance 后）
   // 通过 status 依赖重启轮询。状态稳定为 running 期间靠 setTimeout 自驱动，不会重复触发。
@@ -297,82 +328,6 @@ export function PortoWorkbench() {
     };
   }, []);
 
-  const transport = useMemo(
-    () =>
-      new AssistantChatTransport({
-        api: "/api/chat/stream",
-        body: {
-          session_id: sessionId,
-          rag: ragConfig,
-          agent: agentConfig,
-          top_k: ragConfig.top_k,
-        },
-        fetch(input, init) {
-          setBusyLabel("生成回答");
-          setError("");
-          setInspector(emptyInspector);
-          return globalThis.fetch(input, init);
-        },
-      }),
-    [agentConfig, ragConfig, sessionId],
-  );
-
-  const runtime = useChatRuntime({
-    transport,
-    messages: [
-      {
-        id: "porto-welcome",
-        role: "assistant",
-        parts: [{ type: "text", text: WELCOME_TEXT }],
-      },
-    ],
-    onData(dataPart) {
-      if (dataPart.type !== "data-porto") return;
-      if (isInspectorState(dataPart.data)) {
-        setInspector(dataPart.data);
-      }
-    },
-    onError(err) {
-      setError(err instanceof Error ? err.message : "请求失败");
-      setBusyLabel("");
-    },
-    onFinish() {
-      setBusyLabel("");
-      void refreshMemory();
-    },
-  });
-
-  // session 历史回填：sessionId 变化时把后端 memory 历史加载进聊天线程，
-  // 使「点击 Chat Records → 切到 workbench」能看到完整历史对话（而非空白）。
-  // listMemory 返回倒序（新→旧），反转成正序后与欢迎语一起 reset 进线程。
-  useEffect(() => {
-    let cancelled = false;
-    async function loadHistory() {
-      try {
-        const data = await listMemory(sessionId);
-        if (cancelled) return;
-        const history = [...data.items]
-          .reverse()
-          .filter((m) => m.role === "user" || m.role === "assistant")
-          .map((m) => ({
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            id: m.id,
-          }));
-        runtime.thread.reset([
-          { role: "assistant", content: WELCOME_TEXT },
-          ...history,
-        ]);
-      } catch {
-        // 历史加载失败时保持欢迎语，不阻塞使用
-      }
-    }
-    loadHistory();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, runtime]);
-
   async function refreshIndex(nextConfig: RagConfig = ragConfig) {
     setError("");
     setBusyLabel("索引知识库");
@@ -448,6 +403,7 @@ export function PortoWorkbench() {
             top_k: ragConfig.top_k,
           });
       setWorkflowId(resp.workflow_id);
+      setWorkflowRefreshKey((k) => k + 1);
       setDraft("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交拆解失败");
@@ -494,6 +450,19 @@ export function PortoWorkbench() {
     }
   }
 
+  async function onSaveSpec(name: string, body: string): Promise<boolean> {
+    if (!workflowId) return false;
+    setError("");
+    try {
+      const detail = await updateWorkflowSpec(workflowId, name, body);
+      setWorkflowDetail(detail);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存规格失败");
+      return false;
+    }
+  }
+
   async function onPickWorkflow(id: string) {
     setMode("workflow");
     setView("workbench");
@@ -517,29 +486,31 @@ export function PortoWorkbench() {
   }
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col overflow-hidden">
         {!backendOnline ? (
           <div className="flex items-center justify-center gap-2 bg-rose-600 px-4 py-2 text-sm font-medium text-white">
             <Loader2 size={14} className="animate-spin" />
             后端未连接，请检查 make status
           </div>
         ) : null}
-        <div className="grid flex-1 grid-cols-1 bg-zinc-100 text-zinc-950 lg:grid-cols-[300px_minmax(0,1fr)_380px]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 bg-zinc-100 text-zinc-950 lg:grid-cols-[300px_minmax(0,1fr)_380px]">
         <Sidebar
           busy={Boolean(busyLabel)}
           kbStats={kbStats}
           mode={mode}
+          onNewSession={onNewSession}
+          onNewWorkflow={onNewWorkflow}
           onPickWorkflow={onPickWorkflow}
           sessionId={sessionId}
           view={view}
           workflowId={workflowId}
+          workflowRefreshKey={workflowRefreshKey}
           setMode={setMode}
           setSessionId={setSessionId}
           setView={setView}
         />
 
-        <main className="flex min-h-[70vh] min-w-0 flex-col border-x border-zinc-200 bg-white">
+        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden border-x border-zinc-200 bg-white">
           <header className="flex h-14 items-center justify-between border-b border-zinc-200 px-4">
             <div className="flex items-center gap-2 text-sm font-semibold">
               {view === "settings" ? (
@@ -580,7 +551,28 @@ export function PortoWorkbench() {
               onSaveRag={saveRagConfig}
             />
           ) : mode === "chat" ? (
-            <ThreadView error={error} disabled={!backendOnline} />
+            <ChatLoader
+              key={sessionId}
+              sessionId={sessionId}
+              ragConfig={ragConfig}
+              agentConfig={agentConfig}
+              error={error}
+              disabled={!backendOnline}
+              onInspector={(s) => setInspector(s)}
+              onError={(msg) => {
+                setError(msg);
+                setBusyLabel("");
+              }}
+              onStart={() => {
+                setBusyLabel("生成回答");
+                setError("");
+                setInspector(emptyInspector);
+              }}
+              onFinish={() => {
+                setBusyLabel("");
+                void refreshMemory();
+              }}
+            />
           ) : (
             <WorkflowPanel
               busy={Boolean(busyLabel)}
@@ -591,6 +583,7 @@ export function PortoWorkbench() {
               onAdvance={onAdvance}
               onRun={runWorkflowAction}
               onSaveStep={onSaveStep}
+              onSaveSpec={onSaveSpec}
               onTextChange={setWorkflowText}
               projectName={projectName}
               selectedFile={selectedFile}
@@ -606,6 +599,149 @@ export function PortoWorkbench() {
         <Inspector inspector={inspector} memoryItems={memoryItems} />
         </div>
       </div>
+  );
+}
+
+type ChatUIMessage = {
+  id: string;
+  role: "user" | "assistant";
+  parts: { type: "text"; text: string }[];
+};
+
+const WELCOME_MESSAGE: ChatUIMessage = {
+  id: "porto-welcome",
+  role: "assistant",
+  parts: [{ type: "text", text: WELCOME_TEXT }],
+};
+
+// ChatLoader: key={sessionId} 保证切 session 时 remount → 重新加载该 session 历史。
+// history 就绪后才渲染 ChatSession（mount useChatRuntime），让历史作为初始 messages。
+// 不能用 reset/importExternalState：useExternalStoreRuntime 的外部 store 双向同步会
+// 把 reset 创建的消息（无绑定的原始 Vercel message）过滤掉 → thread.messages=0。
+function ChatLoader({
+  sessionId,
+  ragConfig,
+  agentConfig,
+  error,
+  disabled,
+  onInspector,
+  onError: onErrorCb,
+  onStart,
+  onFinish,
+}: {
+  sessionId: string;
+  ragConfig: RagConfig;
+  agentConfig: AgentConfig;
+  error: string;
+  disabled: boolean;
+  onInspector: (state: InspectorState) => void;
+  onError: (msg: string) => void;
+  onStart: () => void;
+  onFinish: () => void;
+}) {
+  const [initialMessages, setInitialMessages] = useState<ChatUIMessage[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setInitialMessages(null);
+    listMemory(sessionId)
+      .then((data) => {
+        if (cancelled) return;
+        const history: ChatUIMessage[] = [...data.items]
+          .reverse()
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            parts: [{ type: "text", text: m.content }],
+          }));
+        setInitialMessages([WELCOME_MESSAGE, ...history]);
+      })
+      .catch(() => {
+        if (!cancelled) setInitialMessages([WELCOME_MESSAGE]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  if (!initialMessages) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-sm text-zinc-400">
+        加载会话…
+      </div>
+    );
+  }
+  return (
+    <ChatSession
+      sessionId={sessionId}
+      ragConfig={ragConfig}
+      agentConfig={agentConfig}
+      initialMessages={initialMessages}
+      error={error}
+      disabled={disabled}
+      onInspector={onInspector}
+      onError={onErrorCb}
+      onStart={onStart}
+      onFinish={onFinish}
+    />
+  );
+}
+
+function ChatSession({
+  sessionId,
+  ragConfig,
+  agentConfig,
+  initialMessages,
+  error,
+  disabled,
+  onInspector,
+  onError: onErrorCb,
+  onStart,
+  onFinish,
+}: {
+  sessionId: string;
+  ragConfig: RagConfig;
+  agentConfig: AgentConfig;
+  initialMessages: ChatUIMessage[];
+  error: string;
+  disabled: boolean;
+  onInspector: (state: InspectorState) => void;
+  onError: (msg: string) => void;
+  onStart: () => void;
+  onFinish: () => void;
+}) {
+  const transport = useMemo(
+    () =>
+      new AssistantChatTransport({
+        api: "/api/chat/stream",
+        body: {
+          session_id: sessionId,
+          rag: ragConfig,
+          agent: agentConfig,
+          top_k: ragConfig.top_k,
+        },
+        fetch(input, init) {
+          onStart();
+          return globalThis.fetch(input, init);
+        },
+      }),
+    [agentConfig, ragConfig, sessionId],
+  );
+  const runtime = useChatRuntime({
+    transport,
+    messages: initialMessages,
+    onData(dataPart) {
+      if (dataPart.type !== "data-porto") return;
+      if (isInspectorState(dataPart.data)) onInspector(dataPart.data);
+    },
+    onError(err) {
+      onErrorCb(err instanceof Error ? err.message : "请求失败");
+    },
+    onFinish,
+  });
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ThreadView error={error} disabled={disabled} />
     </AssistantRuntimeProvider>
   );
 }
@@ -614,10 +750,13 @@ function Sidebar({
   busy,
   kbStats,
   mode,
+  onNewSession,
+  onNewWorkflow,
   onPickWorkflow,
   sessionId,
   view,
   workflowId,
+  workflowRefreshKey,
   setMode,
   setSessionId,
   setView,
@@ -625,16 +764,19 @@ function Sidebar({
   busy: boolean;
   kbStats: KbStats | null;
   mode: Mode;
+  onNewSession: () => void;
+  onNewWorkflow: () => void;
   onPickWorkflow: (id: string) => void;
   sessionId: string;
   view: View;
   workflowId: string | null;
+  workflowRefreshKey: number;
   setMode: (value: Mode) => void;
   setSessionId: (value: string) => void;
   setView: (value: View) => void;
 }) {
   return (
-    <aside className="min-w-0 border-b border-zinc-200 bg-zinc-50 p-4 lg:border-b-0">
+    <aside className="min-h-0 min-w-0 overflow-y-auto border-b border-zinc-200 bg-zinc-50 p-4 lg:border-b-0">
       <div className="mb-6 flex items-center gap-3">
         <div className="flex size-9 items-center justify-center rounded-lg bg-zinc-950 text-white">
           <Bot size={19} />
@@ -666,6 +808,25 @@ function Sidebar({
         </button>
       </div>
 
+      <div className="mb-4 grid grid-cols-2 gap-2">
+        <button
+          className="flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100"
+          onClick={onNewSession}
+          title="开始新会话"
+        >
+          <Plus size={14} />
+          新会话
+        </button>
+        <button
+          className="flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100"
+          onClick={onNewWorkflow}
+          title="开始新拆解"
+        >
+          <Plus size={14} />
+          新拆解
+        </button>
+      </div>
+
       <button
         className={`mb-4 flex w-full items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm ${
           view === "settings"
@@ -694,28 +855,20 @@ function Sidebar({
         </p>
       </section>
 
-      <section className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
-          <History size={15} />
-          Session
-        </h2>
-        <label className="block text-xs text-zinc-500">Session ID</label>
-        <input
-          className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
-          value={sessionId}
-          onChange={(event) => setSessionId(event.target.value)}
-        />
-      </section>
-
       <SessionList
         activeSessionId={sessionId}
         onPickSession={(sid) => {
           setSessionId(sid);
+          setMode("chat");
           setView("workbench");
         }}
       />
 
-      <WorkflowList activeWorkflowId={workflowId} onPickWorkflow={onPickWorkflow} />
+      <WorkflowList
+        activeWorkflowId={workflowId}
+        onPickWorkflow={onPickWorkflow}
+        refreshKey={workflowRefreshKey}
+      />
     </aside>
   );
 }
@@ -1717,6 +1870,7 @@ function WorkflowPanel({
   onAdvance,
   onRun,
   onSaveStep,
+  onSaveSpec,
   onTextChange,
   projectName,
   selectedFile,
@@ -1734,6 +1888,7 @@ function WorkflowPanel({
   onAdvance: () => void;
   onRun: () => void;
   onSaveStep: (step: WorkflowStepName, output: Record<string, unknown>) => void;
+  onSaveSpec: (name: string, body: string) => Promise<boolean>;
   onTextChange: (value: string) => void;
   projectName: string;
   selectedFile: File | null;
@@ -1863,7 +2018,7 @@ function WorkflowPanel({
           ) : null}
 
           {detail.status === "completed" ? (
-            <CompletedView detail={detail} />
+            <CompletedView detail={detail} onSaveSpec={onSaveSpec} />
           ) : null}
 
           {/* 未显式覆盖的状态（interrupted / created / 其他）：显示中性横幅 + 继续/重试按钮，
@@ -2227,7 +2382,135 @@ function SubsystemCheckpoint({
   );
 }
 
-function CompletedView({ detail }: { detail: WorkflowDetail }) {
+function SpecActionButton({
+  children,
+  disabled,
+  onClick,
+  primary = false,
+}: {
+  children: React.ReactNode;
+  disabled?: boolean;
+  onClick: (e: React.MouseEvent) => void;
+  primary?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex items-center gap-1 rounded px-2 py-1 text-xs ${
+        primary
+          ? "bg-zinc-950 text-white hover:bg-zinc-800"
+          : "text-zinc-600 hover:bg-zinc-200"
+      } disabled:opacity-40`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SpecCard({
+  name,
+  body,
+  onSave,
+}: {
+  name: string;
+  body: string;
+  onSave: (name: string, body: string) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(body);
+  const [saving, setSaving] = useState(false);
+
+  function startEdit(e: React.MouseEvent) {
+    e.stopPropagation();
+    setDraft(body);
+    setEditing(true);
+    setOpen(true);
+  }
+
+  async function handleSave(e: React.MouseEvent) {
+    e.stopPropagation();
+    setSaving(true);
+    try {
+      const ok = await onSave(name, draft);
+      if (ok) setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleCancel(e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditing(false);
+    setDraft(body);
+  }
+
+  function handleDownload(e: React.MouseEvent) {
+    e.stopPropagation();
+    triggerDownload(`${sanitizeFilename(name)}.md`, body);
+  }
+
+  return (
+    <details
+      className="rounded-lg border border-zinc-200 bg-zinc-50"
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2">
+        <span className="truncate text-sm font-medium">{name}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          {editing ? (
+            <>
+              <SpecActionButton disabled={saving} onClick={handleSave} primary>
+                {saving ? <Loader2 size={13} className="animate-spin" /> : null}
+                保存
+              </SpecActionButton>
+              <SpecActionButton disabled={saving} onClick={handleCancel}>
+                取消
+              </SpecActionButton>
+            </>
+          ) : (
+            <>
+              <SpecActionButton disabled={saving} onClick={handleDownload}>
+                <Download size={13} />
+                下载
+              </SpecActionButton>
+              <SpecActionButton disabled={saving} onClick={startEdit}>
+                <Pencil size={13} />
+                编辑
+              </SpecActionButton>
+            </>
+          )}
+        </span>
+      </summary>
+      {editing ? (
+        <div className="px-3 pb-3">
+          <SpecMdxEditor value={draft} onChange={setDraft} />
+        </div>
+      ) : (
+        <div className="prose prose-zinc max-h-[60vh] max-w-none overflow-y-auto px-3 pb-3 prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
+          <ReactMarkdown
+            rehypePlugins={[rehypeHighlight]}
+            remarkPlugins={[remarkGfm]}
+          >
+            {body}
+          </ReactMarkdown>
+        </div>
+      )}
+    </details>
+  );
+}
+
+function CompletedView({
+  detail,
+  onSaveSpec,
+}: {
+  detail: WorkflowDetail;
+  onSaveSpec: (name: string, body: string) => Promise<boolean>;
+}) {
+  const projectName = detail.project_name;
   const understanding = detail.outputs.understand?.output.understanding;
   const subsystems = readSubsystems(detail);
   const specs = detail.outputs.generate?.output.specs as
@@ -2317,24 +2600,33 @@ function CompletedView({ detail }: { detail: WorkflowDetail }) {
         ) : null}
         {tab === "specs" ? (
           <div className="space-y-3">
+            {specs && Object.keys(specs).length > 0 ? (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  className="flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100"
+                  onClick={() =>
+                    triggerDownload(
+                      `${sanitizeFilename(projectName || "specs")}.md`,
+                      Object.entries(specs)
+                        .map(([n, b]) => `# ${n}\n\n${b}`)
+                        .join("\n\n---\n\n"),
+                    )
+                  }
+                >
+                  <Download size={13} />
+                  下载全部
+                </button>
+              </div>
+            ) : null}
             {specs
-              ? Object.entries(specs).map(([name, body]) => (
-                  <details
-                    className="rounded-lg border border-zinc-200 bg-zinc-50"
+              ? Object.entries(specs).map(([name, specBody]) => (
+                  <SpecCard
                     key={name}
-                  >
-                    <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
-                      {name}
-                    </summary>
-                    <div className="prose prose-zinc max-w-none px-3 pb-3 prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
-                      <ReactMarkdown
-                        rehypePlugins={[rehypeHighlight]}
-                        remarkPlugins={[remarkGfm]}
-                      >
-                        {body}
-                      </ReactMarkdown>
-                    </div>
-                  </details>
+                    name={name}
+                    body={specBody}
+                    onSave={onSaveSpec}
+                  />
                 ))
               : null}
             {!specs || Object.keys(specs).length === 0 ? (
