@@ -1,100 +1,92 @@
-# Porto Chatbot
+# Porto
 
-独立的前后端分离 Porto agent 应用。
+**Turn PRDs into engineering specs — grounded in your real codebase.**
 
-## 架构
+Porto is a codebase-aware requirements engineering workbench. Feed it a product requirement doc and it runs a fixed, fully observable workflow that decomposes the requirement into subsystem specs — each one refined by an evaluator-optimizer loop, and each one grounded in the systems, modules, and APIs you already have.
 
-- `backend/`: uv 管理的 FastAPI + LangGraph agent 服务
-- `frontend/`: Next.js + React + assistant-ui 聊天前端
-- 默认知识库路径: `~/.scv/analysis`
-- 默认数据目录: `~/.porto`
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-## 后端
+---
+
+## What is Porto?
+
+Turning a PRD into engineering specs is slow, inconsistent, and disconnected from the codebase that's supposed to implement it. The decomposition lives in one person's head, subsystems get re-cut every sprint, and the resulting specs read like generic boilerplate that ignores your actual code.
+
+Porto turns that into a repeatable pipeline. Give it a PRD and it:
+
+1. **Retrieves** relevant context from a knowledge base built from your code.
+2. **Understands** the business intent behind the requirement.
+3. **Identifies** the subsystems that should change.
+4. **Generates** a spec per subsystem, then critiques and refines each one against a rubric.
+5. **Evaluates** the result, reworking it if the quality bar isn't met.
+
+Because Porto reasons over a knowledge base produced by its companion project [**SCV**](https://github.com/ProjAnvil/SCV) — not your raw source — the specs reference your real modules and boundaries instead of inventing them.
+
+## Why Porto?
+
+- 🧠 **Grounded in your codebase** — Porto retrieves from a knowledge base built by [SCV](https://github.com/ProjAnvil/SCV), so specs reflect the systems and APIs you actually have, not generic templates.
+- 🔁 **Specs that refine themselves** — every spec runs through a generate → critique → refine loop scored on a 12-point rubric. In our evals, template-grade specs (3.2/12) come out at **11.4/12** after the loop.
+- 🔍 **Fully observable** — every step (retrieval, tool calls, critique scores, rework decisions) is recorded as an agent step, so you can trace exactly how each spec was produced.
+- 🛡️ **Runs without an API key** — every LLM call has a deterministic fallback. Develop and test end-to-end with zero keys, then plug in a model to scale quality. The model is a quality amplifier, not an on/off switch.
+
+## How it works
+
+Porto is a fixed workflow skeleton with agentic nodes: the path is predictable, but each node uses a tool-calling loop to fetch what it needs.
+
+```mermaid
+graph LR
+    R[retrieve<br/>PRD + knowledge base] --> U[understand<br/>business intent]
+    U --> I[identify<br/>subsystems]
+    I --> G[generate<br/>spec per subsystem<br/>+ refine loop]
+    G --> E[evaluate<br/>score vs. rubric]
+    E -->|needs rework| I
+    E -->|passes| Done([shipped specs])
+```
+
+For a deep dive into the architecture — the LLM client, tool-calling loop, evaluator-optimizer spec loop, memory compaction, and the graceful-degradation philosophy — see the **[Backend Agent Guide](docs/backend-agent-guide.md)**.
+
+## Quickstart
+
+You need Python 3.12 (with [`uv`](https://docs.astral.sh/uv/)) and Node.js.
 
 ```bash
-cd backend
-uv sync
-cp .env.example .env
+# Backend — FastAPI + LangGraph agent (port 8100)
+cd backend && uv sync && cp .env.example .env
 uv run uvicorn porto_chatbot.main:app --reload --port 8100
+
+# Frontend — Next.js + React workbench (another terminal)
+cd frontend && npm install && npm run dev
 ```
 
-后端会自动读取 `backend/.env`。常用配置:
-
-```dotenv
-PORTO_CHATBOT_KB_PATH=~/.scv/analysis
-PORTO_CHATBOT_DATA_DIR=~/.porto
-PORTO_CHATBOT_EMBEDDING_PROVIDER=ollama
-PORTO_CHATBOT_EMBEDDING_MODEL=qwen3-embedding:0.6b
-PORTO_CHATBOT_EMBEDDING_BASE_URL=http://127.0.0.1:11434
-PORTO_CHATBOT_MAX_CHUNK_CHARS=1400
-PORTO_CHATBOT_CHUNK_OVERLAP=180
-PORTO_CHATBOT_TOP_K=6
-
-LANGCHAIN_AGENT_PROVIDER=openai
-LANGCHAIN_MODEL=gpt-4.1-mini
-LANGCHAIN_BASE_URL=
-LANGCHAIN_API_KEY=
-LANGCHAIN_TEMPERATURE=0.2
-LANGCHAIN_MAX_TOKENS=2000
-
-# Anthropic example:
-# LANGCHAIN_AGENT_PROVIDER=anthropic
-# LANGCHAIN_MODEL=claude-3-5-sonnet-latest
-# LANGCHAIN_API_KEY=...
-
-# Optional
-# LANGSMITH_TRACING=true
-# LANGSMITH_API_KEY=...
-# LANGSMITH_PROJECT=porto-chatbot
-```
-
-## 前端
+Or, using the provided Makefile:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+make backend-dev    # hot-reloading backend
+make frontend-dev   # hot-reloading frontend
+make start          # start both at once
 ```
 
-前端默认代理 `/api` 到 `http://127.0.0.1:8100`。如需覆盖后端地址:
+Open the frontend at the URL `next dev` prints. By default it proxies `/api` to `http://127.0.0.1:8100`.
 
-```bash
-PORTO_API_BASE_URL=http://127.0.0.1:8100 npm run dev
-```
+Porto runs out of the box without any model API key (fallback paths kick in). To unlock full quality, set a provider in `backend/.env` — see **[Deployment & Configuration](docs/deployment.md)** for every option, Docker, and the bundled single-port deployment.
 
-## 测试
+## Ecosystem · SCV
 
-```bash
-cd backend
-uv run pytest
-```
+Porto doesn't read your source directly — it reasons over a knowledge base built by [**SCV (Source Code Vault)**](https://github.com/ProjAnvil/SCV).
 
-## 部署
+SCV is a Claude Code skill that analyzes codebases and produces structured documentation: a **README**, **Summary**, **Architecture** (with Mermaid diagrams), and **File Index** per repository. It batches many repos in parallel with isolated subagents, skips repos whose HEAD hasn't changed, and — via [codebones](https://github.com/creynir/codebones) integration — extracts structural skeletons for roughly **85% token reduction** during deep analysis.
 
-两种打包方式，任选其一：
+> **SCV makes the AI understand your code; Porto makes the AI turn requirements into specs from that understanding.**
 
-### 1. 捆绑部署（单进程 / 单端口，推荐用于单机 / 一键启动）
+If you maintain multiple repositories, point SCV at them once and Porto stays grounded in your ever-evolving codebase. → **[github.com/ProjAnvil/SCV](https://github.com/ProjAnvil/SCV)**
 
-前端 `next build --output export` 产出纯静态文件，由后端 FastAPI 同源托管
-（`/` 返回页面，`/api/*` 走接口），只需一个进程、一个端口。
+## Documentation
 
-```bash
-make bundle-start          # 本地：构建静态前端 + 启动单一 uvicorn 进程
-# 或
-make docker-run-bundled    # Docker：单镜像单容器
-```
+- **[Backend Agent Guide](docs/backend-agent-guide.md)** — how the agent works internally, layer by layer
+- **[Deployment & Configuration](docs/deployment.md)** — environment variables, Docker, bundled vs. split deployment
+- **[Plans](docs/PLANs/)** · **[TODOs](docs/TODOs/)** — roadmap and open work
+- **[Specs](docs/superpowers/specs/)** — design documents
 
-### 2. 前后端分离部署（各自独立扩缩容/发布）
+---
 
-后端 `uvicorn` 与前端 `next start`（自带 Node 服务，通过 rewrites 代理 `/api/*`
-到 `PORTO_API_BASE_URL`）分别运行，可分别部署到不同主机/容器。
-
-```bash
-make compose-up             # docker compose 启动前后端两个容器
-# 或手动：
-docker build -t porto-chatbot-backend  -f backend/Dockerfile  backend
-docker build -t porto-chatbot-frontend -f frontend/Dockerfile frontend
-```
-
-日常开发仍用 `make start` / `make backend-dev` / `make frontend-dev`（见上）。
-
+ Porto is part of the [ProjAnvil](https://github.com/ProjAnvil) toolkit. Built for teams that ship specs, not guesswork.
