@@ -21,53 +21,38 @@ import {
 export function SpecMdxEditor({
   value,
   onChange,
-  readOnly = false,
   className,
 }: {
   value: string;
-  onChange?: (markdown: string) => void;
-  readOnly?: boolean;
+  onChange: (markdown: string) => void;
   className?: string;
 }) {
-  const basePlugins = [
-    headingsPlugin(),
-    listsPlugin(),
-    quotePlugin(),
-    thematicBreakPlugin(),
-    linkPlugin(),
-    codeBlockPlugin(),
-    markdownShortcutPlugin(),
-  ];
-  const plugins = readOnly
-    ? basePlugins
-    : [
-        ...basePlugins,
-        toolbarPlugin({
-          toolbarContents: () => (
-            <>
-              <UndoRedo />
-              <BlockTypeSelect />
-              <BoldItalicUnderlineToggles />
-              <ListsToggle />
-              <CreateLink />
-            </>
-          ),
-        }),
-      ];
   return (
-    <div
-      className={
-        readOnly
-          ? `min-h-0 overflow-y-auto ${className ?? ""}`
-          : `mdx-editor-scroll ${className ?? ""}`
-      }
-    >
+    <div className={`mdx-editor-scroll ${className ?? ""}`}>
       <MDXEditor
-        readOnly={readOnly}
         markdown={value}
         onChange={onChange}
         contentEditableClassName="prose prose-zinc max-w-none prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50"
-        plugins={plugins}
+        plugins={[
+          headingsPlugin(),
+          listsPlugin(),
+          quotePlugin(),
+          thematicBreakPlugin(),
+          linkPlugin(),
+          codeBlockPlugin(),
+          markdownShortcutPlugin(),
+          toolbarPlugin({
+            toolbarContents: () => (
+              <>
+                <UndoRedo />
+                <BlockTypeSelect />
+                <BoldItalicUnderlineToggles />
+                <ListsToggle />
+                <CreateLink />
+              </>
+            ),
+          }),
+        ]}
       />
     </div>
   );
