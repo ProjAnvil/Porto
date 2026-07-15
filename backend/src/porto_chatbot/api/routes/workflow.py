@@ -73,6 +73,11 @@ class WorkflowDetail(BaseModel):
     outputs: dict[str, Any]  # {step: {output, produced_by, produced_at}}
 
 
+class SpecUpdateRequest(BaseModel):
+    name: str
+    body: str
+
+
 def _detail(store, workflow_id: str) -> WorkflowDetail:
     row = store.get(workflow_id)
     if row is None:
@@ -247,6 +252,21 @@ def save_step_output(workflow_id: str, step: str, body: dict[str, Any]):
     store.save_output(workflow_id, step, body, "user")
     store.clear_outputs_after(workflow_id, step)
     store.update_status(workflow_id, "awaiting_input", current_step=step)
+    return _detail(store, workflow_id)
+
+
+@router.patch(
+    "/api/porto/workflows/{workflow_id}/specs", response_model=WorkflowDetail
+)
+def update_spec(workflow_id: str, payload: SpecUpdateRequest):
+    """轻量更新某个 spec 正文：只改 generate.output.specs[name]，
+    不动审计字段、不清下游、不改 status/current_step。
+    workflow 不存在→404；无 generate output 或 name 不在 specs→400。"""
+    store = get_workflow_store()
+    if store.get(workflow_id) is None:
+        raise HTTPException(404, "workflow not found")
+    if not store.update_spec(workflow_id, payload.name, payload.body):
+        raise HTTPException(400, "spec not found")
     return _detail(store, workflow_id)
 
 

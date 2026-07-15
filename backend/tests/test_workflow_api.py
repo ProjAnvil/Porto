@@ -206,3 +206,46 @@ def test_advance_past_first_checkpoint_reaches_identify(
         assert steps_order.index(reached_step) >= steps_order.index("identify"), (
             f"advance 应跨过 understand 到达 identify 及以后,实际停在 {reached_step}"
         )
+
+
+def test_patch_spec_updates_without_side_effects(monkeypatch, sample_settings):
+    """PATCH /specs：只改 generate.specs[name]，不改 status/current_step、
+    不清下游、不动 produced_by。name 不存在→400；workflow 不存在→404。"""
+    from porto_chatbot.api.deps import get_workflow_store
+
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        store = get_workflow_store()
+        # 直接造 workflow + generate + evaluate（不经 executor，确定性）
+        wid = store.create("s1", "proj", "prd", 6, {}, {})
+        store.save_output(wid, "generate", {"specs": {"Auth": "原始"}}, "ai")
+        store.save_output(wid, "evaluate", {"score": 10}, "ai")
+        store.update_status(wid, "completed", current_step="evaluate")
+
+        resp = client.patch(
+            f"/api/porto/workflows/{wid}/specs",
+            json={"name": "Auth", "body": "编辑后正文"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["outputs"]["generate"]["output"]["specs"]["Auth"] == "编辑后正文"
+        # 副作用均未发生
+        assert body["status"] == "completed"
+        assert body["current_step"] == "evaluate"
+        assert "evaluate" in body["outputs"]
+        assert body["outputs"]["evaluate"]["output"]["score"] == 10
+        assert body["outputs"]["generate"]["produced_by"] == "ai"
+
+        # name 不存在 → 400
+        bad = client.patch(
+            f"/api/porto/workflows/{wid}/specs",
+            json={"name": "Nope", "body": "x"},
+        )
+        assert bad.status_code == 400
+
+        # workflow 不存在 → 404
+        miss = client.patch(
+            "/api/porto/workflows/missing/specs",
+            json={"name": "Auth", "body": "x"},
+        )
+        assert miss.status_code == 404
