@@ -21,23 +21,27 @@ import {
 export function SpecMdxEditor({
   value,
   onChange,
+  readOnly = false,
+  className,
 }: {
   value: string;
   onChange: (markdown: string) => void;
+  readOnly?: boolean;
+  className?: string;
 }) {
-  return (
-    <MDXEditor
-      className="max-h-[60vh] overflow-y-auto rounded-lg border border-zinc-200 bg-white"
-      markdown={value}
-      onChange={onChange}
-      plugins={[
-        headingsPlugin(),
-        listsPlugin(),
-        quotePlugin(),
-        thematicBreakPlugin(),
-        linkPlugin(),
-        codeBlockPlugin(),
-        markdownShortcutPlugin(),
+  const basePlugins = [
+    headingsPlugin(),
+    listsPlugin(),
+    quotePlugin(),
+    thematicBreakPlugin(),
+    linkPlugin(),
+    codeBlockPlugin(),
+    markdownShortcutPlugin(),
+  ];
+  const plugins = readOnly
+    ? basePlugins
+    : [
+        ...basePlugins,
         toolbarPlugin({
           toolbarContents: () => (
             <>
@@ -49,7 +53,16 @@ export function SpecMdxEditor({
             </>
           ),
         }),
-      ]}
-    />
+      ];
+  return (
+    <div className={`mdx-editor-scroll ${className ?? ""}`}>
+      <MDXEditor
+        readOnly={readOnly}
+        markdown={value}
+        onChange={onChange}
+        contentEditableClassName="prose prose-zinc max-w-none prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50"
+        plugins={plugins}
+      />
+    </div>
   );
 }
