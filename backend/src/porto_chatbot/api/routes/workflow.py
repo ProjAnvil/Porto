@@ -21,10 +21,18 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from ...documents import read_document
+from ...documents import (
+    SUPPORTED_EXTENSIONS,
+    DocumentLimitError,
+    DocumentNativeError,
+    DocumentParseError,
+    parse_document,
+)
+from ...llm import LLMClient
 from ...logging_utils import get_component_logger
 from ...models import WorkflowRequest
 from ..deps import (
+    apply_rag_settings,
     effective_agent_settings,
     effective_rag_settings,
     get_workflow_executor,
@@ -78,6 +86,14 @@ class SpecUpdateRequest(BaseModel):
     body: str
 
 
+class DocumentCapabilitiesView(BaseModel):
+    enabled: bool
+    image_input: bool
+    native_pdf: bool
+    reason: str
+    parse_mode: str
+
+
 def _detail(store, workflow_id: str) -> WorkflowDetail:
     row = store.get(workflow_id)
     if row is None:
@@ -115,9 +131,7 @@ def create_workflow(req: WorkflowRequest):
     agent = effective_agent_settings(req.agent).model_dump(exclude_none=True)
     top_k = req.top_k or effective_rag_settings(req.rag).top_k
     store = get_workflow_store()
-    wid = store.create(
-        req.session_id, req.project_name, req.text.strip(), top_k, rag, agent
-    )
+    wid = store.create(req.session_id, req.project_name, req.text.strip(), top_k, rag, agent)
     logger.info(
         "workflow start session_id=%s workflow_id=%s text_chars=%s top_k=%s",
         req.session_id,
@@ -137,18 +151,46 @@ async def upload_workflow(
     top_k: Annotated[int | None, Form()] = None,
 ):
     """上传文档 → 抽取文本 → 创建 + 启动 workflow。"""
-    suffix = Path(file.filename or "").suffix
+    runtime_settings = apply_rag_settings()
+    suffix = Path(file.filename or "").suffix.lower()
     if not suffix:
         raise HTTPException(400, "uploaded file must have an extension")
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(415, f"unsupported document type: {suffix}")
+    max_bytes = runtime_settings.document_max_upload_mb * 1024 * 1024
+    payload = await file.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise HTTPException(
+            413,
+            f"document exceeds {runtime_settings.document_max_upload_mb} MB upload limit",
+        )
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(payload)
         tmp_path = Path(tmp.name)
     try:
-        text = read_document(tmp_path)
+        artifact = parse_document(
+            tmp_path,
+            original_name=file.filename,
+            max_bytes=max_bytes,
+            max_pdf_pages=runtime_settings.document_max_pdf_pages,
+            llm_client=LLMClient(runtime_settings),
+            mode=runtime_settings.document_parse_mode,
+            local_parser=runtime_settings.document_local_parser,
+        )
+    except DocumentLimitError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except DocumentNativeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except DocumentParseError as exc:
+        raise HTTPException(400, str(exc)) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
+    text = artifact.text
     if not text.strip():
-        raise HTTPException(400, "document has no extractable text")
+        raise HTTPException(
+            400,
+            "document has no extractable text; configure a PDF-capable vision model for scanned files",
+        )
     rag = effective_rag_settings().model_dump(exclude_none=True)
     agent = effective_agent_settings().model_dump(exclude_none=True)
     resolved_top_k = top_k or effective_rag_settings().top_k
@@ -161,8 +203,26 @@ async def upload_workflow(
         wid,
         len(text),
     )
+    if artifact.warnings:
+        logger.warning(
+            "workflow upload parse warnings filename=%s parser=%s warnings=%s",
+            file.filename,
+            artifact.parser,
+            artifact.warnings,
+        )
     get_workflow_executor().start_workflow(wid)
     return WorkflowCreated(workflow_id=wid, status="running")
+
+
+@router.get("/api/porto/document-capabilities", response_model=DocumentCapabilitiesView)
+def document_capabilities():
+    """Report effective model-side document capabilities without sending a file."""
+    runtime = apply_rag_settings()
+    capabilities = LLMClient(runtime).document_capabilities
+    return DocumentCapabilitiesView(
+        **capabilities.__dict__,
+        parse_mode=runtime.document_parse_mode,
+    )
 
 
 @router.get("/api/porto/workflows", response_model=WorkflowListResponse)
@@ -198,9 +258,7 @@ def list_workflows(
                 score=score,
             )
         )
-    return WorkflowListResponse(
-        items=items, total=total, has_more=offset + len(items) < total
-    )
+    return WorkflowListResponse(items=items, total=total, has_more=offset + len(items) < total)
 
 
 @router.get("/api/porto/workflows/{workflow_id}", response_model=WorkflowDetail)
@@ -209,9 +267,7 @@ def get_workflow(workflow_id: str):
     return _detail(get_workflow_store(), workflow_id)
 
 
-@router.post(
-    "/api/porto/workflows/{workflow_id}/advance", response_model=WorkflowCreated
-)
+@router.post("/api/porto/workflows/{workflow_id}/advance", response_model=WorkflowCreated)
 def advance_workflow(workflow_id: str):
     """推进到下个 checkpoint。
 
@@ -230,9 +286,7 @@ def advance_workflow(workflow_id: str):
     return WorkflowCreated(workflow_id=workflow_id, status="running")
 
 
-@router.put(
-    "/api/porto/workflows/{workflow_id}/steps/{step}", response_model=WorkflowDetail
-)
+@router.put("/api/porto/workflows/{workflow_id}/steps/{step}", response_model=WorkflowDetail)
 def save_step_output(workflow_id: str, step: str, body: dict[str, Any]):
     """覆盖某步产出并回退到该步(用户编辑)。
 
@@ -255,9 +309,7 @@ def save_step_output(workflow_id: str, step: str, body: dict[str, Any]):
     return _detail(store, workflow_id)
 
 
-@router.patch(
-    "/api/porto/workflows/{workflow_id}/specs", response_model=WorkflowDetail
-)
+@router.patch("/api/porto/workflows/{workflow_id}/specs", response_model=WorkflowDetail)
 def update_spec(workflow_id: str, payload: SpecUpdateRequest):
     """轻量更新某个 spec 正文：只改 generate.output.specs[name]，
     不动审计字段、不清下游、不改 status/current_step。

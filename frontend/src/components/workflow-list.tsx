@@ -18,9 +18,11 @@ const STEP_LABELS: Record<string, string> = {
 export function WorkflowList({
   activeWorkflowId,
   onPickWorkflow,
+  refreshKey,
 }: {
   activeWorkflowId: string | null;
   onPickWorkflow: (id: string) => void;
+  refreshKey: number;
 }) {
   const [items, setItems] = useState<WorkflowListItem[]>([]);
   const [date, setDate] = useState("");
@@ -48,7 +50,7 @@ export function WorkflowList({
     return () => {
       cancelled = true;
     };
-  }, [date]);
+  }, [date, refreshKey]);
 
   async function loadMore() {
     if (loading || !hasMore) return;

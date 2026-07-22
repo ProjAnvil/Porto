@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from porto_chatbot import main
 from porto_chatbot.config_store import ConfigStore
-from porto_chatbot.models import AgentSettingsPayload, RagSettingsPayload
+from porto_chatbot.models import (
+    AgentSettingsPayload,
+    AppSettingsPayload,
+    DocumentSettingsPayload,
+    RagSettingsPayload,
+)
 from porto_chatbot.settings import Settings
 
 
@@ -35,6 +40,15 @@ def test_config_store_persists_rag_and_agent_settings(tmp_path):
             agent_max_tokens=4096,
         )
     )
+    store.save_document_settings(
+        DocumentSettingsPayload(
+            parse_mode="local",
+            local_parser="docling",
+            max_tokens=24000,
+            max_upload_mb=40,
+            max_pdf_pages=320,
+        )
+    )
 
     reloaded = ConfigStore(settings)
 
@@ -43,6 +57,10 @@ def test_config_store_persists_rag_and_agent_settings(tmp_path):
     assert reloaded.get_agent_settings().agent_provider == "anthropic"
     assert reloaded.get_agent_settings().agent_temperature == 0.4
     assert reloaded.get_agent_settings().agent_max_tokens == 4096
+    document = reloaded.get_document_settings()
+    assert document.parse_mode == "local"
+    assert document.local_parser == "docling"
+    assert document.max_tokens == 24000
 
 
 def test_effective_settings_default_to_qwen_and_agent_params(monkeypatch, tmp_path):
@@ -59,3 +77,37 @@ def test_effective_settings_default_to_qwen_and_agent_params(monkeypatch, tmp_pa
     assert app_settings.rag.embedding_model == "qwen3-embedding:0.6b"
     assert app_settings.agent.agent_temperature == 0.2
     assert app_settings.agent.agent_max_tokens == 2000
+    assert app_settings.document.parse_mode == "hybrid"
+    assert app_settings.document.local_parser == "pypdf"
+
+
+def test_document_settings_api_values_flow_into_runtime(monkeypatch, tmp_path):
+    from porto_chatbot.api.deps import apply_rag_settings
+    from porto_chatbot.api.routes.settings import save_app_settings
+
+    settings = Settings(
+        kb_dirs=[tmp_path / "kb"],
+        data_dir=tmp_path / ".porto",
+        log_dir=tmp_path / "logs",
+    )
+    monkeypatch.setattr(main, "settings", settings)
+
+    saved = save_app_settings(
+        AppSettingsPayload(
+            document=DocumentSettingsPayload(
+                parse_mode="local",
+                local_parser="docling",
+                max_tokens=22000,
+                max_upload_mb=35,
+                max_pdf_pages=280,
+            )
+        )
+    )
+
+    assert saved.document.local_parser == "docling"
+    runtime = apply_rag_settings()
+    assert runtime.document_parse_mode == "local"
+    assert runtime.document_local_parser == "docling"
+    assert runtime.document_max_tokens == 22000
+    assert runtime.document_max_upload_mb == 35
+    assert runtime.document_max_pdf_pages == 280

@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import io
 import time
 
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 
 from porto_chatbot import main
 
@@ -29,9 +31,7 @@ def _wait_index_done(client: TestClient, timeout: float = 30.0) -> dict:
     raise AssertionError(f"index did not finish within {timeout}s")
 
 
-def _wait_status(
-    client: TestClient, wid: str, target: set[str], timeout: float = 15.0
-) -> dict:
+def _wait_status(client: TestClient, wid: str, target: set[str], timeout: float = 15.0) -> dict:
     """轮询 workflow detail 直到 status 进入 target 集合。降级路径下(无 LLM key)
     workflow 可能很快跑到 completed(理解/识别走 fallback、生成走 template、evaluate
     给分),故 target 通常含 awaiting_input 与 completed 两个目标。
@@ -65,9 +65,10 @@ def test_workflow_checkpoint_flow(monkeypatch, sample_settings, sample_prd):
         detail = _wait_status(client, wid, {"awaiting_input", "completed"})
         assert detail["current_step"] in {"understand", "evaluate"}
         outs = detail["outputs"]
-        assert "understanding" in outs.get("understand", {}).get("output", {}) or detail[
-            "current_step"
-        ] == "evaluate"
+        assert (
+            "understanding" in outs.get("understand", {}).get("output", {})
+            or detail["current_step"] == "evaluate"
+        )
 
 
 def test_list_and_delete(monkeypatch, sample_settings, sample_prd):
@@ -76,9 +77,7 @@ def test_list_and_delete(monkeypatch, sample_settings, sample_prd):
     with TestClient(main.app) as client:
         client.post("/api/kb/index")
         _wait_index_done(client)
-        r = client.post(
-            "/api/porto/workflows", json={"text": sample_prd, "session_id": "s1"}
-        )
+        r = client.post("/api/porto/workflows", json={"text": sample_prd, "session_id": "s1"})
         wid = r.json()["workflow_id"]
         lst = client.get("/api/porto/workflows?session_id=s1").json()
         assert any(w["workflow_id"] == wid for w in lst["items"])
@@ -91,9 +90,7 @@ def test_advance_concurrent_returns_409(monkeypatch, sample_settings, sample_prd
     with TestClient(main.app) as client:
         client.post("/api/kb/index")
         _wait_index_done(client)
-        r = client.post(
-            "/api/porto/workflows", json={"text": sample_prd, "session_id": "s1"}
-        )
+        r = client.post("/api/porto/workflows", json={"text": sample_prd, "session_id": "s1"})
         wid = r.json()["workflow_id"]
         # 立刻连续 advance(第一个可能已过 understand)
         r2 = client.post(f"/api/porto/workflows/{wid}/advance")
@@ -101,9 +98,7 @@ def test_advance_concurrent_returns_409(monkeypatch, sample_settings, sample_prd
         assert r2.status_code in (200, 409)
 
 
-def test_put_step_overwrites_and_resets_status(
-    monkeypatch, sample_settings, sample_prd
-):
+def test_put_step_overwrites_and_resets_status(monkeypatch, sample_settings, sample_prd):
     """PUT /steps/{step}:overwrite output(produced_by=user)+ clear_outputs_after
     + current_step=step + status=awaiting_input。step 不在白名单时返回 400。
     """
@@ -112,9 +107,7 @@ def test_put_step_overwrites_and_resets_status(
     with TestClient(main.app) as client:
         client.post("/api/kb/index")
         _wait_index_done(client)
-        r = client.post(
-            "/api/porto/workflows", json={"text": sample_prd, "session_id": "s1"}
-        )
+        r = client.post("/api/porto/workflows", json={"text": sample_prd, "session_id": "s1"})
         wid = r.json()["workflow_id"]
         # 等 understand checkpoint
         _wait_status(client, wid, {"awaiting_input", "completed"})
@@ -131,9 +124,7 @@ def test_put_step_overwrites_and_resets_status(
         assert outs["output"]["understanding"] == "用户重写的理解"
         assert outs["produced_by"] == "user"
         # 非法 step -> 400
-        bad = client.put(
-            f"/api/porto/workflows/{wid}/steps/retrieve", json={"x": 1}
-        )
+        bad = client.put(f"/api/porto/workflows/{wid}/steps/retrieve", json={"x": 1})
         assert bad.status_code == 400
 
 
@@ -145,9 +136,7 @@ def test_get_detail_404_for_missing(monkeypatch, sample_settings):
         assert client.delete("/api/porto/workflows/nope").status_code == 404
 
 
-def test_advance_past_first_checkpoint_reaches_identify(
-    monkeypatch, sample_settings, sample_prd
-):
+def test_advance_past_first_checkpoint_reaches_identify(monkeypatch, sample_settings, sample_prd):
     """回归(跨 checkpoint 推进集成测试):advance 跨过第一个 checkpoint 时,
     下游节点(identify)必须能消费 ``_rebuild_state`` 重建的 sources/subsystems
     Pydantic 模型,而非 AttributeError 崩溃。
@@ -192,9 +181,7 @@ def test_advance_past_first_checkpoint_reaches_identify(
         adv = client.post(f"/api/porto/workflows/{wid}/advance")
         assert adv.status_code == 200, f"advance 应被接受,实际 {adv.status_code}: {adv.text}"
 
-        second = _wait_status(
-            client, wid, {"awaiting_input", "completed", "failed"}, timeout=20.0
-        )
+        second = _wait_status(client, wid, {"awaiting_input", "completed", "failed"}, timeout=20.0)
         # 关键断言:不允许 failed(pre-fix 会因 s.text AttributeError 落到 failed)
         assert second["status"] != "failed", (
             f"advance 跨 checkpoint 崩溃: status=failed "
@@ -249,3 +236,51 @@ def test_patch_spec_updates_without_side_effects(monkeypatch, sample_settings):
             json={"name": "Auth", "body": "x"},
         )
         assert miss.status_code == 404
+
+
+def test_document_capabilities_and_upload_validation(monkeypatch, sample_settings):
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        capabilities = client.get("/api/porto/document-capabilities")
+        assert capabilities.status_code == 200
+        assert capabilities.json() == {
+            "enabled": False,
+            "image_input": False,
+            "native_pdf": False,
+            "reason": "LLM client is disabled",
+            "parse_mode": "hybrid",
+        }
+
+        unsupported = client.post(
+            "/api/porto/workflows/upload",
+            files={"file": ("prd.exe", b"not a document", "application/octet-stream")},
+        )
+        assert unsupported.status_code == 415
+
+        sample_settings.document_max_upload_mb = 1
+        too_large = client.post(
+            "/api/porto/workflows/upload",
+            files={"file": ("prd.txt", b"x" * (1024 * 1024 + 1), "text/plain")},
+        )
+        assert too_large.status_code == 413
+
+
+def test_upload_maps_parse_and_strict_native_errors(monkeypatch, sample_settings):
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        broken = client.post(
+            "/api/porto/workflows/upload",
+            files={"file": ("prd.pdf", b"not-a-pdf", "application/pdf")},
+        )
+        assert broken.status_code == 400
+
+        sample_settings.document_parse_mode = "native"
+        pdf = io.BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=100, height=100)
+        writer.write(pdf)
+        strict = client.post(
+            "/api/porto/workflows/upload",
+            files={"file": ("prd.pdf", pdf.getvalue(), "application/pdf")},
+        )
+        assert strict.status_code == 422

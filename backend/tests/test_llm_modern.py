@@ -73,6 +73,21 @@ class FakeOpenAI:
         self.chat = FakeChat(script)
 
 
+class FakeAnthropicMessages:
+    def __init__(self, response):
+        self.response = response
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+class FakeAnthropic:
+    def __init__(self, response):
+        self.messages = FakeAnthropicMessages(response)
+
+
 # ----------------------------- fixtures ----------------------------- #
 
 
@@ -150,16 +165,68 @@ def test_complete_legacy_system_user(client):
 
 def test_complete_accepts_messages(client):
     _wire(client, [FakeResponse(FakeMessage(content="ok"))])
-    result = client.complete("ignored-system", "ignored-user", messages=[
-        {"role": "system", "content": "s"},
-        {"role": "user", "content": "u1"},
-        {"role": "assistant", "content": "a1"},
-        {"role": "user", "content": "u2"},
-    ])
+    result = client.complete(
+        "ignored-system",
+        "ignored-user",
+        messages=[
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+        ],
+    )
     assert result == "ok"
     sent = client._client.chat.completions.calls[0]["messages"]
     assert sent[-1] == {"role": "user", "content": "u2"}
     assert len(sent) == 4
+
+
+def test_openai_document_completion_sends_pdf_file_block(client):
+    _wire(client, [FakeResponse(FakeMessage(content="# Parsed PRD"))])
+
+    result = client.complete_document("prd.pdf", b"%PDF-test", "application/pdf", "parse")
+
+    assert result == "# Parsed PRD"
+    content = client._client.chat.completions.calls[0]["messages"][0]["content"]
+    assert content[0]["type"] == "file"
+    assert content[0]["file"]["filename"] == "prd.pdf"
+    assert content[0]["file"]["file_data"].startswith("data:application/pdf;base64,")
+    assert content[1] == {"type": "text", "text": "parse"}
+
+
+def test_anthropic_document_completion_sends_document_block(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        log_dir=tmp_path / "logs",
+    ).model_copy(
+        update={
+            "agent_api_key": "k",
+            "agent_provider": "anthropic",
+            "agent_model": "claude-sonnet-4-5",
+        }
+    )
+    client = LLMClient(settings)
+    response = SimpleNamespace(content=[SimpleNamespace(type="text", text="# Parsed")])
+    client._client = FakeAnthropic(response)
+
+    result = client.complete_document("prd.pdf", b"%PDF-test", "application/pdf", "parse")
+
+    assert result == "# Parsed"
+    content = client._client.messages.calls[0]["messages"][0]["content"]
+    assert content[0]["type"] == "document"
+    assert content[0]["source"]["media_type"] == "application/pdf"
+    assert content[0]["source"]["type"] == "base64"
+
+
+def test_document_capabilities_require_enabled_supported_model(client):
+    _wire(client, [])
+    client.settings.agent_model = "m"
+    assert client.document_capabilities.native_pdf is False  # fixture model "m" is unknown
+    client.settings.agent_model = "gpt-4.1-mini"
+    assert client.document_capabilities.native_pdf is True
+
+    client._client = None
+    assert client.document_capabilities.native_pdf is False
 
 
 # ----------------------------- complete_structured ----------------------------- #
@@ -177,19 +244,25 @@ def test_structured_parses_fenced_json(client):
 
 
 def test_structured_retries_then_succeeds(client):
-    _wire(client, [
-        FakeResponse(FakeMessage(content="I think the answer is...")),  # 首次坏
-        FakeResponse(FakeMessage(content='{"score": 9}')),             # 重试好
-    ])
+    _wire(
+        client,
+        [
+            FakeResponse(FakeMessage(content="I think the answer is...")),  # 首次坏
+            FakeResponse(FakeMessage(content='{"score": 9}')),  # 重试好
+        ],
+    )
     assert client.complete_structured("sys", "u", {"type": "object"}) == {"score": 9}
     assert len(client._client.chat.completions.calls) == 2
 
 
 def test_structured_returns_none_after_failed_retry(client):
-    _wire(client, [
-        FakeResponse(FakeMessage(content="nope")),
-        FakeResponse(FakeMessage(content="still nope")),
-    ])
+    _wire(
+        client,
+        [
+            FakeResponse(FakeMessage(content="nope")),
+            FakeResponse(FakeMessage(content="still nope")),
+        ],
+    )
     assert client.complete_structured("sys", "u", {"type": "object"}) is None
 
 
@@ -216,10 +289,15 @@ def test_tool_loop_no_tool_call_returns_text(client):
 
 def test_tool_loop_executes_then_finishes(client):
     seen: list[dict] = []
-    _wire(client, [
-        FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "echo", {"q": "hi"})])),
-        FakeResponse(FakeMessage(content="done")),
-    ])
+    _wire(
+        client,
+        [
+            FakeResponse(
+                FakeMessage(content="", tool_calls=[FakeToolCall("c1", "echo", {"q": "hi"})])
+            ),
+            FakeResponse(FakeMessage(content="done")),
+        ],
+    )
 
     def echo(args):
         seen.append(args)
@@ -236,20 +314,26 @@ def test_tool_loop_executes_then_finishes(client):
 
 
 def test_tool_loop_unknown_tool_records_error(client):
-    _wire(client, [
-        FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "ghost", {})])),
-        FakeResponse(FakeMessage(content="recovered")),
-    ])
+    _wire(
+        client,
+        [
+            FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "ghost", {})])),
+            FakeResponse(FakeMessage(content="recovered")),
+        ],
+    )
     r = client.complete_with_tools("sys", "u", [_tool("real", lambda a: "ok")])
     assert r.text == "recovered"
     assert r.tool_calls[0].result.startswith("错误：未知工具 ghost")
 
 
 def test_tool_loop_handler_exception_does_not_crash(client):
-    _wire(client, [
-        FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "boom", {})])),
-        FakeResponse(FakeMessage(content="after-boom")),
-    ])
+    _wire(
+        client,
+        [
+            FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "boom", {})])),
+            FakeResponse(FakeMessage(content="after-boom")),
+        ],
+    )
 
     def boom(args):
         raise RuntimeError("boom")

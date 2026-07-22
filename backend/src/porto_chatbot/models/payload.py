@@ -57,14 +57,24 @@ class AgentSettingsPayload(BaseModel):
     agent_max_tool_turns: int | None = Field(default=None, ge=1, le=20)
 
 
+class DocumentSettingsPayload(BaseModel):
+    parse_mode: Literal["local", "native", "hybrid"] | None = None
+    local_parser: Literal["pypdf", "docling"] | None = None
+    max_tokens: int | None = Field(default=None, ge=1000, le=128000)
+    max_upload_mb: int | None = Field(default=None, ge=1, le=200)
+    max_pdf_pages: int | None = Field(default=None, ge=1, le=1000)
+
+
 class AppSettingsPayload(BaseModel):
     rag: RagSettingsPayload | None = None
     agent: AgentSettingsPayload | None = None
+    document: DocumentSettingsPayload | None = None
 
 
 class AppSettingsResponse(BaseModel):
     rag: RagSettingsPayload
     agent: AgentSettingsPayload
+    document: DocumentSettingsPayload
 
 
 class IndexRequest(RagSettingsPayload):

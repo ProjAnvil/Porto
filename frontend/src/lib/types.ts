@@ -97,9 +97,18 @@ export type AgentConfig = {
   agent_request_timeout: number;
 };
 
+export type DocumentConfig = {
+  parse_mode: "local" | "native" | "hybrid";
+  local_parser: "pypdf" | "docling";
+  max_tokens: number;
+  max_upload_mb: number;
+  max_pdf_pages: number;
+};
+
 export type AppSettings = {
   rag: RagConfig;
   agent: AgentConfig;
+  document: DocumentConfig;
 };
 
 export type MemoryRecord = {

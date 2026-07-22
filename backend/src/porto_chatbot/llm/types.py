@@ -35,5 +35,13 @@ class ToolLoopResult:
     truncated: bool = False
 
 
+@dataclass(frozen=True)
+class ModelCapabilities:
+    enabled: bool
+    image_input: bool
+    native_pdf: bool
+    reason: str
+
+
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
 _BARE_JSON_RE = re.compile(r"(\{.*\}|\[.*\])", re.DOTALL)

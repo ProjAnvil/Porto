@@ -6,6 +6,7 @@ from ...logging_utils import get_component_logger
 from ...models import AppSettingsPayload, AppSettingsResponse
 from ..deps import (
     effective_agent_settings,
+    effective_document_settings,
     effective_rag_settings,
     get_config_store,
 )
@@ -21,6 +22,7 @@ def get_app_settings():
     return AppSettingsResponse(
         rag=effective_rag_settings(),
         agent=effective_agent_settings(),
+        document=effective_document_settings(),
     )
 
 
@@ -37,4 +39,7 @@ def save_app_settings(req: AppSettingsPayload):
             req.agent.agent_model,
         )
         store.save_agent_settings(req.agent)
+    if req.document:
+        logger.info("settings save namespace=document")
+        store.save_document_settings(req.document)
     return get_app_settings()

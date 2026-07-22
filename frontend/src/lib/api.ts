@@ -2,6 +2,7 @@ import type {
   AgentConfig,
   AppSettings,
   ChatResponse,
+  DocumentConfig,
   HealthSnapshot,
   IndexJobStatus,
   KbStats,
@@ -34,6 +35,7 @@ export async function getAppSettings() {
 export async function saveAppSettings(settings: {
   rag?: Partial<RagConfig>;
   agent?: Partial<AgentConfig>;
+  document?: Partial<DocumentConfig>;
 }) {
   return parseJson<AppSettings>(
     await fetch("/api/settings", {
@@ -243,4 +245,12 @@ export const defaultAgentConfig: AgentConfig = {
   agent_stream_enabled: true,
   agent_max_tool_turns: 4,
   agent_request_timeout: 120,
+};
+
+export const defaultDocumentConfig: DocumentConfig = {
+  parse_mode: "hybrid",
+  local_parser: "pypdf",
+  max_tokens: 16000,
+  max_upload_mb: 20,
+  max_pdf_pages: 200,
 };

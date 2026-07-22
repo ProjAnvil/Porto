@@ -9,7 +9,7 @@ from ..index_supervisor import IndexSupervisor
 from ..locking import DbLockStore
 from ..logging_utils import get_component_logger
 from ..memory import MemoryStore
-from ..models import AgentSettingsPayload, RagSettingsPayload
+from ..models import AgentSettingsPayload, DocumentSettingsPayload, RagSettingsPayload
 from ..vector_store import LocalVectorStore
 
 if TYPE_CHECKING:
@@ -88,6 +88,17 @@ def default_agent_settings() -> AgentSettingsPayload:
     )
 
 
+def default_document_settings() -> DocumentSettingsPayload:
+    settings = current_settings()
+    return DocumentSettingsPayload(
+        parse_mode=settings.document_parse_mode,
+        local_parser=settings.document_local_parser,
+        max_tokens=settings.document_max_tokens,
+        max_upload_mb=settings.document_max_upload_mb,
+        max_pdf_pages=settings.document_max_pdf_pages,
+    )
+
+
 def effective_rag_settings(payload: RagSettingsPayload | None = None) -> RagSettingsPayload:
     updates = default_rag_settings().model_dump(exclude_none=True)
     updates.update(get_config_store().get_rag_settings().model_dump(exclude_none=True))
@@ -104,14 +115,27 @@ def effective_agent_settings(payload: AgentSettingsPayload | None = None) -> Age
     return AgentSettingsPayload(**updates)
 
 
+def effective_document_settings(
+    payload: DocumentSettingsPayload | None = None,
+) -> DocumentSettingsPayload:
+    updates = default_document_settings().model_dump(exclude_none=True)
+    updates.update(get_config_store().get_document_settings().model_dump(exclude_none=True))
+    if payload:
+        updates.update(payload.model_dump(exclude_none=True))
+    return DocumentSettingsPayload(**updates)
+
+
 def apply_rag_settings(
     payload: RagSettingsPayload | None = None,
     agent: AgentSettingsPayload | None = None,
+    document: DocumentSettingsPayload | None = None,
     **extra,
 ):
     settings = current_settings()
     updates = effective_agent_settings(agent).model_dump(exclude_none=True)
     updates.update(effective_rag_settings(payload).model_dump(exclude_none=True))
+    document_updates = effective_document_settings(document).model_dump(exclude_none=True)
+    updates.update({f"document_{key}": value for key, value in document_updates.items()})
     updates.update(extra)
     if "chunk_size" in updates:
         updates["max_chunk_chars"] = updates.pop("chunk_size")

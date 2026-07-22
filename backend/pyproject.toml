@@ -1,6 +1,6 @@
 [project]
 name = "porto-chatbot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Agentic RAG and PRD decomposition service for Porto"
 requires-python = ">=3.12"
 dependencies = [
@@ -23,6 +23,11 @@ dependencies = [
   "python-docx>=1.1.2",
   "python-multipart>=0.0.20",
   "uvicorn[standard]>=0.35.0",
+]
+
+[project.optional-dependencies]
+document-ai = [
+    "docling>=2.0.0",
 ]
 
 [build-system]

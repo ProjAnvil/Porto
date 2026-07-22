@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -10,7 +12,7 @@ from openai import OpenAI
 from ..logging_utils import get_component_logger
 from ..settings import Settings
 from .parsing import _try_parse_json
-from .types import Message, ToolCall, ToolDef, ToolLoopResult
+from .types import Message, ModelCapabilities, ToolCall, ToolDef, ToolLoopResult
 
 
 class LLMClient:
@@ -30,10 +32,77 @@ class LLMClient:
     def enabled(self) -> bool:
         return self._client is not None
 
+    @property
+    def document_capabilities(self) -> ModelCapabilities:
+        if not self.enabled:
+            return ModelCapabilities(False, False, False, "LLM client is disabled")
+        model = self.settings.agent_model.lower()
+        if self.settings.agent_provider == "anthropic":
+            supported = model.startswith("claude-")
+            return ModelCapabilities(True, supported, supported, "Anthropic model family")
+        supported = bool(re.match(r"^(gpt-(?:4o|4\.1|5(?:\.|-|$))|o[134](?:-|$))", model))
+        reason = "known OpenAI vision model family" if supported else "unknown model capability"
+        return ModelCapabilities(True, supported, supported, reason)
+
+    def complete_document(
+        self, filename: str, data: bytes, media_type: str, prompt: str
+    ) -> str | None:
+        """Analyze one PDF with the provider's native document input."""
+        if not self.document_capabilities.native_pdf:
+            return None
+        encoded = base64.standard_b64encode(data).decode("ascii")
+        if self.settings.agent_provider == "openai":
+            response = self._client.chat.completions.create(
+                model=self.settings.agent_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "file",
+                                "file": {
+                                    "filename": filename,
+                                    "file_data": f"data:{media_type};base64,{encoded}",
+                                },
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+                temperature=self.settings.agent_temperature,
+            )
+            return response.choices[0].message.content or ""
+        response = self._client.messages.create(
+            model=self.settings.agent_model,
+            max_tokens=self.settings.document_max_tokens,
+            temperature=self.settings.agent_temperature,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": encoded,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        )
+        return "".join(
+            block.text for block in response.content if getattr(block, "type", None) == "text"
+        )
+
     # ------------------------------------------------------------------ #
     # 基础补全：兼容旧 complete(system, user)，新增 messages 多轮
     # ------------------------------------------------------------------ #
-    def complete(self, system: str, user: str, *, messages: list[Message] | None = None) -> str | None:
+    def complete(
+        self, system: str, user: str, *, messages: list[Message] | None = None
+    ) -> str | None:
         if self._client is None:
             self.logger.info("llm complete skipped disabled")
             return None
@@ -77,7 +146,9 @@ class LLMClient:
         if parsed is not None:
             self.logger.info("llm complete_structured finish parsed=true keys=%s", len(parsed))
             return parsed
-        self.logger.warning("llm complete_structured parse failed retrying raw_chars=%s", len(raw or ""))
+        self.logger.warning(
+            "llm complete_structured parse failed retrying raw_chars=%s", len(raw or "")
+        )
         retry_user = f"{user}\n\n你上次的输出无法解析为 JSON，请只输出合法的 JSON 对象。"
         raw2 = self.complete(enriched_system, retry_user)
         parsed2 = _try_parse_json(raw2 or "")
@@ -160,7 +231,9 @@ class LLMClient:
     # ------------------------------------------------------------------ #
     # 原生 token 级流式
     # ------------------------------------------------------------------ #
-    def stream(self, system: str, user: str, *, messages: list[Message] | None = None) -> Iterator[str]:
+    def stream(
+        self, system: str, user: str, *, messages: list[Message] | None = None
+    ) -> Iterator[str]:
         if self._client is None:
             self.logger.info("llm stream skipped disabled")
             return
@@ -247,9 +320,14 @@ class LLMClient:
 
     def _openai_tool_step(self, convo, tools):
         payload_tools = [
-            {"type": "function", "function": {
-                "name": t.name, "description": t.description, "parameters": t.input_schema,
-            }}
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                },
+            }
             for t in tools
         ]
         response = self._client.chat.completions.create(
@@ -290,41 +368,58 @@ class LLMClient:
             if getattr(block, "type", None) == "text":
                 text_parts.append(block.text)
             elif getattr(block, "type", None) == "tool_use":
-                calls.append({
-                    "id": block.id,
-                    "name": block.name,
-                    "arguments": block.input if isinstance(block.input, dict) else {},
-                })
+                calls.append(
+                    {
+                        "id": block.id,
+                        "name": block.name,
+                        "arguments": block.input if isinstance(block.input, dict) else {},
+                    }
+                )
         return calls, "".join(text_parts)
 
     def _append_assistant_tool_step(
         self, convo: list[Message], text: str, calls: list[dict[str, Any]]
     ) -> None:
         if self.settings.agent_provider == "openai":
-            convo.append({
-                "role": "assistant",
-                "content": text or None,
-                "tool_calls": [
-                    {"id": c["id"], "type": "function",
-                     "function": {"name": c["name"], "arguments": json.dumps(c["arguments"], ensure_ascii=False)}}
-                    for c in calls
-                ],
-            })
+            convo.append(
+                {
+                    "role": "assistant",
+                    "content": text or None,
+                    "tool_calls": [
+                        {
+                            "id": c["id"],
+                            "type": "function",
+                            "function": {
+                                "name": c["name"],
+                                "arguments": json.dumps(c["arguments"], ensure_ascii=False),
+                            },
+                        }
+                        for c in calls
+                    ],
+                }
+            )
         else:  # anthropic
             content: list[dict[str, Any]] = []
             if text:
                 content.append({"type": "text", "text": text})
             for c in calls:
-                content.append({"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["arguments"]})
+                content.append(
+                    {"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["arguments"]}
+                )
             convo.append({"role": "assistant", "content": content})
 
     def _append_tool_result(self, convo: list[Message], call: dict[str, Any], outcome: str) -> None:
         if self.settings.agent_provider == "openai":
             convo.append({"role": "tool", "tool_call_id": call["id"], "content": outcome})
         else:  # anthropic
-            convo.append({"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": call["id"], "content": outcome}
-            ]})
+            convo.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": call["id"], "content": outcome}
+                    ],
+                }
+            )
 
     # ------------------------------------------------------------------ #
     # 内部：消息归一化
@@ -363,7 +458,9 @@ class LLMClient:
 
     def _build_client(self):
         if not self.settings.agent_api_key:
-            self.logger.info("llm client disabled missing api key provider=%s", self.settings.agent_provider)
+            self.logger.info(
+                "llm client disabled missing api key provider=%s", self.settings.agent_provider
+            )
             return None
         if self.settings.agent_provider == "openai":
             kwargs: dict[str, Any] = {

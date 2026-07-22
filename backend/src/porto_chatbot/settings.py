@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     # --- LLM 请求超时（秒），抗单次调用挂死 ---
     agent_request_timeout: int = Field(default=120, ge=10)
 
+    # --- PRD 文件解析 ---
+    document_parse_mode: Literal["local", "native", "hybrid"] = "hybrid"
+    document_local_parser: Literal["pypdf", "docling"] = "pypdf"
+    document_max_tokens: int = Field(default=16000, ge=1000, le=128000)
+    document_max_upload_mb: int = Field(default=20, ge=1, le=200)
+    document_max_pdf_pages: int = Field(default=200, ge=1, le=1000)
+
     # --- RAG 监督 / 健康探测 ---
     health_probe_interval: int = Field(default=30, ge=5)
     health_probe_timeout: int = Field(default=5, ge=1)

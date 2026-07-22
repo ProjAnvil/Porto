@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .logging_utils import get_component_logger
-from .models import AgentSettingsPayload, RagSettingsPayload
+from .models import AgentSettingsPayload, DocumentSettingsPayload, RagSettingsPayload
 from .settings import Settings
 
 RAG_SETTING_KEYS = {
@@ -55,6 +55,14 @@ AGENT_SETTING_KEYS = {
     "agent_request_timeout",
 }
 
+DOCUMENT_SETTING_KEYS = {
+    "parse_mode",
+    "local_parser",
+    "max_tokens",
+    "max_upload_mb",
+    "max_pdf_pages",
+}
+
 SENSITIVE_SETTING_KEYS = {"agent_api_key", "critic_api_key"}
 
 
@@ -84,6 +92,20 @@ class ConfigStore:
         current.update(payload.model_dump(exclude_none=True))
         saved = AgentSettingsPayload(**current)
         self._save_namespace("agent", saved.model_dump(exclude_none=True))
+        return saved
+
+    def get_document_settings(self) -> DocumentSettingsPayload:
+        return DocumentSettingsPayload(
+            **self._get_namespace("document", DOCUMENT_SETTING_KEYS)
+        )
+
+    def save_document_settings(
+        self, payload: DocumentSettingsPayload
+    ) -> DocumentSettingsPayload:
+        current = self.get_document_settings().model_dump(exclude_none=True)
+        current.update(payload.model_dump(exclude_none=True))
+        saved = DocumentSettingsPayload(**current)
+        self._save_namespace("document", saved.model_dump(exclude_none=True))
         return saved
 
     def _get_namespace(self, namespace: str, keys: set[str]) -> dict[str, Any]:

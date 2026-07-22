@@ -63,6 +63,15 @@ LANGCHAIN_API_KEY=
 LANGCHAIN_TEMPERATURE=0.2
 LANGCHAIN_MAX_TOKENS=2000
 
+# PRD 文件解析：hybrid 优先使用模型原生 PDF 视觉能力，失败自动回退本地解析
+# local 不把文件发送给模型；native 在模型不支持或调用失败时直接报错
+PORTO_CHATBOT_DOCUMENT_PARSE_MODE=hybrid
+# 可选 docling；启用前运行：uv sync --extra document-ai
+PORTO_CHATBOT_DOCUMENT_LOCAL_PARSER=pypdf
+PORTO_CHATBOT_DOCUMENT_MAX_TOKENS=16000
+PORTO_CHATBOT_DOCUMENT_MAX_UPLOAD_MB=20
+PORTO_CHATBOT_DOCUMENT_MAX_PDF_PAGES=200
+
 # Anthropic 示例：
 # LANGCHAIN_AGENT_PROVIDER=anthropic
 # LANGCHAIN_MODEL=claude-3-5-sonnet-latest
@@ -76,6 +85,10 @@ LANGCHAIN_MAX_TOKENS=2000
 ```
 
 > **无 key 也能跑**：每个 LLM 调用都有确定性降级路径。省略 `LANGCHAIN_API_KEY` 即可端到端运行（质量较低，用于开发/测试）。接入模型后，模型是「质量放大器」而非功能开关。详见 [backend-agent-guide.md](backend-agent-guide.md) 的降级哲学一节。
+
+上传 PDF 时，`hybrid` 模式会在 OpenAI/Anthropic 模型支持原生 PDF 输入时读取页面文字和视觉内容；没有 key、模型未知或请求失败时使用 `pypdf` 文本结果。可以通过 `GET /api/porto/document-capabilities` 查看当前静态能力判断。Markdown 的远程图片不会主动下载（防止 SSRF），相对图片需要后续的多附件/资源包上传能力。
+
+需要完全本地的扫描页 OCR、表格与布局恢复时，可运行 `uv sync --extra document-ai` 并设置 `PORTO_CHATBOT_DOCUMENT_LOCAL_PARSER=docling`。Docling 解析仍作为原生视觉模型之前的确定性基线；流程图和原型图的非文字语义建议保留 `hybrid` 模式交给视觉模型补全。
 
 ---
 

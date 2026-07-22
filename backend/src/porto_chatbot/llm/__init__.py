@@ -1,6 +1,6 @@
 from .client import LLMClient
 from .parsing import _try_parse_json, format_sources
-from .types import Message, ToolCall, ToolDef, ToolLoopResult
+from .types import Message, ModelCapabilities, ToolCall, ToolDef, ToolLoopResult
 
 __all__ = [
     "LLMClient",
@@ -10,4 +10,5 @@ __all__ = [
     "format_sources",
     "_try_parse_json",
     "Message",
+    "ModelCapabilities",
 ]

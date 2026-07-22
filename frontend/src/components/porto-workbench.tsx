@@ -40,6 +40,7 @@ import {
   createWorkflow,
   createWorkflowUpload,
   defaultAgentConfig,
+  defaultDocumentConfig,
   defaultRagConfig,
   getAppSettings,
   getHealth,
@@ -54,6 +55,7 @@ import {
 import type {
   AgentConfig,
   ChatResponseEval,
+  DocumentConfig,
   HealthSnapshot,
   InspectorState,
   KbStats,
@@ -76,7 +78,7 @@ const SpecMdxEditor = dynamic(
 
 type Mode = "chat" | "workflow";
 type View = "workbench" | "settings";
-type SettingsSection = "rag" | "agent" | "knowledge";
+type SettingsSection = "rag" | "agent" | "document" | "knowledge";
 
 const emptyInspector: InspectorState = {
   steps: [],
@@ -205,6 +207,8 @@ export function PortoWorkbench() {
   );
   const [ragConfig, setRagConfig] = useState<RagConfig>(defaultRagConfig);
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(defaultAgentConfig);
+  const [documentConfig, setDocumentConfig] =
+    useState<DocumentConfig>(defaultDocumentConfig);
   const [kbStats, setKbStats] = useState<KbStats | null>(null);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [backendOnline, setBackendOnline] = useState(true);
@@ -292,6 +296,7 @@ export function PortoWorkbench() {
       if (settingsResult.status === "fulfilled") {
         setRagConfig(settingsResult.value.rag);
         setAgentConfig(settingsResult.value.agent);
+        setDocumentConfig(settingsResult.value.document);
       }
       setKbStats(statsResult.status === "fulfilled" ? statsResult.value : null);
       if (memoryResult.status === "fulfilled") {
@@ -385,6 +390,32 @@ export function PortoWorkbench() {
       setBusyLabel("");
     }
   }
+
+  async function saveDocumentConfig(nextConfig: DocumentConfig) {
+    setBusyLabel("保存文件解析设置");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ document: nextConfig });
+      setDocumentConfig(saved.document);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存文件解析设置失败");
+      return false;
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  const handleChatStart = useCallback(() => {
+    setBusyLabel("生成回答");
+    setError("");
+    setInspector(emptyInspector);
+  }, []);
+
+  const handleChatFinish = useCallback(() => {
+    setBusyLabel("");
+    void refreshMemory();
+  }, [refreshMemory]);
 
   async function runWorkflowAction() {
     if (!workflowText.trim() && !selectedFile) return;
@@ -542,12 +573,14 @@ export function PortoWorkbench() {
             <SettingsPage
               agentConfig={agentConfig}
               busy={Boolean(busyLabel)}
+              documentConfig={documentConfig}
               error={error}
               health={health}
               kbStats={kbStats}
               ragConfig={ragConfig}
               onRefreshIndex={refreshIndex}
               onSaveAgent={saveAgentConfig}
+              onSaveDocument={saveDocumentConfig}
               onSaveRag={saveRagConfig}
             />
           ) : mode === "chat" ? (
@@ -563,15 +596,8 @@ export function PortoWorkbench() {
                 setError(msg);
                 setBusyLabel("");
               }}
-              onStart={() => {
-                setBusyLabel("生成回答");
-                setError("");
-                setInspector(emptyInspector);
-              }}
-              onFinish={() => {
-                setBusyLabel("");
-                void refreshMemory();
-              }}
+              onStart={handleChatStart}
+              onFinish={handleChatFinish}
             />
           ) : (
             <WorkflowPanel
@@ -642,7 +668,6 @@ function ChatLoader({
   const [initialMessages, setInitialMessages] = useState<ChatUIMessage[] | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setInitialMessages(null);
     listMemory(sessionId)
       .then((data) => {
         if (cancelled) return;
@@ -725,7 +750,7 @@ function ChatSession({
           return globalThis.fetch(input, init);
         },
       }),
-    [agentConfig, ragConfig, sessionId],
+    [agentConfig, onStart, ragConfig, sessionId],
   );
   const runtime = useChatRuntime({
     transport,
@@ -1004,22 +1029,26 @@ function Composer({ disabled }: { disabled: boolean }) {
 function SettingsPage({
   agentConfig,
   busy,
+  documentConfig,
   error,
   health,
   kbStats,
   ragConfig,
   onRefreshIndex,
   onSaveAgent,
+  onSaveDocument,
   onSaveRag,
 }: {
   agentConfig: AgentConfig;
   busy: boolean;
+  documentConfig: DocumentConfig;
   error: string;
   health: HealthSnapshot | null;
   kbStats: KbStats | null;
   ragConfig: RagConfig;
   onRefreshIndex: (config?: RagConfig) => Promise<void>;
   onSaveAgent: (config: AgentConfig) => Promise<void>;
+  onSaveDocument: (config: DocumentConfig) => Promise<boolean>;
   onSaveRag: (config: RagConfig) => Promise<RagConfig | null>;
 }) {
   const [section, setSection] = useState<SettingsSection>("rag");
@@ -1070,6 +1099,11 @@ function SettingsPage({
           {[
             { id: "rag" as const, label: "RAG", icon: <Gauge size={15} /> },
             { id: "agent" as const, label: "Agent", icon: <Bot size={15} /> },
+            {
+              id: "document" as const,
+              label: "文件解析",
+              icon: <FileInput size={15} />,
+            },
             {
               id: "knowledge" as const,
               label: "Knowledge",
@@ -1122,6 +1156,16 @@ function SettingsPage({
             busy={busy}
             onSaved={() => markSaved("Agent settings saved")}
             onSaveAgent={onSaveAgent}
+          />
+        ) : null}
+
+        {section === "document" ? (
+          <DocumentSettingsForm
+            key={JSON.stringify(documentConfig)}
+            busy={busy}
+            documentConfig={documentConfig}
+            onSaved={() => markSaved("文件解析设置已保存")}
+            onSaveDocument={onSaveDocument}
           />
         ) : null}
 
@@ -1491,6 +1535,144 @@ function RagSettingsForm({
           Re-index
         </button>
         <span className="text-xs text-zinc-400">改动目录或切分参数后需手动 Re-index 生效</span>
+      </div>
+    </SettingsCard>
+  );
+}
+
+function DocumentSettingsForm({
+  busy,
+  documentConfig,
+  onSaved,
+  onSaveDocument,
+}: {
+  busy: boolean;
+  documentConfig: DocumentConfig;
+  onSaved: () => void;
+  onSaveDocument: (config: DocumentConfig) => Promise<boolean>;
+}) {
+  const [documentDraft, setDocumentDraft] =
+    useState<DocumentConfig>(documentConfig);
+
+  const updateDocument = <K extends keyof DocumentConfig>(
+    key: K,
+    value: DocumentConfig[K],
+  ) => {
+    setDocumentDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  async function saveDocument() {
+    if (await onSaveDocument(documentDraft)) onSaved();
+  }
+
+  const modeDescription = {
+    hybrid: "优先调用当前 Agent 模型理解 PDF 视觉内容，失败时自动回退本地解析。",
+    local: "文件不会发送给大模型，只使用本地解析器。适合隐私敏感环境。",
+    native: "强制使用大模型原生 PDF 能力；模型不支持或调用失败时拒绝上传。",
+  }[documentDraft.parse_mode];
+
+  return (
+    <SettingsCard
+      busy={busy}
+      title="文件解析"
+      onSave={saveDocument}
+    >
+      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+        <p className="text-sm font-medium text-sky-900">PRD 解析策略</p>
+        <p className="mt-1 text-xs leading-5 text-sky-700">{modeDescription}</p>
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <label className="block">
+          <span className="text-xs text-zinc-500">解析模式</span>
+          <select
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={documentDraft.parse_mode}
+            onChange={(event) =>
+              updateDocument(
+                "parse_mode",
+                event.target.value as DocumentConfig["parse_mode"],
+              )
+            }
+          >
+            <option value="hybrid">Hybrid（推荐）</option>
+            <option value="local">Local（仅本地）</option>
+            <option value="native">Native（严格模型解析）</option>
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-zinc-500">本地 PDF 解析器</span>
+          <select
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            value={documentDraft.local_parser}
+            onChange={(event) =>
+              updateDocument(
+                "local_parser",
+                event.target.value as DocumentConfig["local_parser"],
+              )
+            }
+          >
+            <option value="pypdf">pypdf（轻量文本提取）</option>
+            <option value="docling">Docling（OCR / 表格 / 布局）</option>
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-zinc-500">模型解析最大输出 Tokens</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            max={128000}
+            min={1000}
+            step={1000}
+            type="number"
+            value={documentDraft.max_tokens}
+            onChange={(event) =>
+              updateDocument("max_tokens", Number(event.target.value))
+            }
+          />
+          <span className="mt-1 block text-xs text-zinc-400">
+            仅 Native / Hybrid 的模型 PDF 解析使用
+          </span>
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-zinc-500">单文件上传上限（MB）</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            max={200}
+            min={1}
+            type="number"
+            value={documentDraft.max_upload_mb}
+            onChange={(event) =>
+              updateDocument("max_upload_mb", Number(event.target.value))
+            }
+          />
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-zinc-500">PDF 最大页数</span>
+          <input
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            max={1000}
+            min={1}
+            type="number"
+            value={documentDraft.max_pdf_pages}
+            onChange={(event) =>
+              updateDocument("max_pdf_pages", Number(event.target.value))
+            }
+          />
+        </label>
+      </div>
+
+      <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs leading-5 text-zinc-500">
+        <p>
+          <span className="font-medium text-zinc-700">Docling：</span>
+          后端需安装 document-ai extra，否则选择 Docling 后上传会返回明确错误。
+        </p>
+        <p className="mt-1">
+          Markdown 中的远程图片不会自动下载；相对图片需要后续通过资源包一起上传。
+        </p>
       </div>
     </SettingsCard>
   );
