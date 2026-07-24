@@ -17,10 +17,12 @@ Spike environment:
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from typing import Annotated, TypedDict
 
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import START, END, StateGraph
 from langgraph.types import Send
 
@@ -190,3 +192,52 @@ def test_send_concurrency_is_parallel_or_serial():
             f"inconsistent: no overlap but total_wall={total_wall:.4f}s "
             f"< 0.9 * sum_durations={sum_durations * 0.9:.4f}s"
         )
+
+
+# ---------------------------------------------------------------------------
+# U3: SqliteSaver concurrent daemon threads (different thread_ids)
+# ---------------------------------------------------------------------------
+#
+# L2's WorkflowExecutor runs one daemon thread per workflow. If SqliteSaver
+# is safe under this concurrency model, L2 can use it directly; otherwise L2
+# must fall back to AsyncSqliteSaver or a serialization layer.
+#
+# The installed langgraph 1.x ``SqliteSaver.__init__`` has signature
+# ``(self, conn: sqlite3.Connection, *, serde=None)`` and initializes an
+# internal ``threading.Lock`` -- so the brief's construction
+# ``SqliteSaver(sqlite3.connect(str(db), check_same_thread=False))`` matches
+# the 1.x API exactly (no adaptation needed).
+
+
+class _SState(TypedDict, total=False):
+    value: int
+
+
+def _inc(state: _SState):
+    return {"value": state.get("value", 0) + 1}
+
+
+def test_sqlite_saver_concurrent_threads(tmp_path):
+    db = tmp_path / "cp.sqlite3"
+    saver = SqliteSaver(sqlite3.connect(str(db), check_same_thread=False))
+    g = StateGraph(_SState)
+    g.add_node("inc", _inc)
+    g.add_edge(START, "inc")
+    g.add_edge("inc", END)
+    graph = g.compile(checkpointer=saver)
+
+    errors: list[BaseException] = []
+
+    def run(tid: str):
+        try:
+            graph.invoke({"value": 0}, {"configurable": {"thread_id": tid}})
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(f"t{i}",)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent SqliteSaver errors: {errors}"
