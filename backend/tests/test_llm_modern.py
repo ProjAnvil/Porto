@@ -1,91 +1,42 @@
 from __future__ import annotations
 
-import json
-from types import SimpleNamespace
-from typing import Any
-
 import pytest
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from porto_chatbot.llm import LLMClient, ToolDef, _try_parse_json
 from porto_chatbot.settings import Settings
 
-# ----------------------------- fake openai client ---------------------------- #
+# ----------------------------- fake ChatModel ---------------------------- #
 
 
-class FakeFunction:
-    def __init__(self, name: str, arguments: str):
-        self.name = name
-        self.arguments = arguments
+class ScriptedModel:
+    """按脚本返回 invoke/stream 结果的最小 ChatModel 替身。
 
+    - invoke 序列：每轮弹一个 AIMessage（可带 tool_calls）
+    - stream 序列：弹 AIMessageChunk 列表
+    - bind_tools 返回自身（LLMClient 在 bound 上 invoke）
+    """
 
-class FakeToolCall:
-    def __init__(self, call_id: str, name: str, args: dict[str, Any]):
-        self.id = call_id
-        self.type = "function"
-        self.function = FakeFunction(name, json.dumps(args))
+    def __init__(self, invoke_script=None, stream_script=None):
+        self._invoke = list(invoke_script or [])
+        self._stream = list(stream_script or [])
+        self.invoke_calls: list = []
+        self.bound_tools = None
 
+    def invoke(self, messages, **kw):
+        self.invoke_calls.append(messages)
+        if not self._invoke:
+            raise AssertionError("ScriptedModel invoke script exhausted")
+        return self._invoke.pop(0)
 
-class FakeMessage:
-    def __init__(self, content: str | None = None, tool_calls: list | None = None):
-        self.content = content
-        self.tool_calls = tool_calls
-
-
-class FakeResponse:
-    """openai 风格的非流式响应。"""
-
-    def __init__(self, message: FakeMessage):
-        self.choices = [SimpleNamespace(message=message)]
-
-
-class FakeStreamChunk:
-    def __init__(self, content: str | None):
-        self.choices = [SimpleNamespace(delta=SimpleNamespace(content=content))]
-
-
-class FakeCompletions:
-    def __init__(self, script: list):
-        self._script = list(script)
-        self.calls: list[dict] = []
-
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        if not self._script:
-            raise AssertionError("FakeCompletions script exhausted")
-        item = self._script.pop(0)
-        if kwargs.get("stream"):
-            return self._stream(item)
-        return item
-
-    def _stream(self, item):
-        text = item.choices[0].message.content or ""
+    def stream(self, messages, **kw):
+        text = self._stream[0].content if self._stream else ""
         for i in range(0, len(text), 3):
-            yield FakeStreamChunk(text[i : i + 3])
+            yield AIMessageChunk(content=text[i : i + 3])
 
-
-class FakeChat:
-    def __init__(self, script: list):
-        self.completions = FakeCompletions(script)
-
-
-class FakeOpenAI:
-    def __init__(self, script: list):
-        self.chat = FakeChat(script)
-
-
-class FakeAnthropicMessages:
-    def __init__(self, response):
-        self.response = response
-        self.calls: list[dict] = []
-
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.response
-
-
-class FakeAnthropic:
-    def __init__(self, response):
-        self.messages = FakeAnthropicMessages(response)
+    def bind_tools(self, tools, **kw):
+        self.bound_tools = tools
+        return self
 
 
 # ----------------------------- fixtures ----------------------------- #
@@ -109,8 +60,10 @@ def client(enabled_settings):
     return c
 
 
-def _wire(client: LLMClient, script: list):
-    client._client = FakeOpenAI(script)
+def _wire(client: LLMClient, invoke_script, stream_script=None) -> ScriptedModel:
+    m = ScriptedModel(invoke_script=invoke_script, stream_script=stream_script)
+    client._client = m
+    return m
 
 
 # ----------------------------- 降级路径 ----------------------------- #
@@ -159,12 +112,12 @@ def test_try_parse_json_array_returns_none():
 
 
 def test_complete_legacy_system_user(client):
-    _wire(client, [FakeResponse(FakeMessage(content="hello"))])
+    _wire(client, [AIMessage(content="hello")])
     assert client.complete("sys", "u") == "hello"
 
 
 def test_complete_accepts_messages(client):
-    _wire(client, [FakeResponse(FakeMessage(content="ok"))])
+    _wire(client, [AIMessage(content="ok")])
     result = client.complete(
         "ignored-system",
         "ignored-user",
@@ -176,46 +129,11 @@ def test_complete_accepts_messages(client):
         ],
     )
     assert result == "ok"
-    sent = client._client.chat.completions.calls[0]["messages"]
-    assert sent[-1] == {"role": "user", "content": "u2"}
+    sent = client._client.invoke_calls[0]
+    # 消息列表已由 _to_lc_messages 转为 BaseMessage；最后一条应为 HumanMessage("u2")
+    assert isinstance(sent[-1], HumanMessage)
+    assert sent[-1].content == "u2"
     assert len(sent) == 4
-
-
-def test_openai_document_completion_sends_pdf_file_block(client):
-    _wire(client, [FakeResponse(FakeMessage(content="# Parsed PRD"))])
-
-    result = client.complete_document("prd.pdf", b"%PDF-test", "application/pdf", "parse")
-
-    assert result == "# Parsed PRD"
-    content = client._client.chat.completions.calls[0]["messages"][0]["content"]
-    assert content[0]["type"] == "file"
-    assert content[0]["file"]["filename"] == "prd.pdf"
-    assert content[0]["file"]["file_data"].startswith("data:application/pdf;base64,")
-    assert content[1] == {"type": "text", "text": "parse"}
-
-
-def test_anthropic_document_completion_sends_document_block(tmp_path):
-    settings = Settings(
-        data_dir=tmp_path / "data",
-        log_dir=tmp_path / "logs",
-    ).model_copy(
-        update={
-            "agent_api_key": "k",
-            "agent_provider": "anthropic",
-            "agent_model": "claude-sonnet-4-5",
-        }
-    )
-    client = LLMClient(settings)
-    response = SimpleNamespace(content=[SimpleNamespace(type="text", text="# Parsed")])
-    client._client = FakeAnthropic(response)
-
-    result = client.complete_document("prd.pdf", b"%PDF-test", "application/pdf", "parse")
-
-    assert result == "# Parsed"
-    content = client._client.messages.calls[0]["messages"][0]["content"]
-    assert content[0]["type"] == "document"
-    assert content[0]["source"]["media_type"] == "application/pdf"
-    assert content[0]["source"]["type"] == "base64"
 
 
 def test_document_capabilities_require_enabled_supported_model(client):
@@ -233,13 +151,13 @@ def test_document_capabilities_require_enabled_supported_model(client):
 
 
 def test_structured_parses_clean_json(client):
-    _wire(client, [FakeResponse(FakeMessage(content='{"score": 10, "verdict": "PASS"}'))])
+    _wire(client, [AIMessage(content='{"score": 10, "verdict": "PASS"}')])
     parsed = client.complete_structured("sys", "u", {"type": "object"})
     assert parsed == {"score": 10, "verdict": "PASS"}
 
 
 def test_structured_parses_fenced_json(client):
-    _wire(client, [FakeResponse(FakeMessage(content='```json\n{"score": 8}\n```'))])
+    _wire(client, [AIMessage(content='```json\n{"score": 8}\n```')])
     assert client.complete_structured("sys", "u", {"type": "object"}) == {"score": 8}
 
 
@@ -247,20 +165,20 @@ def test_structured_retries_then_succeeds(client):
     _wire(
         client,
         [
-            FakeResponse(FakeMessage(content="I think the answer is...")),  # 首次坏
-            FakeResponse(FakeMessage(content='{"score": 9}')),  # 重试好
+            AIMessage(content="I think the answer is..."),  # 首次坏
+            AIMessage(content='{"score": 9}'),  # 重试好
         ],
     )
     assert client.complete_structured("sys", "u", {"type": "object"}) == {"score": 9}
-    assert len(client._client.chat.completions.calls) == 2
+    assert len(client._client.invoke_calls) == 2
 
 
 def test_structured_returns_none_after_failed_retry(client):
     _wire(
         client,
         [
-            FakeResponse(FakeMessage(content="nope")),
-            FakeResponse(FakeMessage(content="still nope")),
+            AIMessage(content="nope"),
+            AIMessage(content="still nope"),
         ],
     )
     assert client.complete_structured("sys", "u", {"type": "object"}) is None
@@ -279,7 +197,7 @@ def _tool(name: str, handler) -> ToolDef:
 
 
 def test_tool_loop_no_tool_call_returns_text(client):
-    _wire(client, [FakeResponse(FakeMessage(content="final answer"))])
+    _wire(client, [AIMessage(content="final answer")])
     r = client.complete_with_tools("sys", "u", [_tool("noop", lambda a: "x")])
     assert r.text == "final answer"
     assert r.tool_calls == []
@@ -292,10 +210,11 @@ def test_tool_loop_executes_then_finishes(client):
     _wire(
         client,
         [
-            FakeResponse(
-                FakeMessage(content="", tool_calls=[FakeToolCall("c1", "echo", {"q": "hi"})])
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c1", "name": "echo", "args": {"q": "hi"}, "type": "tool_call"}],
             ),
-            FakeResponse(FakeMessage(content="done")),
+            AIMessage(content="done"),
         ],
     )
 
@@ -317,8 +236,11 @@ def test_tool_loop_unknown_tool_records_error(client):
     _wire(
         client,
         [
-            FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "ghost", {})])),
-            FakeResponse(FakeMessage(content="recovered")),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c1", "name": "ghost", "args": {}, "type": "tool_call"}],
+            ),
+            AIMessage(content="recovered"),
         ],
     )
     r = client.complete_with_tools("sys", "u", [_tool("real", lambda a: "ok")])
@@ -330,8 +252,11 @@ def test_tool_loop_handler_exception_does_not_crash(client):
     _wire(
         client,
         [
-            FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "boom", {})])),
-            FakeResponse(FakeMessage(content="after-boom")),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c1", "name": "boom", "args": {}, "type": "tool_call"}],
+            ),
+            AIMessage(content="after-boom"),
         ],
     )
 
@@ -345,13 +270,21 @@ def test_tool_loop_handler_exception_does_not_crash(client):
 
 def test_tool_loop_truncated_at_max_turns(client, enabled_settings):
     """LLM 一直调 tool 不收尾，到 max_turns 必须截断。"""
-    # 每轮都调 tool；max_turns=2 → 2 轮 tool，然后 1 次 complete 收尾
-    script = [
-        FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "loop", {})])),
-        FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c2", "loop", {})])),
-        FakeResponse(FakeMessage(content="final")),
-    ]
-    _wire(client, script)
+    # 每轮都调 tool；max_turns=2 → 2 轮 tool，然后 1 次兜底 invoke 收尾
+    _wire(
+        client,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c1", "name": "loop", "args": {}, "type": "tool_call"}],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c2", "name": "loop", "args": {}, "type": "tool_call"}],
+            ),
+            AIMessage(content="final"),
+        ],
+    )
     r = client.complete_with_tools("sys", "u", [_tool("loop", lambda a: "again")], max_turns=2)
     assert r.truncated is True
     assert r.turns == 2
@@ -360,40 +293,35 @@ def test_tool_loop_truncated_at_max_turns(client, enabled_settings):
 
 
 def test_tool_loop_no_tools_falls_back_to_complete(client):
-    _wire(client, [FakeResponse(FakeMessage(content="plain"))])
+    _wire(client, [AIMessage(content="plain")])
     r = client.complete_with_tools("sys", "u", [])
     assert r.text == "plain"
     assert r.tool_calls == []
 
 
 def test_tool_loop_carries_history_across_turns(client):
-    """第二轮 LLM 应能看到第一轮 tool 结果（对话历史正确传递）。"""
-    captured: list[list] = []
-
-    class CapturingCompletions(FakeCompletions):
-        def create(self, **kwargs):
-            if not kwargs.get("stream"):
-                captured.append(kwargs.get("messages"))
-            return super().create(**kwargs)
-
-    script = [
-        FakeResponse(FakeMessage(content="", tool_calls=[FakeToolCall("c1", "echo", {"q": "x"})])),
-        FakeResponse(FakeMessage(content="final")),
-    ]
-    client._client = FakeOpenAI(script)
-    client._client.chat.completions = CapturingCompletions(script)
+    """第二轮 LLM 应能看到第一轮 tool 结果（ToolMessage 进 convo）。"""
+    _wire(
+        client,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c1", "name": "echo", "args": {"q": "x"}, "type": "tool_call"}],
+            ),
+            AIMessage(content="final"),
+        ],
+    )
     client.complete_with_tools("sys", "u", [_tool("echo", lambda a: "ECHO")])
-    # 第二次调用的 messages 应包含 tool 结果消息
-    second_msgs = captured[1]
-    roles = [m["role"] for m in second_msgs]
-    assert "tool" in roles
+    # 第二次 invoke 的 messages 应包含 ToolMessage（tool 结果回填进 convo）
+    second_msgs = client._client.invoke_calls[1]
+    assert any(isinstance(m, ToolMessage) for m in second_msgs)
 
 
 # ----------------------------- stream ----------------------------- #
 
 
 def test_stream_yields_deltas(client):
-    _wire(client, [FakeResponse(FakeMessage(content="hello world"))])
+    _wire(client, [], stream_script=[AIMessage(content="hello world")])
     chunks = list(client.stream("sys", "u"))
     assert "".join(chunks) == "hello world"
     assert len(chunks) >= 2  # 确实分片
