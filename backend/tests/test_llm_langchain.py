@@ -6,7 +6,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from porto_chatbot.llm import LLMClient
+from porto_chatbot.llm import LLMClient, ToolDef
 from porto_chatbot.settings import Settings
 
 
@@ -114,3 +114,55 @@ def test_structured_parses_and_retries(tmp_path):
     c._client = type("_M", (), {"invoke": staticmethod(_invoke)})()
     parsed = c.complete_structured("sys", "u", {"type": "object"})
     assert parsed == {"score": 7}
+
+
+def _t(name, handler):
+    return ToolDef(
+        name=name,
+        description="d",
+        input_schema={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+
+
+def test_with_tools_no_tool_call_returns_text(tmp_path):
+    c = LLMClient(_settings(tmp_path))
+    bound = type("_B", (), {
+        "invoke": lambda self, m, **k: AIMessage(content="final"),
+        "bound_tools": [],
+    })()
+    c._client = type("_M", (), {"bind_tools": lambda self, t: bound})()
+    r = c.complete_with_tools("sys", "u", [_t("noop", lambda a: "x")])
+    assert r.text == "final"
+    assert r.tool_calls == []
+    assert r.turns == 1
+
+
+def test_with_tools_executes_then_finishes(tmp_path):
+    seen = []
+    script = iter([
+        AIMessage(content="", tool_calls=[{"id": "c1", "name": "echo", "args": {"q": "hi"}, "type": "tool_call"}]),
+        AIMessage(content="done"),
+    ])
+    bound = type("_B", (), {"invoke": lambda self, m, **k: next(script)})()
+    c = LLMClient(_settings(tmp_path))
+    c._client = type("_M", (), {"bind_tools": lambda self, t: bound})()
+    r = c.complete_with_tools("sys", "u", [_t("echo", lambda a: seen.append(a) or f"echoed:{a['q']}")])
+    assert r.text == "done"
+    assert r.turns == 2
+    assert r.tool_calls[0].name == "echo"
+    assert r.tool_calls[0].arguments == {"q": "hi"}
+    assert r.tool_calls[0].result == "echoed:hi"
+    assert seen == [{"q": "hi"}]
+
+
+def test_with_tools_unknown_tool_records_error(tmp_path):
+    script = iter([
+        AIMessage(content="", tool_calls=[{"id": "c1", "name": "ghost", "args": {}, "type": "tool_call"}]),
+        AIMessage(content="recovered"),
+    ])
+    bound = type("_B", (), {"invoke": lambda self, m, **k: next(script)})()
+    c = LLMClient(_settings(tmp_path))
+    c._client = type("_M", (), {"bind_tools": lambda self, t: bound})()
+    r = c.complete_with_tools("sys", "u", [_t("real", lambda a: "ok")])
+    assert r.tool_calls[0].result.startswith("错误：未知工具 ghost")

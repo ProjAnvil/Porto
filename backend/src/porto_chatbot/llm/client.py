@@ -9,7 +9,7 @@ from typing import Any
 from anthropic import Anthropic
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
@@ -181,59 +181,76 @@ class LLMClient:
             return ToolLoopResult(text="")
         if not tools:
             return ToolLoopResult(text=self.complete(system, user, messages=messages) or "")
-        resolved_turns = max_turns or self.settings.agent_max_tool_turns
+
+        tool_specs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                },
+            }
+            for t in tools
+        ]
+        bound = self._client.bind_tools(tool_specs)
         handlers = {t.name: t for t in tools}
+        resolved_turns = max_turns or self.settings.agent_max_tool_turns
         result = ToolLoopResult()
 
-        # 初始 messages（openai 风格，含 system）
-        convo: list[Message] = self._normalize_messages(system, user, messages)
+        convo = self._to_lc_messages(self._normalize_messages(system, user, messages))
+        assistant_text = ""
 
         for turn in range(1, resolved_turns + 1):
             result.turns = turn
-            tool_calls, assistant_text = self._provider_tool_step(convo, tools)
+            response = bound.invoke(convo)
+            tool_calls = response.tool_calls or []
+            assistant_text = response.content if isinstance(response.content, str) else ""
             if not tool_calls:
                 result.text = assistant_text
                 self.logger.info(
-                    "llm tool loop stop reason=no_tool_calls turns=%s tool_calls_total=%s",
-                    turn,
-                    len(result.tool_calls),
+                    "llm tool loop stop reason=no_tool_calls turns=%s total=%s",
+                    turn, len(result.tool_calls),
                 )
                 return result
 
-            # 把 assistant 这一步（含 tool_call 请求）追加到对话
-            self._append_assistant_tool_step(convo, assistant_text, tool_calls)
-            # 执行每个 tool_call 并回填结果
-            for call in tool_calls:
-                tool_name = call["name"]
-                tool_args = call["arguments"]
-                tool_def = handlers.get(tool_name)
+            convo.append(response)  # AIMessage(含 tool_calls)
+            for tc in tool_calls:
+                name = tc["name"]
+                args = tc.get("args") or {}
+                tool_def = handlers.get(name)
                 if tool_def is None:
-                    outcome = f"错误：未知工具 {tool_name}"
+                    outcome = f"错误：未知工具 {name}"
                 else:
                     try:
-                        outcome = tool_def.handler(tool_args)
-                    except Exception as exc:  # noqa: BLE001 — 工具失败不应打断 loop
-                        self.logger.exception("llm tool handler failed name=%s", tool_name)
-                        outcome = f"错误：工具 {tool_name} 执行失败：{exc}"
-                result.tool_calls.append(
-                    ToolCall(name=tool_name, arguments=tool_args, result=outcome)
-                )
-                self._append_tool_result(convo, call, outcome)
+                        outcome = tool_def.handler(args)
+                    except Exception as exc:  # noqa: BLE001
+                        self.logger.exception("llm tool handler failed name=%s", name)
+                        outcome = f"错误：工具 {name} 执行失败：{exc}"
+                result.tool_calls.append(ToolCall(name=name, arguments=args, result=outcome))
+                convo.append(ToolMessage(content=outcome, tool_call_id=tc["id"]))
                 self.logger.info(
                     "llm tool call name=%s args_keys=%s result_chars=%s",
-                    tool_name,
-                    list(tool_args.keys()),
-                    len(outcome),
+                    name, list(args.keys()), len(outcome),
                 )
 
-        # 达到 max_turns 仍未给出最终文本：再做一次无 tool 调用收尾
         result.truncated = True
-        final = self.complete(system, "", messages=self._strip_system(convo, system))
-        result.text = final or assistant_text
+        # 收尾:max_turns 达到时,基于 tool loop 历史(无 bind_tools)让 LLM 给最终文本。
+        # 不用 complete(system,"")——那会丢掉 convo 里的 tool 历史(旧版用 _strip_system(convo) 保留)。
+        if not assistant_text:
+            try:
+                final_resp = self._client.invoke(convo)
+                content = final_resp.content
+                assistant_text = content if isinstance(content, str) else "".join(
+                    b.get("text", "") for b in content if isinstance(b, dict)
+                )
+            except Exception:
+                self.logger.exception("llm tool loop final invoke failed")
+                assistant_text = ""
+        result.text = assistant_text
         self.logger.warning(
-            "llm tool loop truncated reached_max_turns=%s tool_calls_total=%s",
-            resolved_turns,
-            len(result.tool_calls),
+            "llm tool loop truncated max_turns=%s total=%s",
+            resolved_turns, len(result.tool_calls),
         )
         return result
 
@@ -261,122 +278,6 @@ class LLMClient:
         except Exception:
             self.logger.exception("llm stream failed model=%s", self.settings.agent_model)
             raise
-
-    # ------------------------------------------------------------------ #
-    # 内部：provider 适配
-    # ------------------------------------------------------------------ #
-    def _provider_tool_step(
-        self, convo: list[Message], tools: list[ToolDef]
-    ) -> tuple[list[dict[str, Any]], str]:
-        """调一次 LLM，返回 (tool_calls 规范化列表, assistant 文本)。"""
-        if self.settings.agent_provider == "openai":
-            return self._openai_tool_step(convo, tools)
-        if self.settings.agent_provider == "anthropic":
-            return self._anthropic_tool_step(convo, tools)
-        raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
-
-    def _openai_tool_step(self, convo, tools):
-        payload_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema,
-                },
-            }
-            for t in tools
-        ]
-        response = self._client.chat.completions.create(
-            model=self.settings.agent_model,
-            messages=convo,
-            temperature=self.settings.agent_temperature,
-            tools=payload_tools,
-            tool_choice="auto",
-        )
-        msg = response.choices[0].message
-        text = msg.content or ""
-        calls: list[dict[str, Any]] = []
-        for tc in msg.tool_calls or []:
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            calls.append({"id": tc.id, "name": tc.function.name, "arguments": args})
-        return calls, text
-
-    def _anthropic_tool_step(self, convo, tools):
-        system_text, split_convo = self._split_system(convo)
-        payload_tools = [
-            {"name": t.name, "description": t.description, "input_schema": t.input_schema}
-            for t in tools
-        ]
-        response = self._client.messages.create(
-            model=self.settings.agent_model,
-            max_tokens=self.settings.agent_max_tokens,
-            temperature=self.settings.agent_temperature,
-            system=system_text,
-            messages=split_convo,
-            tools=payload_tools,
-        )
-        text_parts: list[str] = []
-        calls: list[dict[str, Any]] = []
-        for block in response.content:
-            if getattr(block, "type", None) == "text":
-                text_parts.append(block.text)
-            elif getattr(block, "type", None) == "tool_use":
-                calls.append(
-                    {
-                        "id": block.id,
-                        "name": block.name,
-                        "arguments": block.input if isinstance(block.input, dict) else {},
-                    }
-                )
-        return calls, "".join(text_parts)
-
-    def _append_assistant_tool_step(
-        self, convo: list[Message], text: str, calls: list[dict[str, Any]]
-    ) -> None:
-        if self.settings.agent_provider == "openai":
-            convo.append(
-                {
-                    "role": "assistant",
-                    "content": text or None,
-                    "tool_calls": [
-                        {
-                            "id": c["id"],
-                            "type": "function",
-                            "function": {
-                                "name": c["name"],
-                                "arguments": json.dumps(c["arguments"], ensure_ascii=False),
-                            },
-                        }
-                        for c in calls
-                    ],
-                }
-            )
-        else:  # anthropic
-            content: list[dict[str, Any]] = []
-            if text:
-                content.append({"type": "text", "text": text})
-            for c in calls:
-                content.append(
-                    {"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["arguments"]}
-                )
-            convo.append({"role": "assistant", "content": content})
-
-    def _append_tool_result(self, convo: list[Message], call: dict[str, Any], outcome: str) -> None:
-        if self.settings.agent_provider == "openai":
-            convo.append({"role": "tool", "tool_call_id": call["id"], "content": outcome})
-        else:  # anthropic
-            convo.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": call["id"], "content": outcome}
-                    ],
-                }
-            )
 
     # ------------------------------------------------------------------ #
     # 内部：消息归一化
@@ -407,27 +308,6 @@ class LLMClient:
             else:
                 # 未知角色兜底为 user 消息（tool 结果由 complete_with_tools 用 ToolMessage 单独处理）
                 out.append(HumanMessage(content=content))
-        return out
-
-    def _split_system(self, messages: list[Message]) -> tuple[str, list[Message]]:
-        """把 system 角色消息提出来（anthropic 顶层参数），其余原样返回。"""
-        sys_parts: list[str] = []
-        rest: list[Message] = []
-        for m in messages:
-            if m.get("role") == "system":
-                content = m.get("content")
-                if isinstance(content, str) and content:
-                    sys_parts.append(content)
-            else:
-                rest.append(m)
-        return "\n\n".join(sys_parts), rest
-
-    def _strip_system(self, convo: list[Message], fallback_system: str) -> list[Message]:
-        """把对话中的 system 消息整合到开头（用于 complete() 收尾）。"""
-        system_text, rest = self._split_system(convo)
-        head = system_text or fallback_system
-        out: list[Message] = [{"role": "system", "content": head}] if head else []
-        out.extend(rest)
         return out
 
     def _build_client(self) -> BaseChatModel | None:
