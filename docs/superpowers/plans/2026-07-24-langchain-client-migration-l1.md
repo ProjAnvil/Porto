@@ -16,7 +16,9 @@
 - **检索层不动**:llama-index 相关文件零改动;`ToolDef.handler` 仍调 llama-index。
 - **tool calling 封装**:`complete_with_tools` 内部用 `bind_tools` 循环,不引入 graph 层 `ToolNode`。
 - **structured output 用土办法**:不用 `with_structured_output`,保留 prompt 注入 JSON schema + `_try_parse_json` 重试。
-- **代码风格**:ruff line-length 100,target py312;测试 `cd backend && python -m pytest`,testpaths=["tests"]、pythonpath=["src"]。
+- **代码风格**:ruff line-length 100,target py312;testpaths=["tests"]、pythonpath=["src"]。
+- **Python 解释器**:backend venv 未默认激活,`python` 不在 PATH。**下文所有 `python` / `pytest` 命令一律指 `./.venv/bin/python`**(在 `backend/` 下执行),如 `./.venv/bin/python -m pytest tests/...`、`./.venv/bin/python -m ruff check src tests`。如已 `source backend/.venv/bin/activate` 则可直接用 `python`。
+- **测试 PDF**:已由 `backend/scripts/make_test_pdf.py` 生成在 `backend/tests/fixtures/test_prd.pdf`(纯标准库构造,pypdf 可读)。
 - **设计文档**:`docs/superpowers/specs/2026-07-24-langchain-langgraph-migration-design.md`(分支 `feat/langchain-langgraph-migration` 已提交)。
 
 ## Scope
@@ -211,10 +213,10 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: 手动跑 PDF spike 并记录结论**
 
-Run(需真实 key + PDF):
+Run(key 已在 `backend/.env` 配好;PDF 已生成):
 ```bash
-cd backend && python -m scripts.spike_pdf_document /path/to/test.pdf openai
-cd backend && python -m scripts.spike_pdf_document /path/to/test.pdf anthropic
+./.venv/bin/python -m scripts.spike_pdf_document tests/fixtures/test_prd.pdf openai
+./.venv/bin/python -m scripts.spike_pdf_document tests/fixtures/test_prd.pdf anthropic
 ```
 把结果(成功/报错/内容形态)记到本 plan §Spike Conclusions 的 U4 行。**这个 Step 不阻塞后续**——Task 10 会给出 langchain 与保留原生两套实现,依此结论二选一。
 
