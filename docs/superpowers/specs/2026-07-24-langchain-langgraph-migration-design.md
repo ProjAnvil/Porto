@@ -336,11 +336,25 @@ LLM mock 从 mock 原生 SDK 改为 langchain `FakeChatModel` 或自定义 `Base
 
 ## 11. 未决项(阶段 0 spike 验证)
 
-| # | 未决项 | 影响 | 退化方案 |
-|---|---|---|---|
-| U1 | `Send` → 子图节点 → reducer 的 map-reduce 行为是否成立 | L3 根基 | 节点内 ThreadPool 跑子图 |
-| U2 | sync graph 下 `Send` 多路并发是否真并行 | L3 性能 | 同上,ThreadPool 兜底 |
-| U3 | `SqliteSaver` 在多 workflow 并发 daemon 线程下行为 | L2 持久化 | 自定义 checkpointer / 加串行化层 |
-| U4 | `ChatOpenAI`/`ChatAnthropic` 对 provider 特定 PDF document block 的支持 | L1 `complete_document` | 该方法保留原生 SDK(D10) |
+| # | 未决项 | 影响 | 退化方案 | 状态 |
+|---|---|---|---|---|
+| U1 | `Send` → 子图节点 → reducer 的 map-reduce 行为是否成立 | L3 根基 | 节点内 ThreadPool 跑子图 | 待 L3 spike |
+| U2 | sync graph 下 `Send` 多路并发是否真并行 | L3 性能 | 同上,ThreadPool 兜底 | 待 L3 spike |
+| U3 | `SqliteSaver` 在多 workflow 并发 daemon 线程下行为 | L2 持久化 | 自定义 checkpointer / 加串行化层 | **✅ 已验证(L2 落地)** |
+| U4 | `ChatOpenAI`/`ChatAnthropic` 对 provider 特定 PDF document block 的支持 | L1 `complete_document` | 该方法保留原生 SDK(D10) | **✅ 已验证(L1 落地,D10 fallback)** |
 
 spike 通过则按本设计推进;不通过则走对应退化方案,设计其余部分不变。
+
+### 11.1 L2 spike 验证结论(Task 1 验证,Task 6 回填)
+
+> spike 测试见 [`backend/tests/test_langgraph_orchestration_spike.py`](../../backend/tests/test_langgraph_orchestration_spike.py)。以下 5 项构成 Task 3–5(graph + executor)的实现依据,并在 Task 6 全量回归 + 降级冒烟中端到端复现。
+
+- **① interrupt_after + stream(None) 续跑**: ✅ langgraph 1.2.9 下 `interrupt_after=["understand"]` 使 `invoke` 在该节点之后暂停(`get_state().next=["identify"]`),`list(graph.stream(None, config))` 续跑到下个 interrupt / END。
+- **② update_state(as_node=) 回退 + 下游重算**: ✅ `update_state(config, {...}, as_node="a")` 把 `next` 重置为 a 的后继(`["b"]`),续跑时 **重跑 b**(下游重算)。支撑 §6.4 的 PUT /steps 回退语义。
+- **③ configurable 注入 agent**: ✅ 节点签名 `(state, *, config)`,`config["configurable"]["agent"]` 取到注入对象(`PortoAgent`)。支撑 §6.3 的 agent 注入。
+- **④ Pydantic 模型过 SqliteSaver 往返**: ✅ `SourceChunk`/`Subsystem`/`SpecResult`/`SpecAttempt` 等 `BaseModel` 经 checkpoint 序列化/反序列化后**仍是模型实例**(属性访问可用),无需 `_rebuild_state` 式 dict→model 重建。
+- **⑤ 共享 SqliteSaver 多 workflow 并发**: ✅ 单 `SqliteSaver`(共享 connection,`check_same_thread=False`)在 8 个 daemon 线程(不同 thread_id)下无冲突。L2 直接用 `SqliteSaver`,不需 Async/串行化层(U3 关闭)。
+
+**对 §6.2 的精炼**:`status` **不**进 graph state(executor 从 `get_state().next` 派生:`next` 非空且含 END 之外节点 → `awaiting_input`;`next` 为空 → `completed`;启动期无 checkpoint 且 db status=`running` → `interrupted`);仅 `current_step` 进 state。§6.2 表格中 `status` 一行应读作"`current_step` 进 state;`status` 由 executor 派生,不入 state"。
+
+**Followup(非阻塞)**:langgraph 1.2.9 对 Pydantic 模型过 checkpoint 发 deprecation warning("Deserializing unregistered type ... add to allowed_msgpack_modules")—— 当前仅警告不阻断(Task 6 降级冒烟中实测确认)。若未来 langgraph 升级把 warning 转阻断,需注册 `porto_chatbot.models.*` 到 checkpointer 的 serde(设 `allowed_msgpack_modules`)或 pin 版本。降级冒烟实测输出:`degradation ok: awaiting_input understand`(无 LLM key,graph 走 fallback 推进到 understand)。

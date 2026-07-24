@@ -4,14 +4,14 @@
 """
 from __future__ import annotations
 
+import operator
 import sqlite3
 import threading
 from typing import Annotated, TypedDict
 
-import operator
-from pydantic import BaseModel
-from langgraph.graph import START, END, StateGraph
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel
 
 
 def _dict_merge(left: dict, right: dict) -> dict:
@@ -66,7 +66,7 @@ def test_interrupt_then_resume_and_pydantic_roundtrip(tmp_path):
     assert st.values["current_step"] == "a"
     assert [type(w).__name__ for w in st.values["widgets"]] == ["_Widget"]
 
-    chunks = list(graph.stream(None, cfg))             # 续跑 a 之后 → b → END
+    list(graph.stream(None, cfg))                      # 续跑 a 之后 → b → END
     st2 = graph.get_state(cfg)
     assert list(st2.next) == []                        # 到 END
     assert consumed["type"] == "_Widget"               # Pydantic 过 checkpoint 往返成功
