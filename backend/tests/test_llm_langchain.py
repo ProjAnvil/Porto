@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -25,8 +24,7 @@ class _StubModel:
         return self.invoke_returns
 
     def stream(self, messages, **kw):
-        for ch in self.stream_chunks:
-            yield ch
+        yield from self.stream_chunks
 
     def bind_tools(self, tools, **kw):
         return self
