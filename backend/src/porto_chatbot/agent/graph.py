@@ -2,7 +2,7 @@
 interrupt_after 一比一替换旧 CHECKPOINTS。
 
 节点签名 ``(state, *, config) -> partial``,agent 经 ``config["configurable"]["agent"]`` 注入。
-STEPS / INTERRUPT_AFTER 从已删除的 workflow_runner 迁入此处(拓扑定义的归属地)。
+STEPS / INTERRUPT_AFTER 作为拓扑定义的归属地驻留此处。
 """
 from __future__ import annotations
 

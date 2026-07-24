@@ -1,9 +1,9 @@
 """PortoAgent —— Agent 上下文容器。
 
-编排(run/graph/_persist)在 Tasks 5/6 已迁出至 WorkflowRunner/WorkflowExecutor/
-WorkflowStore。本模块仅持有 ``settings/llm/vector_store/critic_llm`` 及两个容器级
+编排(graph/_persist)已迁出至 WorkflowExecutor/WorkflowStore/langgraph StateGraph。
+本模块仅持有 ``settings/llm/vector_store/critic_llm`` 及两个容器级
 helper(``_build_critic_llm`` 构造评判模型,``_step`` 记录步骤完成日志),供
-WorkflowRunner 通过 ``agent`` 参数透传给各 node。
+各节点经 ``config["configurable"]["agent"]`` 透传消费。
 """
 
 from __future__ import annotations
@@ -20,8 +20,9 @@ from ..vector_store import LocalVectorStore
 class PortoAgent:
     """Agent 上下文容器:持有 settings/llm/vector_store/critic_llm。
 
-    编排由 :class:`porto_chatbot.workflow_runner.WorkflowRunner` 负责(不再有
-    ``run``/``graph``/``_persist``)。
+    编排由 langgraph StateGraph(``agent.graph.build_workflow_graph``)+
+    :class:`porto_chatbot.workflow_executor.WorkflowExecutor` 负责(不再有
+    ``run``/``_persist``)。
     """
 
     def __init__(

@@ -2,8 +2,8 @@
 
 Task 9 之后 PortoAgent 瘦身为纯容器(构造/_build_critic_llm/_step),
 graph/run/_persist/_route_after_evaluate/各 node 委托方法已删除:
-- 端到端编排(run)由 WorkflowRunner + WorkflowExecutor 覆盖
-  (见 test_workflow_runner.py / test_workflow_executor.py)。
+- 端到端编排(run)由 langgraph StateGraph + WorkflowExecutor 覆盖
+  (见 test_workflow_executor.py)。
 - 节点级委托(retrieve_knowledge/understand_prd/...)已删除,直接调 nodes。
 - 回边决策(_route_after_evaluate)内联进 evaluate 节点(见下)。
 

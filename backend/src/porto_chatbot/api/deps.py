@@ -213,18 +213,50 @@ def get_workflow_store() -> WorkflowStore:
     return store
 
 
-def get_workflow_executor() -> WorkflowExecutor:
-    """按 data_dir 缓存的 WorkflowExecutor 单例(懒加载)。
+def get_checkpointer():
+    """按 data_dir 缓存的 langgraph SqliteSaver 单例(独立于 workflows.sqlite3)。
 
-    executor 内部用 per-workflow guard 锁,本身是线程安全的;复用同一实例可让
-    guard 字典跨请求存活,避免并发 advance 时锁状态丢失。
+    U3(L1 spike)已确认 SqliteSaver 自带 threading.Lock 序列化 SQLite 访问,
+    多 daemon 线程共享同一 connection(check_same_thread=False)安全。
     """
+    import sqlite3
+
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    entry = _ensure_rag_singletons()
+    cp = entry.get("checkpointer")
+    if cp is None:
+        settings = current_settings()
+        db_path = settings.data_dir / "langgraph_checkpoints.sqlite"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        cp = SqliteSaver(conn)
+        cp.setup()
+        entry["checkpointer"] = cp
+        entry["_checkpoint_conn"] = conn
+    return cp
+
+
+def get_workflow_graph():
+    """按 data_dir 缓存的编译后 workflow graph 单例(挂共享 checkpointer)。"""
+    from ..agent.graph import build_workflow_graph
+
+    entry = _ensure_rag_singletons()
+    g = entry.get("workflow_graph")
+    if g is None:
+        g = build_workflow_graph(get_checkpointer())
+        entry["workflow_graph"] = g
+    return g
+
+
+def get_workflow_executor() -> WorkflowExecutor:
+    """按 data_dir 缓存的 WorkflowExecutor 单例(懒加载),注入共享 graph。"""
     from ..workflow_executor import WorkflowExecutor
 
     entry = _ensure_rag_singletons()
     ex = entry.get("workflow_executor")
     if ex is None:
-        ex = WorkflowExecutor(current_settings(), get_workflow_store())
+        ex = WorkflowExecutor(current_settings(), get_workflow_store(), get_workflow_graph())
         entry["workflow_executor"] = ex
     return ex
 
@@ -239,6 +271,24 @@ def reset_rag_singletons() -> None:
             pass
         try:
             entry["health"].stop()
+        except Exception:
+            pass
+        try:
+            # Conditional close: if a workflow worker (and its langgraph-internal
+            # ThreadPoolExecutor) is still mid-invoke on this conn, closing would
+            # race with in-flight checkpoint put writes (C-level sqlite3 op) and
+            # SIGSEGV the interpreter. ``try/except`` cannot catch that, so we
+            # gate on the executor's per-workflow guard locks; any locked guard
+            # means a worker may still be using the conn → leak it (the sqlite
+            # file is in the test's tmp_path and will be reaped by pytest). The
+            # TOCTOU window (worker starts after the check) does not arise in
+            # tests because no new requests arrive during fixture teardown.
+            ex = entry.get("workflow_executor")
+            if ex is not None:
+                with ex._global:
+                    if any(lk.locked() for lk in ex._guards.values()):
+                        continue  # worker still running; leak conn to avoid SIGSEGV
+            entry["_checkpoint_conn"].close()
         except Exception:
             pass
     _rag_singletons = {}

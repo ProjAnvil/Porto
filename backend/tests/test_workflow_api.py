@@ -150,7 +150,7 @@ def test_advance_past_first_checkpoint_reaches_identify(monkeypatch, sample_sett
     Pydantic 模型,identify 正常消费,workflow 推进到 identify checkpoint
     (或一路到 completed/evaluate,均无 failed)。
 
-    本测试不 mock WorkflowRunner —— 跑真实 retrieve→understand→identify 节点。
+    本测试不 mock graph —— 跑真实 retrieve→understand→identify 节点。
     """
     sample_settings.health_probe_timeout = 1
     monkeypatch.setattr(main, "settings", sample_settings)

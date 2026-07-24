@@ -1,15 +1,13 @@
-"""WorkflowExecutor —— 后台线程推进 workflow,每 workflow 一把锁防并发 advance。
+"""WorkflowExecutor —— 后台线程用 langgraph graph 推进 workflow,每 workflow 一把锁防并发 advance。
 
 职责:
-- ``start_workflow(id)``: 起后台 daemon 线程跑到第一个 checkpoint(understand)。
+- ``start_workflow(id)``: 起后台 daemon 线程 ``graph.invoke(initial, config)`` 跑到首个 interrupt。
 - ``advance(id) -> bool``: 加锁;若 workflow 正在 running 返回 False(调用方应 409),
-  否则起后台线程跑到下个 checkpoint,返回 True。
-- snapshot 重建:从 ``workflows.rag_snapshot``/``agent_snapshot`` 重建 Settings,
-    **不走 db** —— 免受后续配置改动影响。
-- ``_persist_state``: 只保存 current_step 及之前步骤的产出(state → workflow_outputs)。
-
-不直接调 ``PortoAgent.run()``;只用其 ``.llm``/``.vector_store``/``.settings`` 作为
-容器,真正的步进由 :class:`WorkflowRunner.run_to_next_checkpoint` 驱动。
+  否则起后台线程 ``list(graph.stream(None, config))`` 续跑到下个 interrupt。
+- snapshot 重建:从 ``workflows.rag_snapshot``/``agent_snapshot`` 重建 Settings + PortoAgent,
+  经 ``config["configurable"]["agent"]`` 注入 graph(不走 db —— 免受后续配置改动影响)。
+- ``_project_state``: 从 ``graph.get_state(config).values`` 投影已完成步到 workflow_outputs
+  (按 ``get_state().next`` 截取;保既有 produced_by;清下游 —— 等价旧 clear_outputs_after)。
 """
 
 from __future__ import annotations
@@ -22,18 +20,17 @@ from typing import Any
 from pydantic import BaseModel
 
 from .agent import PortoAgent
+from .agent.graph import STEPS
 from .agent.heuristics import infer_project_name
 from .llm import LLMClient
 from .logging_utils import get_component_logger
 from .settings import Settings
 from .vector_store import LocalVectorStore
-from .workflow_runner import STEPS, WorkflowRunner
 from .workflow_store import WorkflowStore
 
 logger = get_component_logger("workflow_executor")
 
-#: 各 step 的产出字段(state → output json)。
-#: 在 ``_persist_state`` 中按 ``current_step`` 截取,只持久化已完成步的产出。
+#: 各 step 的产出字段(graph state values → output json)。
 _STEP_OUTPUT_KEYS: dict[str, list[str]] = {
     "retrieve": ["sources"],
     "understand": ["understanding"],
@@ -44,11 +41,7 @@ _STEP_OUTPUT_KEYS: dict[str, list[str]] = {
 
 
 def _to_jsonable(value: Any) -> Any:
-    """把 Pydantic 模型 / dict / list 递归转为 json.dumps 可序列化的值。
-
-    state 中的 ``sources``/``subsystems``/``spec_results`` 是 Pydantic 模型实例
-    (SourceChunk/Subsystem/SpecResult),直接 ``json.dumps`` 会 TypeError。
-    """
+    """把 Pydantic 模型 / dict / list 递归转为 json.dumps 可序列化的值。"""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, dict):
@@ -61,23 +54,16 @@ def _to_jsonable(value: Any) -> Any:
 
 
 class WorkflowExecutor:
-    """后台线程推进 workflow;每 workflow 一把锁防并发 advance。
+    """后台线程用 langgraph graph 推进 workflow;每 workflow 一把锁防并发 advance。
 
-    锁策略:
-    - 每个工作流有独立的 ``guard`` 锁;调用线程(acquire 非阻塞)持有 guard
-      **跨过** ``Thread.start()``,worker 线程在 ``finally`` 中 release ——
-      从调用方返回后 guard 仍被持有,直到后台步进完成。
-      guard 在 ``Thread.start()`` 期间绝不被 release,避免两个并发 ``advance``
-      之间出现 TOCTOU 窗口(否则两者都返回 True 并各自起一个 worker,跳过 checkpoint)。
-    - ``advance`` 用 ``acquire(blocking=False)`` 试探:拿不到说明正在 running,
-      返回 False(调用方应返回 409 Conflict)。
-    - 若 ``Thread.start()`` 失败,调用线程负责 release guard(worker 从未启动,
-      无法在 ``finally`` 里 release)。
+    锁策略同旧版:guard 在 ``Thread.start()`` 之前获取、由 worker 在 ``finally`` release,
+    保证两次并发 ``advance`` 不会都返回 True 并各自起 worker(跳过 checkpoint)。
     """
 
-    def __init__(self, settings: Settings, store: WorkflowStore):
+    def __init__(self, settings: Settings, store: WorkflowStore, graph: Any):
         self.settings = settings
         self.store = store
+        self.graph = graph
         self._guards: dict[str, threading.Lock] = {}
         self._global = threading.Lock()
 
@@ -90,7 +76,6 @@ class WorkflowExecutor:
             return self._guards[workflow_id]
 
     def _is_running(self, workflow_id: str) -> bool:
-        """guard 被持有 = 正在跑。``Lock.locked()`` 可被任意线程查询。"""
         return self._guard(workflow_id).locked()
 
     def wait(self, workflow_id: str, timeout: float = 30.0) -> None:
@@ -105,38 +90,24 @@ class WorkflowExecutor:
     # ------------------------------------------------------------- public API
 
     def start_workflow(self, workflow_id: str) -> None:
-        """启动首个后台步进(retrieve → understand)。
-
-        用于刚创建的 workflow(``status="created"``)。若该 workflow 已在
-        running(guard 已被持有)——编程错误——抛 ``RuntimeError``。
-        """
         guard = self._guard(workflow_id)
         if not guard.acquire(blocking=False):
             raise RuntimeError(f"workflow {workflow_id} already started")
         try:
             threading.Thread(
-                target=self._worker, args=(workflow_id, guard), daemon=True
+                target=self._worker, args=(workflow_id, guard, False), daemon=True
             ).start()
         except Exception:
             guard.release()
             raise
 
     def advance(self, workflow_id: str) -> bool:
-        """推进到下个 checkpoint。
-
-        返回:
-            True: 已接受(已起后台线程)。
-            False: 该 workflow 正在 running,调用方应返回 409。
-
-        锁策略:guard 在 ``Thread.start()`` 之前获取、之后才(由 worker)release,
-        保证两次并发 ``advance`` 不会都返回 True 并各自起 worker(跳过 checkpoint)。
-        """
         guard = self._guard(workflow_id)
         if not guard.acquire(blocking=False):
             return False
         try:
             threading.Thread(
-                target=self._worker, args=(workflow_id, guard), daemon=True
+                target=self._worker, args=(workflow_id, guard, True), daemon=True
             ).start()
         except Exception:
             guard.release()
@@ -145,9 +116,9 @@ class WorkflowExecutor:
 
     # --------------------------------------------------------------- internals
 
-    def _worker(self, workflow_id: str, guard: threading.Lock) -> None:
+    def _worker(self, workflow_id: str, guard: threading.Lock, resume: bool) -> None:
         try:
-            self._run_sync(workflow_id)
+            (self._run_advance if resume else self._run_start)(workflow_id)
         except Exception:
             logger.exception("workflow worker crashed workflow_id=%s", workflow_id)
             try:
@@ -157,60 +128,34 @@ class WorkflowExecutor:
         finally:
             guard.release()
 
-    def _run_sync(self, workflow_id: str) -> None:
-        row = self.store.get(workflow_id)
-        if row is None:
-            logger.warning("workflow not found workflow_id=%s", workflow_id)
-            return
-        # 记录本次推进前的 current_step;_persist_state 只落 THIS invocation 实际跑过的步,
-        # 不重写更早的(用户可能已 produced_by="user" 编辑过,保留审计轨迹)。
-        before_step = row["current_step"]
-        self.store.update_status(workflow_id, "running")
-        # snapshot 重建 Settings(不走 db)——后续配置改动不影响在途 workflow。
-        # 延迟导入避免顶层循环依赖(api.deps 引入 supervisor/health 等重组件)。
+    def _build_agent(self, row: dict[str, Any]) -> PortoAgent:
         from .api.deps import runtime_settings_from_snapshot
 
         rag_snap = json.loads(row["rag_snapshot"])
         agent_snap = json.loads(row["agent_snapshot"])
         runtime = runtime_settings_from_snapshot(rag_snap, agent_snap, row["top_k"])
-        agent = PortoAgent(runtime, LocalVectorStore(runtime), LLMClient(runtime))
-        state = self._rebuild_state(row)
-        try:
-            state = WorkflowRunner.run_to_next_checkpoint(agent, state)
-        except Exception as exc:
-            logger.exception("workflow step failed workflow_id=%s", workflow_id)
-            self.store.update_status(workflow_id, "failed", error=str(exc))
+        return PortoAgent(runtime, LocalVectorStore(runtime), LLMClient(runtime))
+
+    @staticmethod
+    def _config(workflow_id: str, agent: Any = None) -> dict:
+        cfg: dict = {"configurable": {"thread_id": workflow_id}}
+        if agent is not None:
+            cfg["configurable"]["agent"] = agent
+        return cfg
+
+    def _run_start(self, workflow_id: str) -> None:
+        row = self.store.get(workflow_id)
+        if row is None:
+            logger.warning("workflow not found workflow_id=%s", workflow_id)
             return
-        # 落库:仅本次实际跑过的步(before_step+1 .. current_step)
-        self._persist_state(workflow_id, state, before_step)
-        self.store.update_status(
-            workflow_id,
-            state.get("status", "running"),
-            current_step=state.get("current_step"),
-        )
-
-    def _rebuild_state(self, row: dict[str, Any]) -> dict[str, Any]:
-        """从 db 行 + 已有 outputs 重建 WorkflowRunner 可消费的 state。
-
-        ``_persist_state`` 经 ``_to_jsonable`` + ``json.dumps`` 把 Pydantic 模型
-        (SourceChunk/Subsystem/SpecResult)序列化为 plain dict 落库;回填后必须把
-        这些 dict 重建为对应的 Pydantic 模型 —— 否则下游节点
-        (identify/generate/evaluate)按 ``.attribute`` 访问会 AttributeError。
-
-        SpecResult 内嵌 ``attempts: list[SpecAttempt]``,Pydantic 在 ``__init__``
-        校验时会把 list 内的 dict 自动转为 SpecAttempt(递归 validation),故无需
-        再手写嵌套重建。
-        """
-        from .models import SourceChunk, SpecResult, Subsystem
-
-        workflow_id = row["workflow_id"]
-        outs = self.store.get_outputs(workflow_id)
-        state: dict[str, Any] = {
+        self.store.update_status(workflow_id, "running")
+        agent = self._build_agent(row)
+        config = self._config(workflow_id, agent)
+        initial = {
             "workflow_id": workflow_id,
             "project_name": row["project_name"] or infer_project_name(row["prd_text"]),
             "prd_text": row["prd_text"],
             "top_k": row["top_k"],
-            "current_step": row["current_step"],
             "steps": [],
             "sources": [],
             "understanding": "",
@@ -219,63 +164,86 @@ class WorkflowExecutor:
             "spec_results": {},
             "evaluation": {},
         }
-        # 把已保存步的产出回填到 state,让 runner 从正确的上下文继续
-        for _step, data in outs.items():
-            out = data["output"]
-            for k, v in out.items():
-                state[k] = v
-        # 重建 Pydantic 模型:_persist_state 把它们序列化为 dict 落库,
-        # 下游节点(identify s.text / generate sub.name / evaluate r.attempts[-1].score)
-        # 按 attribute 访问 —— 不重建会 AttributeError。用户 PUT /steps 编辑的产出
-        # 同样以 dict 落库,这里统一兜底转换(dict → model,已是 model 则原样保留)。
-        state["sources"] = [
-            SourceChunk(**s) if isinstance(s, dict) else s
-            for s in state.get("sources", [])
-        ]
-        state["subsystems"] = [
-            Subsystem(**s) if isinstance(s, dict) else s
-            for s in state.get("subsystems", [])
-        ]
-        state["spec_results"] = {
-            k: (SpecResult(**v) if isinstance(v, dict) else v)
-            for k, v in state.get("spec_results", {}).items()
-        }
-        return state
+        try:
+            self.graph.invoke(initial, config)  # retrieve→understand,停
+        except Exception as exc:
+            logger.exception("workflow start failed workflow_id=%s", workflow_id)
+            self.store.update_status(workflow_id, "failed", error=str(exc))
+            return
+        self._project_state(workflow_id, config)
+        self._sync_status(workflow_id, config)
 
-    def _persist_state(
+    def _run_advance(self, workflow_id: str) -> None:
+        row = self.store.get(workflow_id)
+        if row is None:
+            logger.warning("workflow not found workflow_id=%s", workflow_id)
+            return
+        self.store.update_status(workflow_id, "running")
+        agent = self._build_agent(row)
+        config = self._config(workflow_id, agent)
+        try:
+            list(self.graph.stream(None, config))  # 续跑到下个 interrupt / END
+        except Exception as exc:
+            logger.exception("workflow advance failed workflow_id=%s", workflow_id)
+            self.store.update_status(workflow_id, "failed", error=str(exc))
+            return
+        self._project_state(workflow_id, config)
+        self._sync_status(workflow_id, config)
+
+    def _completed_steps(self, config: dict) -> list[str]:
+        """按 ``get_state().next`` 算已完成步(投影到 next 之前,含)。"""
+        snap = self.graph.get_state(config)
+        nxt = list(snap.next or [])
+        if not nxt:
+            return list(STEPS)                       # 到 END,全部完成
+        first = nxt[0]
+        end_idx = STEPS.index(first) - 1 if first in STEPS else len(STEPS) - 1
+        return STEPS[: end_idx + 1] if end_idx >= 0 else []
+
+    def _project_state(
         self,
         workflow_id: str,
-        state: dict[str, Any],
-        before_step: str | None,
+        config: dict,
+        *,
+        produced_by_overrides: dict[str, str] | None = None,
+        default_produced_by: str = "ai",
     ) -> None:
-        """只持久化**本次推进实际跑过**的步的产出。
+        """从 graph state 投影已完成步到 workflow_outputs。
 
-        步骤范围:``STEPS[index(before_step)+1 : index(current_step)+1]`` —— 即
-        ``before_step`` 之后的步到 ``current_step`` 之间的步,这些才是 runner 刚执行的。
-        更早的步是从 db 经 ``_rebuild_state`` 回填的,保留其 stored ``produced_by``
-        (用户可能编辑过,不应被这里统一覆盖为 ``"ai"``)。
-
-        产出经 ``_to_jsonable`` 转换,确保 Pydantic 模型
-        (SourceChunk/Subsystem/SpecResult)可被 json.dumps。
+        - 内容**未变**的步跳过(保既有 produced_by/produced_at —— 等价旧 _persist_state
+          只落本次跑过的步);新步或内容变化的步才写。
+        - ``produced_by_overrides`` 中的步**强制写**(如 PUT 的 edited step,即使内容
+          相同也要标 user);其余步的 produced_by 取既有值,缺失才用 default。
+        - 清下游:已完成步之后的产出删掉(等价旧 clear_outputs_after —— PUT 回退后下游须重算)。
         """
-        cur = state.get("current_step")
-        # end_idx = current_step 在 STEPS 中的位置;不在则保守地取到末尾。
-        if cur in STEPS:
-            end_idx = STEPS.index(cur)
-        else:
-            end_idx = len(STEPS) - 1
-        # start_idx = before_step 之后的第一个步;before 缺失/不在 STEPS 时从 0 起。
-        if before_step in STEPS:
-            start_idx = STEPS.index(before_step) + 1
-        else:
-            start_idx = 0
-        # start_idx 不能超过 end_idx + 1(至少是空切片)。
-        start_idx = min(start_idx, end_idx + 1)
-        for step in STEPS[start_idx : end_idx + 1]:
+        values = self.graph.get_state(config).values
+        completed = self._completed_steps(config)
+        existing = self.store.get_outputs(workflow_id)
+        overrides = produced_by_overrides or {}
+        for step in completed:
             out = {
-                k: _to_jsonable(state[k])
+                k: _to_jsonable(values[k])
                 for k in _STEP_OUTPUT_KEYS.get(step, [])
-                if k in state
+                if k in values
             }
-            if out:
-                self.store.save_output(workflow_id, step, out, "ai")
+            if not out:
+                continue
+            existing_step = existing.get(step)
+            forced = step in overrides
+            if not forced and existing_step and existing_step["output"] == out:
+                continue  # 内容未变:保留既有 produced_by/produced_at
+            produced_by = overrides.get(step) or (existing_step or {}).get(
+                "produced_by", default_produced_by
+            )
+            self.store.save_output(workflow_id, step, out, produced_by)
+        # 清下游
+        last = completed[-1] if completed else None
+        if last is not None:
+            self.store.clear_outputs_after(workflow_id, last)
+
+    def _sync_status(self, workflow_id: str, config: dict) -> None:
+        snap = self.graph.get_state(config)
+        status = "completed" if not snap.next else "awaiting_input"
+        self.store.update_status(
+            workflow_id, status, current_step=snap.values.get("current_step")
+        )

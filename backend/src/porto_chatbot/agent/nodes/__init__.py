@@ -1,1 +1,1 @@
-"""workflow 节点实现。每个节点是 (agent, state) -> state 的函数，由 WorkflowRunner 分派。"""
+"""workflow 节点实现。每个节点是 (state, *, config) -> partial 的函数，由 langgraph StateGraph 分派。"""
