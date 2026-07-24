@@ -9,6 +9,7 @@ from typing import Any
 from anthropic import Anthropic
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
@@ -116,12 +117,17 @@ class LLMClient:
             self.settings.agent_model,
             len(msgs),
         )
-        if self.settings.agent_provider == "openai":
-            content = self._openai_text(msgs)
-        elif self.settings.agent_provider == "anthropic":
-            content = self._anthropic_text(msgs)
-        else:
-            raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
+        try:
+            response = self._client.invoke(self._to_lc_messages(msgs))
+        except Exception:
+            self.logger.exception("llm complete failed model=%s", self.settings.agent_model)
+            raise
+        content = response.content
+        if not isinstance(content, str):
+            # 多模态/tool 回包：取文本块拼接
+            content = "".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            )
         self.logger.info("llm complete finish answer_chars=%s", len(content))
         return content
 
@@ -282,35 +288,6 @@ class LLMClient:
     # ------------------------------------------------------------------ #
     # 内部：provider 适配
     # ------------------------------------------------------------------ #
-    def _openai_text(self, msgs: list[Message]) -> str:
-        try:
-            response = self._client.chat.completions.create(
-                model=self.settings.agent_model,
-                messages=msgs,
-                temperature=self.settings.agent_temperature,
-            )
-        except Exception:
-            self.logger.exception("openai completion failed model=%s", self.settings.agent_model)
-            raise
-        return response.choices[0].message.content or ""
-
-    def _anthropic_text(self, msgs: list[Message]) -> str:
-        system_text, convo = self._split_system(msgs)
-        try:
-            response = self._client.messages.create(
-                model=self.settings.agent_model,
-                max_tokens=self.settings.agent_max_tokens,
-                temperature=self.settings.agent_temperature,
-                system=system_text,
-                messages=convo,
-            )
-        except Exception:
-            self.logger.exception("anthropic completion failed model=%s", self.settings.agent_model)
-            raise
-        return "".join(
-            block.text for block in response.content if getattr(block, "type", None) == "text"
-        )
-
     def _provider_tool_step(
         self, convo: list[Message], tools: list[ToolDef]
     ) -> tuple[list[dict[str, Any]], str]:
@@ -437,6 +414,23 @@ class LLMClient:
             msgs.append({"role": "system", "content": system})
         msgs.append({"role": "user", "content": user})
         return msgs
+
+    def _to_lc_messages(self, msgs: list[Message]) -> list:
+        """把 openai 风格 role/content dict 转为 langchain BaseMessage。"""
+        out = []
+        for m in msgs:
+            role = m.get("role")
+            content = m.get("content")
+            if role == "system":
+                out.append(SystemMessage(content=content))
+            elif role == "user":
+                out.append(HumanMessage(content=content))
+            elif role == "assistant":
+                out.append(AIMessage(content=content))
+            else:
+                # 未知角色兜底为 user 消息（tool 结果由 complete_with_tools 用 ToolMessage 单独处理）
+                out.append(HumanMessage(content=content))
+        return out
 
     def _split_system(self, messages: list[Message]) -> tuple[str, list[Message]]:
         """把 system 角色消息提出来（anthropic 顶层参数），其余原样返回。"""

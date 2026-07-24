@@ -3,10 +3,31 @@ from __future__ import annotations
 import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from porto_chatbot.llm import LLMClient
 from porto_chatbot.settings import Settings
+
+
+class _StubModel:
+    """最小 ChatModel 替身，记录 invoke 入参。"""
+
+    def __init__(self, invoke_returns=None, stream_chunks=None):
+        self.invoke_returns = invoke_returns
+        self.stream_chunks = stream_chunks or []
+        self.invoked_with = None
+
+    def invoke(self, messages, **kw):
+        self.invoked_with = messages
+        return self.invoke_returns
+
+    def stream(self, messages, **kw):
+        for ch in self.stream_chunks:
+            yield ch
+
+    def bind_tools(self, tools, **kw):
+        return self
 
 
 def _settings(tmp_path, **over):
@@ -51,3 +72,23 @@ def test_build_client_base_url_passed(tmp_path):
     c = LLMClient(_settings(tmp_path, agent_base_url="https://my.gateway/v1"))
     assert isinstance(c._client, ChatOpenAI)
     assert c._client.openai_api_base == "https://my.gateway/v1"
+
+
+def test_to_lc_messages_maps_roles(tmp_path):
+    c = LLMClient(_settings(tmp_path))
+    msgs = c._to_lc_messages(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ]
+    )
+    assert isinstance(msgs[0], SystemMessage)
+    assert isinstance(msgs[1], HumanMessage)
+    assert isinstance(msgs[2], AIMessage)
+
+
+def test_complete_uses_invoke(tmp_path):
+    c = LLMClient(_settings(tmp_path))
+    c._client = _StubModel(invoke_returns=AIMessage(content="hello"))
+    assert c.complete("sys", "u") == "hello"
