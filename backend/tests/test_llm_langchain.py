@@ -102,3 +102,15 @@ def test_stream_yields_string_deltas(tmp_path):
         AIMessageChunk(content="he"), AIMessageChunk(content="llo"),
     ])
     assert "".join(c.stream("sys", "u")) == "hello"
+
+
+def test_structured_parses_and_retries(tmp_path):
+    c = LLMClient(_settings(tmp_path))
+    responses = iter([AIMessage(content="not json"), AIMessage(content='{"score": 7}')])
+
+    def _invoke(msgs, **kw):
+        return next(responses)
+
+    c._client = type("_M", (), {"invoke": staticmethod(_invoke)})()
+    parsed = c.complete_structured("sys", "u", {"type": "object"})
+    assert parsed == {"score": 7}
