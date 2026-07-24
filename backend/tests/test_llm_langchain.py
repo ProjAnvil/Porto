@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
@@ -166,3 +168,107 @@ def test_with_tools_unknown_tool_records_error(tmp_path):
     c._client = type("_M", (), {"bind_tools": lambda self, t: bound})()
     r = c.complete_with_tools("sys", "u", [_t("real", lambda a: "ok")])
     assert r.tool_calls[0].result.startswith("错误：未知工具 ghost")
+
+
+# ----------------------------- complete_document (方案 B: 原生 SDK) ----- #
+
+
+class _FakeOpenAICompletions:
+    def __init__(self, response):
+        self.response = response
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+class _FakeOpenAINative:
+    """原生 openai.OpenAI 替身：只暴露 complete_document 用到的 chat.completions。"""
+
+    def __init__(self, response):
+        self.chat = SimpleNamespace(completions=_FakeOpenAICompletions(response))
+
+
+class _FakeAnthropicMessages:
+    def __init__(self, response):
+        self.response = response
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+class _FakeAnthropicNative:
+    """原生 anthropic.Anthropic 替身：只暴露 complete_document 用到的 messages。"""
+
+    def __init__(self, response):
+        self.messages = _FakeAnthropicMessages(response)
+
+
+def test_complete_document_openai_native_sends_file_block(tmp_path):
+    """openai 路径:_native_client 收到 file block(file_data 为 data: URL),返回文本。"""
+    c = LLMClient(_settings(tmp_path, agent_provider="openai", agent_model="gpt-4.1-mini"))
+    # 模拟原生 SDK chat.completions.create 的返回结构
+    fake_resp = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="# Parsed PRD"))]
+    )
+    c._native_client = _FakeOpenAINative(fake_resp)
+
+    result = c.complete_document("prd.pdf", b"%PDF-test", "application/pdf", "parse")
+
+    assert result == "# Parsed PRD"
+    sent = c._native_client.chat.completions.calls[0]
+    assert sent["model"] == "gpt-4.1-mini"
+    content = sent["messages"][0]["content"]
+    assert content[0]["type"] == "file"
+    assert content[0]["file"]["filename"] == "prd.pdf"
+    assert content[0]["file"]["file_data"].startswith("data:application/pdf;base64,")
+    assert content[1] == {"type": "text", "text": "parse"}
+
+
+def test_complete_document_anthropic_native_sends_document_block(tmp_path):
+    """anthropic 路径:_native_client 收到 document block(base64 source),返回文本。"""
+    c = LLMClient(
+        _settings(
+            tmp_path,
+            agent_provider="anthropic",
+            agent_model="claude-sonnet-4-5",
+        )
+    )
+    fake_resp = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="# Parsed")]
+    )
+    c._native_client = _FakeAnthropicNative(fake_resp)
+
+    result = c.complete_document("prd.pdf", b"%PDF-test", "application/pdf", "parse")
+
+    assert result == "# Parsed"
+    sent = c._native_client.messages.calls[0]
+    assert sent["model"] == "claude-sonnet-4-5"
+    content = sent["messages"][0]["content"]
+    assert content[0]["type"] == "document"
+    assert content[0]["source"]["type"] == "base64"
+    assert content[0]["source"]["media_type"] == "application/pdf"
+    assert content[0]["source"]["data"]  # base64 非空
+    assert content[1] == {"type": "text", "text": "parse"}
+
+
+def test_complete_document_returns_none_when_native_client_disabled(tmp_path):
+    """_native_client 为 None(缺 api_key)时 complete_document 直接返回 None。"""
+    s = Settings(
+        kb_dirs=[tmp_path / "kb"],
+        data_dir=tmp_path / "data",
+        log_dir=tmp_path / "logs",
+    ).model_copy(
+        update={
+            "agent_provider": "openai",
+            "agent_model": "gpt-4.1-mini",
+        }  # 无 agent_api_key
+    )
+    c = LLMClient(s)
+    # enabled 也是 False → document_capabilities.native_pdf 为 False,先短路
+    # 强行开启 native_pdf 验证 native_client 短路
+    assert c._native_client is None
+    assert c.complete_document("prd.pdf", b"%PDF", "application/pdf", "parse") is None

@@ -1,3 +1,4 @@
+# complete_document 保留原生 SDK:U4 未验证 langchain 多模态 PDF(设计 D10)
 from __future__ import annotations
 
 import base64
@@ -24,6 +25,7 @@ class LLMClient:
         self.settings = settings
         self.logger = get_component_logger("llm", settings)
         self._client = self._build_client()
+        self._native_client = self._build_native_client()
         self.logger.info(
             "llm client ready enabled=%s provider=%s model=%s base_url_set=%s",
             self.enabled,
@@ -54,9 +56,11 @@ class LLMClient:
         """Analyze one PDF with the provider's native document input."""
         if not self.document_capabilities.native_pdf:
             return None
+        if self._native_client is None:
+            return None
         encoded = base64.standard_b64encode(data).decode("ascii")
         if self.settings.agent_provider == "openai":
-            response = self._client.chat.completions.create(
+            response = self._native_client.chat.completions.create(
                 model=self.settings.agent_model,
                 messages=[
                     {
@@ -76,7 +80,7 @@ class LLMClient:
                 temperature=self.settings.agent_temperature,
             )
             return response.choices[0].message.content or ""
-        response = self._client.messages.create(
+        response = self._native_client.messages.create(
             model=self.settings.agent_model,
             max_tokens=self.settings.document_max_tokens,
             temperature=self.settings.agent_temperature,
@@ -332,3 +336,19 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
         return client
+
+    def _build_native_client(self):
+        """原生 SDK client(供 complete_document 使用,U4 未验证 langchain 多模态 PDF)。"""
+        if not self.settings.agent_api_key:
+            return None
+        kwargs = {
+            "api_key": self.settings.agent_api_key,
+            "timeout": self.settings.agent_request_timeout,
+        }
+        if self.settings.agent_base_url:
+            kwargs["base_url"] = self.settings.agent_base_url
+        if self.settings.agent_provider == "openai":
+            return OpenAI(**kwargs)
+        if self.settings.agent_provider == "anthropic":
+            return Anthropic(**kwargs)
+        return None
