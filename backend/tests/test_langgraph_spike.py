@@ -28,7 +28,7 @@ from langgraph.types import Send
 
 
 # ---------------------------------------------------------------------------
-# Shared schema / helpers (from the brief, verbatim where applicable)
+# Shared schema / helpers
 # ---------------------------------------------------------------------------
 
 
@@ -41,21 +41,22 @@ class ParentState(TypedDict, total=False):
     results: Annotated[dict, _merge]
 
 
-class SubState(TypedDict, total=False):
+class SubStateShared(TypedDict, total=False):
+    """Subgraph state sharing ``results`` with the parent."""
     item: str
-    out: str
+    results: Annotated[dict, _merge]
 
 
 def _fanout(state: ParentState):
     return [Send("process", {"item": x}) for x in state["items"]]
 
 
-def _process(state: SubState):
-    return {"out": state["item"] + "_done"}
+def _process(state: SubStateShared):
+    return {"results": {state["item"] + "_done": True}}
 
 
 def _reduce_subgraph():
-    sub = StateGraph(SubState)
+    sub = StateGraph(SubStateShared)
     sub.add_node("process", _process)
     sub.add_edge(START, "process")
     sub.add_edge("process", END)
@@ -69,10 +70,8 @@ def _reduce_subgraph():
 
 def test_send_map_reduce_collects_all_items():
     parent = StateGraph(ParentState)
-    parent.add_node("fanout", _fanout)
     parent.add_node("process", _reduce_subgraph())
-    parent.add_edge(START, "fanout")
-    parent.add_conditional_edges("fanout", lambda x: x)
+    parent.add_conditional_edges(START, _fanout)  # canonical Send wiring
     parent.add_edge("process", END)
     graph = parent.compile()
 
@@ -95,12 +94,6 @@ def test_send_map_reduce_collects_all_items():
 # This is a valid U2 probe: the scheduling behavior of Send'd tasks is the
 # same regardless of how Send is wired (node vs cond edge) -- the crash in
 # U1 happens before any task scheduling.
-
-
-class SubStateShared(TypedDict, total=False):
-    """Subgraph state sharing ``results`` with the parent (corrected schema)."""
-    item: str
-    results: Annotated[dict, _merge]
 
 
 def test_send_concurrency_is_parallel_or_serial():
