@@ -75,18 +75,6 @@ def test_list_pagination_and_date(tmp_path):
     assert total == 0
 
 
-def test_mark_running_interrupted_on_startup(tmp_path):
-    s = _store(tmp_path)
-    w1 = s.create("s", "p", "prd", 6, {}, {})
-    s.update_status(w1, "running", current_step="understand")
-    w2 = s.create("s", "p2", "prd", 6, {}, {})
-    s.update_status(w2, "awaiting_input", current_step="understand")
-    n = s.mark_running_interrupted_on_startup()
-    assert n == 1
-    assert s.get(w1)["status"] == "interrupted"
-    assert s.get(w2)["status"] == "awaiting_input"  # 不动
-
-
 def test_delete(tmp_path):
     s = _store(tmp_path)
     wid = s.create("s", "p", "prd", 6, {}, {})

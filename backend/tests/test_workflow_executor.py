@@ -185,3 +185,108 @@ def test_two_rapid_advances_first_wins(tmp_path):
     release.set()
     ex.wait(wid, timeout=5)
     assert store.get(wid)["current_step"] == "identify"
+
+
+# ---------------------------------------------------------------- Task 5: PUT / PATCH / recover
+
+
+def test_update_step_rewinds_and_marks_user(tmp_path):
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    ex.start_workflow(wid)                  # understand
+    ex.wait(wid, timeout=5)
+    ex.advance(wid)                         # identify
+    ex.wait(wid, timeout=5)
+    assert "identify" in store.get_outputs(wid)
+
+    ex.update_step(wid, "understand", {"understanding": "edited"})
+    row = store.get(wid)
+    assert row["current_step"] == "understand"
+    assert row["status"] == "awaiting_input"
+    outs = store.get_outputs(wid)
+    assert outs["understand"]["produced_by"] == "user"
+    assert outs["understand"]["output"]["understanding"] == "edited"
+    assert "identify" not in outs                           # 下游被清
+
+
+def test_update_step_then_advance_preserves_user_edit(tmp_path):
+    """Important #1: PUT 编辑后 advance,用户编辑的内容必须存活(而非被节点原始产出覆盖)。
+
+    机制:update_step 的 graph.update_state(as_node=understand) 把 edited 内容写进
+    graph checkpoint;advance 时 understand 节点不重跑(已位于其下游),_project_state
+    读到 graph-state 的 understanding == store 的 edited → skip-if-equal → 保留。
+    断言:advance 到 identify 后,store 里 understand.output.understanding 仍是用户编辑值。
+    """
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    ex.start_workflow(wid)                  # 停 understand(原始 "understand-val")
+    ex.wait(wid, timeout=5)
+    ex.advance(wid)                         # → identify(原始 "identify-val")
+    ex.wait(wid, timeout=5)
+
+    # 用户编辑 understand(覆盖原始 "understand-val" → "user-edited")
+    ex.update_step(wid, "understand", {"understanding": "user-edited"})
+    outs = store.get_outputs(wid)
+    assert outs["understand"]["output"]["understanding"] == "user-edited"
+    assert outs["understand"]["produced_by"] == "user"
+
+    # advance:identify 节点会重跑(下游被 update_step 清掉);understand 不重跑
+    assert ex.advance(wid) is True
+    ex.wait(wid, timeout=5)
+
+    # 关键断言:understand 内容仍是用户的 edited 值(未被节点原始 "understand-val" 覆盖)
+    outs = store.get_outputs(wid)
+    assert outs["understand"]["output"]["understanding"] == "user-edited", (
+        "user-edited content lost after advance!"
+    )
+    assert outs["understand"]["produced_by"] == "user"     # 审计字段也保留
+    assert "identify" in outs                              # identify 重跑后回来
+
+
+def test_update_spec_updates_store_and_graph(tmp_path):
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    # 跑到 generate checkpoint(trivial 图 generate 写 specs={"default": ...})
+    ex.start_workflow(wid)
+    ex.wait(wid, timeout=5)
+    for _ in range(2):  # → identify → generate
+        ex.advance(wid)
+        ex.wait(wid, timeout=5)
+    assert store.get(wid)["current_step"] == "generate"
+
+    ok = ex.update_spec(wid, "default", "new body")          # 改 specs 里的 "default" key
+    assert ok is True
+    outs = store.get_outputs(wid)
+    assert outs["generate"]["produced_by"] == "ai"           # 审计不动
+    assert outs["generate"]["output"]["specs"]["default"] == "new body"
+    # graph state 已 dict-merge(specs 是 dict-merge reducer)
+    cfg = {"configurable": {"thread_id": wid}}
+    assert ex.graph.get_state(cfg).values["specs"]["default"] == "new body"
+
+
+def test_update_spec_missing_returns_false(tmp_path):
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    assert ex.update_spec(wid, "nope", "x") is False        # 无 generate output
+
+
+def test_recover_at_interrupt_marks_awaiting(tmp_path):
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    ex.start_workflow(wid)                 # understand(checkpoint 在)
+    ex.wait(wid, timeout=5)
+    store.update_status(wid, "running")                     # 模拟崩溃时 status=running
+    n = ex.recover_on_startup()
+    assert n == 1
+    assert store.get(wid)["status"] == "awaiting_input"     # checkpoint 在 interrupt → 可续
+
+
+def test_recover_no_checkpoint_marks_interrupted(tmp_path):
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    store.update_status(wid, "running", current_step="understand")  # 从未跑过 graph
+    n = ex.recover_on_startup()
+    assert n == 1
+    row = store.get(wid)
+    assert row["status"] == "interrupted"
+    assert row["current_step"] == "understand"              # 无 checkpoint → 保既有

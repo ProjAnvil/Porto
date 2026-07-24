@@ -189,14 +189,6 @@ class WorkflowStore:
                 (status, cur, error, now, workflow_id),
             )
 
-    def mark_running_interrupted_on_startup(self) -> int:
-        with self._conn() as conn:
-            cur = conn.execute(
-                'UPDATE workflows SET status="interrupted", updated_at=? WHERE status="running"',
-                (datetime.now(UTC).isoformat(),),
-            )
-            return cur.rowcount
-
     def delete(self, workflow_id) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM workflow_outputs WHERE workflow_id=?", (workflow_id,))

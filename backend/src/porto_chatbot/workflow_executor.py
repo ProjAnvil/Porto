@@ -257,3 +257,66 @@ class WorkflowExecutor:
         self.store.update_status(
             workflow_id, status, current_step=snap.values.get("current_step")
         )
+
+    # ----------------------------------------------------- PUT / PATCH / recovery
+
+    def update_step(self, workflow_id: str, step: str, body: dict[str, Any]) -> None:
+        """PUT /steps/{step}:覆盖产出 + 回退到该步(用户编辑)。
+
+        graph.update_state(as_node=step) 把图位置回退到该步之后(下游重算);
+        投影把该步标记 produced_by="user",清下游(等价旧 clear_outputs_after)。
+        update_state 不执行节点,不需要 agent。
+        """
+        config = self._config(workflow_id)
+        self.graph.update_state(
+            config, {**body, "current_step": step}, as_node=step
+        )
+        self._project_state(
+            workflow_id, config, produced_by_overrides={step: "user"}
+        )
+        self._sync_status(workflow_id, config)
+
+    def update_spec(self, workflow_id: str, name: str, body: str) -> bool:
+        """PATCH /specs:轻量改单个 spec(审计 + graph state)。
+
+        store.update_spec 改 workflow_outputs(specs dict-merge,不动 produced_by/下游/status);
+        再 best-effort 同步到 graph state(无 checkpoint —— 如手工造的合成 workflow —— 则跳过)。
+        """
+        if not self.store.update_spec(workflow_id, name, body):
+            return False
+        config = self._config(workflow_id)
+        try:
+            self.graph.update_state(config, {"specs": {name: body}})
+        except Exception:
+            # 无 checkpoint 或 graph 不可写:审计已落 store,graph 同步跳过
+            logger.warning("update_spec graph sync skipped workflow_id=%s", workflow_id, exc_info=True)
+        return True
+
+    def recover_on_startup(self) -> int:
+        """启动恢复:扫 status="running"。
+
+        - 有 checkpoint 且在 interrupt 处(next 非空)→ awaiting_input(可继续 advance);
+        - 有 checkpoint 但 next 空(异常态)→ interrupted;
+        - 无 checkpoint(如崩溃前未真正跑过 / 合成数据)→ interrupted,保留既有 current_step。
+        返回处理条数。
+        """
+        rows, _ = self.store.list_workflows(status="running")
+        for r in rows:
+            wid = r["workflow_id"]
+            config = self._config(wid)
+            try:
+                snap = self.graph.get_state(config)
+            except Exception:
+                logger.warning("recover get_state failed workflow_id=%s", wid, exc_info=True)
+                snap = None
+            if snap and snap.next:
+                self.store.update_status(
+                    wid, "awaiting_input", current_step=snap.values.get("current_step")
+                )
+            elif snap and snap.values:
+                self.store.update_status(
+                    wid, "interrupted", current_step=snap.values.get("current_step")
+                )
+            else:
+                self.store.update_status(wid, "interrupted")  # current_step=None 保既有
+        return len(rows)

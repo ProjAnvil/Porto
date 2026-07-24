@@ -290,34 +290,27 @@ def advance_workflow(workflow_id: str):
 def save_step_output(workflow_id: str, step: str, body: dict[str, Any]):
     """覆盖某步产出并回退到该步(用户编辑)。
 
-    语义:
-    1. save_output(step, body, produced_by="user") —— 覆盖该步既有产出。
-    2. clear_outputs_after(step) —— 该步之后的产出全部清空(下游需重算)。
-    3. current_step=step + status=awaiting_input —— workflow 退回该 checkpoint,
-       下次 advance 从 step 的下一步重新跑。
-
-    step 必须在 {understand, identify, generate},否则 400。
+    executor.update_step:graph.update_state(as_node=step) 回退图位置 + 投影(edited→user)
+    + 清下游 + status/current_step 同步。step 必须在 {understand, identify, generate}。
     """
     store = get_workflow_store()
     if store.get(workflow_id) is None:
         raise HTTPException(404, "workflow not found")
     if step not in _EDITABLE_STEPS:
         raise HTTPException(400, "step is not editable")
-    store.save_output(workflow_id, step, body, "user")
-    store.clear_outputs_after(workflow_id, step)
-    store.update_status(workflow_id, "awaiting_input", current_step=step)
+    get_workflow_executor().update_step(workflow_id, step, body)
     return _detail(store, workflow_id)
 
 
 @router.patch("/api/porto/workflows/{workflow_id}/specs", response_model=WorkflowDetail)
 def update_spec(workflow_id: str, payload: SpecUpdateRequest):
-    """轻量更新某个 spec 正文：只改 generate.output.specs[name]，
-    不动审计字段、不清下游、不改 status/current_step。
-    workflow 不存在→404；无 generate output 或 name 不在 specs→400。"""
+    """轻量更新某个 spec 正文:executor.update_spec(审计 + graph state dict-merge),
+    不动 status/current_step、不清下游、不改 produced_by。workflow 不存在→404;
+    无 generate output 或 name 不在 specs→400。"""
     store = get_workflow_store()
     if store.get(workflow_id) is None:
         raise HTTPException(404, "workflow not found")
-    if not store.update_spec(workflow_id, payload.name, payload.body):
+    if not get_workflow_executor().update_spec(workflow_id, payload.name, payload.body):
         raise HTTPException(400, "spec not found")
     return _detail(store, workflow_id)
 
