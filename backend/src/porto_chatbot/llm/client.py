@@ -7,6 +7,9 @@ from collections.abc import Iterator
 from typing import Any
 
 from anthropic import Anthropic
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models import BaseChatModel
+from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
 from ..logging_utils import get_component_logger
@@ -456,26 +459,25 @@ class LLMClient:
         out.extend(rest)
         return out
 
-    def _build_client(self):
+    def _build_client(self) -> BaseChatModel | None:
         if not self.settings.agent_api_key:
             self.logger.info(
                 "llm client disabled missing api key provider=%s", self.settings.agent_provider
             )
             return None
+        kwargs: dict[str, Any] = {
+            "api_key": self.settings.agent_api_key,
+            "model": self.settings.agent_model,
+            "temperature": self.settings.agent_temperature,
+            "max_tokens": self.settings.agent_max_tokens,
+            "timeout": self.settings.agent_request_timeout,
+        }
+        if self.settings.agent_base_url:
+            kwargs["base_url"] = self.settings.agent_base_url
         if self.settings.agent_provider == "openai":
-            kwargs: dict[str, Any] = {
-                "api_key": self.settings.agent_api_key,
-                "timeout": self.settings.agent_request_timeout,
-            }
-            if self.settings.agent_base_url:
-                kwargs["base_url"] = self.settings.agent_base_url
-            return OpenAI(**kwargs)
-        if self.settings.agent_provider == "anthropic":
-            kwargs = {
-                "api_key": self.settings.agent_api_key,
-                "timeout": self.settings.agent_request_timeout,
-            }
-            if self.settings.agent_base_url:
-                kwargs["base_url"] = self.settings.agent_base_url
-            return Anthropic(**kwargs)
-        raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
+            client: BaseChatModel = ChatOpenAI(**kwargs)
+        elif self.settings.agent_provider == "anthropic":
+            client = ChatAnthropic(**kwargs)
+        else:
+            raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
+        return client
