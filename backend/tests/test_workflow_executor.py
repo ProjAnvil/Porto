@@ -290,3 +290,61 @@ def test_recover_no_checkpoint_marks_interrupted(tmp_path):
     row = store.get(wid)
     assert row["status"] == "interrupted"
     assert row["current_step"] == "understand"              # 无 checkpoint → 保既有
+
+
+def test_recover_awaiting_input_without_checkpoint_marks_interrupted(tmp_path):
+    """Important #1:pre-L2 留下的 awaiting_input 孤儿无 checkpoint → 标 interrupted。
+
+    否则用户首次 /advance 时 graph.stream(None, config) 会收到
+    "Received no input for __start__" → worker catch → status=failed,体验糟糕。
+    """
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    store.update_status(wid, "awaiting_input", current_step="understand")  # 无 checkpoint
+    n = ex.recover_on_startup()
+    assert n == 1
+    row = store.get(wid)
+    assert row["status"] == "interrupted"                   # 提示用户无法简单续跑
+    assert row["current_step"] == "understand"              # 保既有
+
+
+def test_recover_awaiting_input_with_checkpoint_left_untouched(tmp_path):
+    """正常 L2 awaiting_input(checkpoint 在 interrupt 处)恢复时不动。
+
+    回归:recover 不能把跑到一半、停在 understand interrupt 的 L2 workflow 误改。
+    """
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    ex.start_workflow(wid)                                  # 停 understand,checkpoint 在
+    ex.wait(wid, timeout=5)
+    assert store.get(wid)["status"] == "awaiting_input"
+
+    n = ex.recover_on_startup()
+    assert n == 1
+    row = store.get(wid)
+    assert row["status"] == "awaiting_input"                # 未被触碰
+    assert row["current_step"] == "understand"
+
+
+def test_recover_completed_graph_marks_completed(tmp_path):
+    """Minor #2:checkpoint 已到 END(next 空)但 status 被重置为 running → recover 标 completed。
+
+    场景:worker 崩在 graph.stream 返回与 _sync_status 之间,checkpoint 显示图已跑完,
+    库里 status 仍为 running。recover 应识别为 completed(而非 interrupted)。
+    """
+    ex, store = _make(tmp_path)
+    wid = _create(store)
+    ex.start_workflow(wid)
+    ex.wait(wid, timeout=5)
+    for _ in range(3):  # understand→identify→generate→evaluate(END)
+        assert ex.advance(wid) is True
+        ex.wait(wid, timeout=5)
+    assert store.get(wid)["status"] == "completed"
+
+    # 模拟 worker 崩在 sync_status 之前:status 回退为 running,但 checkpoint 已到 END
+    store.update_status(wid, "running")
+    n = ex.recover_on_startup()
+    assert n == 1
+    row = store.get(wid)
+    assert row["status"] == "completed"
+    assert row["current_step"] == "evaluate"

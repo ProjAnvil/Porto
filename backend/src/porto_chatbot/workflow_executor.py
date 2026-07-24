@@ -176,12 +176,14 @@ class WorkflowExecutor:
         }
         try:
             self.graph.invoke(initial, config)  # retrieve→understand,停
+            # 投影 + 同步状态也纳入 try:投影失败不应掩盖一次成功的 graph 运行
+            # (否则会冒泡到 _worker 的 outer except,把已完成的图误标 "worker crashed")。
+            self._project_state(workflow_id, config)
+            self._sync_status(workflow_id, config)
         except Exception as exc:
             logger.exception("workflow start failed workflow_id=%s", workflow_id)
             self.store.update_status(workflow_id, "failed", error=str(exc))
             return
-        self._project_state(workflow_id, config)
-        self._sync_status(workflow_id, config)
 
     def _run_advance(self, workflow_id: str) -> None:
         row = self.store.get(workflow_id)
@@ -193,12 +195,14 @@ class WorkflowExecutor:
         config = self._config(workflow_id, agent)
         try:
             list(self.graph.stream(None, config))  # 续跑到下个 interrupt / END
+            # 投影 + 同步状态也纳入 try(同 _run_start):投影/同步失败用真实异常标记,
+            # 不让 _worker 把成功的 graph 运行误报为 "worker crashed"。
+            self._project_state(workflow_id, config)
+            self._sync_status(workflow_id, config)
         except Exception as exc:
             logger.exception("workflow advance failed workflow_id=%s", workflow_id)
             self.store.update_status(workflow_id, "failed", error=str(exc))
             return
-        self._project_state(workflow_id, config)
-        self._sync_status(workflow_id, config)
 
     def _completed_steps(self, config: dict) -> list[str]:
         """按 ``get_state().next`` 算已完成步(投影到 next 之前,含)。"""
@@ -293,30 +297,50 @@ class WorkflowExecutor:
         return True
 
     def recover_on_startup(self) -> int:
-        """启动恢复:扫 status="running"。
+        """启动恢复:扫 status="running" 与 "awaiting_input"。
 
-        - 有 checkpoint 且在 interrupt 处(next 非空)→ awaiting_input(可继续 advance);
-        - 有 checkpoint 但 next 空(异常态)→ interrupted;
-        - 无 checkpoint(如崩溃前未真正跑过 / 合成数据)→ interrupted,保留既有 current_step。
+        awaiting_input 中 pre-L2 留下的孤儿在新库里无 checkpoint,首次 advance 会崩,
+        需标 interrupted(而非误导性的 awaiting_input)。
+
+        - 有 checkpoint 且在 interrupt 处(next 非空):
+          · status="awaiting_input" → 不动(正常 L2 暂停态,可继续 advance);
+          · status="running" → 改 awaiting_input(崩溃在 interrupt 处,可继续);
+        - 有 checkpoint 但 next 空(已到 END,如 worker 崩在 stream-end 与 sync_status 之间)
+          → completed;
+        - 无 checkpoint(running 崩溃前未真正跑过 / awaiting_input 的 pre-L2 孤儿 / 合成数据)
+          → interrupted,保留既有 current_step。
         返回处理条数。
         """
-        rows, _ = self.store.list_workflows(status="running")
-        for r in rows:
-            wid = r["workflow_id"]
+        # 先快照要处理的 workflow —— 循环中 update_status 会改 status,边查边改会导致
+        # running→awaiting_input 的行在第二轮 awaiting_input 扫描中被重复处理。
+        targets: list[tuple[str, str]] = []  # (workflow_id, 原始 status)
+        for status in ("running", "awaiting_input"):
+            rows, _ = self.store.list_workflows(status=status)
+            targets.extend((r["workflow_id"], status) for r in rows)
+        count = 0
+        for wid, status in targets:
+            count += 1
             config = self._config(wid)
             try:
                 snap = self.graph.get_state(config)
             except Exception:
-                logger.warning("recover get_state failed workflow_id=%s", wid, exc_info=True)
+                logger.warning(
+                    "recover get_state failed workflow_id=%s", wid, exc_info=True
+                )
                 snap = None
+            has_checkpoint = bool(snap and snap.values)
+            if status == "awaiting_input" and has_checkpoint and snap.next:
+                continue  # 正常 L2 暂停态,不动
             if snap and snap.next:
                 self.store.update_status(
                     wid, "awaiting_input", current_step=snap.values.get("current_step")
                 )
             elif snap and snap.values:
+                # 有 checkpoint 且已到 END → completed(worker 崩在 sync_status 之前)
                 self.store.update_status(
-                    wid, "interrupted", current_step=snap.values.get("current_step")
+                    wid, "completed", current_step=snap.values.get("current_step")
                 )
             else:
-                self.store.update_status(wid, "interrupted")  # current_step=None 保既有
-        return len(rows)
+                # 无 checkpoint → interrupted,current_step=None 保留既有
+                self.store.update_status(wid, "interrupted")
+        return count
