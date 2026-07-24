@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from ...evaluation import evaluate_workflow
-from ..state import PortoAgentState
 
 
-def evaluate(agent, state: PortoAgentState) -> PortoAgentState:
+def evaluate(state, *, config):
+    agent = config["configurable"]["agent"]
     agent.logger.info("step evaluate start workflow_id=%s", state["workflow_id"])
     evaluation = evaluate_workflow(
         state["prd_text"],
@@ -38,14 +38,10 @@ def evaluate(agent, state: PortoAgentState) -> PortoAgentState:
         needs_rework,
         passes,
     )
-    return agent._with_step(
-        {
-            **state,
-            "evaluation": evaluation,
-            "rework_passes": passes + 1 if needs_rework else passes,
-            "needs_rework": needs_rework,
-        },
-        "evaluate",
-        f"评估得分 {evaluation['score']}",
-        evaluation,
-    )
+    return {
+        "evaluation": evaluation,
+        "rework_passes": passes + 1 if needs_rework else passes,
+        "needs_rework": needs_rework,
+        "current_step": "evaluate",
+        **agent._step("evaluate", f"评估得分 {evaluation['score']}", evaluation),
+    }

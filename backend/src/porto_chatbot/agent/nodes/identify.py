@@ -12,7 +12,8 @@ from ..heuristics import (
 from ..state import PortoAgentState
 
 
-def identify_subsystems(agent, state: PortoAgentState) -> PortoAgentState:
+def identify_subsystems(state, *, config):
+    agent = config["configurable"]["agent"]
     agent.logger.info("step identify_subsystems start workflow_id=%s", state["workflow_id"])
     subsystems: list[Subsystem] = []
     if agent.llm.enabled:
@@ -35,15 +36,18 @@ def identify_subsystems(agent, state: PortoAgentState) -> PortoAgentState:
     if not subsystems:
         subsystems = _fallback_identify(state)
         agent.logger.info("step identify_subsystems used fallback workflow_id=%s", state["workflow_id"])
-    return agent._with_step(
-        {**state, "subsystems": subsystems},
-        "identify_subsystems",
-        f"识别 {len(subsystems)} 个子系统",
-        {
-            "subsystems": [s.model_dump() for s in subsystems],
-            "used_llm": bool(subsystems) and agent.llm.enabled,
-        },
-    )
+    return {
+        "subsystems": subsystems,
+        "current_step": "identify",
+        **agent._step(
+            "identify_subsystems",
+            f"识别 {len(subsystems)} 个子系统",
+            {
+                "subsystems": [s.model_dump() for s in subsystems],
+                "used_llm": bool(subsystems) and agent.llm.enabled,
+            },
+        ),
+    }
 
 
 def _fallback_identify(state: PortoAgentState) -> list[Subsystem]:

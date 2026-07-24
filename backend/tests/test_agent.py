@@ -1,6 +1,6 @@
 """PortoAgent 容器 + evaluate 节点 单元测试。
 
-Task 9 之后 PortoAgent 瘦身为纯容器(构造/_build_critic_llm/_with_step),
+Task 9 之后 PortoAgent 瘦身为纯容器(构造/_build_critic_llm/_step),
 graph/run/_persist/_route_after_evaluate/各 node 委托方法已删除:
 - 端到端编排(run)由 WorkflowRunner + WorkflowExecutor 覆盖
   (见 test_workflow_runner.py / test_workflow_executor.py)。
@@ -44,7 +44,7 @@ def _spec_result(score: int, verdict: str = "NEEDS_IMPROVEMENT") -> SpecResult:
 def test_evaluate_aggregates_spec_rubric_scores(sample_settings):
     agent = PortoAgent(sample_settings)
     state = _eval_state({"a-service": _spec_result(7), "b-service": _spec_result(11)})
-    result = evaluate_node.evaluate(agent, state)
+    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
     assert result["evaluation"]["spec_rubric_avg"] == 9.0
     assert result["evaluation"]["spec_rubric_min"] == 7
 
@@ -52,7 +52,7 @@ def test_evaluate_aggregates_spec_rubric_scores(sample_settings):
 def test_evaluate_marks_rework_on_low_rubric(sample_settings):
     agent = PortoAgent(sample_settings)
     state = _eval_state({"a-service": _spec_result(5)})
-    result = evaluate_node.evaluate(agent, state)
+    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
     assert result["needs_rework"] is True
     assert result["rework_passes"] == 1
 
@@ -60,7 +60,7 @@ def test_evaluate_marks_rework_on_low_rubric(sample_settings):
 def test_evaluate_no_rework_on_high_rubric(sample_settings):
     agent = PortoAgent(sample_settings)
     state = _eval_state({"a-service": _spec_result(11, "PASS")})
-    result = evaluate_node.evaluate(agent, state)
+    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
     assert result["needs_rework"] is False
     assert result["rework_passes"] == 0
 
@@ -69,7 +69,7 @@ def test_evaluate_respects_max_passes_zero(sample_settings):
     sample_settings.workflow_rework_max_passes = 0
     agent = PortoAgent(sample_settings)
     state = _eval_state({"a-service": _spec_result(5)})
-    result = evaluate_node.evaluate(agent, state)
+    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
     assert result["needs_rework"] is False  # passes(0) < 0 为假
 
 
@@ -77,7 +77,7 @@ def test_evaluate_no_rework_when_disabled(sample_settings):
     sample_settings.workflow_rework_enabled = False
     agent = PortoAgent(sample_settings)
     state = _eval_state({"a-service": _spec_result(5)})
-    result = evaluate_node.evaluate(agent, state)
+    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
     assert result["needs_rework"] is False
 
 

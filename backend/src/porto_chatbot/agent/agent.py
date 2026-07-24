@@ -2,7 +2,7 @@
 
 编排(run/graph/_persist)在 Tasks 5/6 已迁出至 WorkflowRunner/WorkflowExecutor/
 WorkflowStore。本模块仅持有 ``settings/llm/vector_store/critic_llm`` 及两个容器级
-helper(``_build_critic_llm`` 构造评判模型,``_with_step`` 记录步骤完成日志),供
+helper(``_build_critic_llm`` 构造评判模型,``_step`` 记录步骤完成日志),供
 WorkflowRunner 通过 ``agent`` 参数透传给各 node。
 """
 
@@ -63,16 +63,12 @@ class PortoAgent:
         )
         return critic
 
-    def _with_step(
-        self, state: dict[str, Any], name: str, summary: str, data: dict[str, Any]
-    ) -> dict[str, Any]:
-        steps = list(state.get("steps", []))
-        steps.append(AgentStep(name=name, status="completed", summary=summary, data=data))
-        state["steps"] = steps
-        self.logger.info(
-            "step completed workflow_id=%s name=%s summary=%s",
-            state.get("workflow_id"),
-            name,
-            summary,
-        )
-        return state
+    def _step(self, name: str, summary: str, data: dict[str, Any]) -> dict[str, Any]:
+        """返回 partial 更新 ``{"steps": [AgentStep(...)]}`` + 记完成日志。
+
+        节点把它 spread 进自己的返回值(steps 走 ``operator.add`` reducer 追加)。
+        """
+        self.logger.info("step completed name=%s summary=%s", name, summary)
+        return {
+            "steps": [AgentStep(name=name, status="completed", summary=summary, data=data)]
+        }

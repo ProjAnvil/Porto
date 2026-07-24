@@ -5,8 +5,9 @@ from ..heuristics import extract_bullets, extract_entities, matched_domains, sum
 from ..state import PortoAgentState
 
 
-def understand_prd(agent, state: PortoAgentState) -> PortoAgentState:
-    agent.logger.info("step understand_prd start workflow_id=%s", state["workflow_id"])
+def understand_prd(state, *, config):
+    agent = config["configurable"]["agent"]
+    agent.logger.info("step understand_prd start workflow_id=%s", state.get("workflow_id"))
     understanding = ""
     if agent.llm.enabled:
         ctx = AgentToolContext(state=state, vector_store=agent.vector_store)
@@ -26,13 +27,16 @@ def understand_prd(agent, state: PortoAgentState) -> PortoAgentState:
         )
     if not understanding:
         understanding = _fallback_understanding(state)
-        agent.logger.info("step understand_prd used fallback workflow_id=%s", state["workflow_id"])
-    return agent._with_step(
-        {**state, "understanding": understanding},
-        "understand_prd",
-        "完成业务理解报告",
-        {"chars": len(understanding), "used_llm": bool(understanding) and agent.llm.enabled},
-    )
+        agent.logger.info("step understand_prd used fallback workflow_id=%s", state.get("workflow_id"))
+    return {
+        "understanding": understanding,
+        "current_step": "understand",
+        **agent._step(
+            "understand_prd",
+            "完成业务理解报告",
+            {"chars": len(understanding), "used_llm": bool(understanding) and agent.llm.enabled},
+        ),
+    }
 
 
 def _fallback_understanding(state: PortoAgentState) -> str:
