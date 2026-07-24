@@ -1,8 +1,18 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
 
 from ..models import AgentStep, SourceChunk, SpecResult, Subsystem
+
+
+def _dict_merge(left: dict, right: dict) -> dict:
+    """dict-merge reducer:右覆盖左,保留左独有的 key。
+
+    用于 specs / spec_results —— generate 节点写完整 dict,PATCH /specs 经
+    graph.update_state 只改单个 key(merge),两者共用此 reducer。
+    """
+    return {**(left or {}), **(right or {})}
 
 
 class PortoAgentState(TypedDict, total=False):
@@ -12,11 +22,12 @@ class PortoAgentState(TypedDict, total=False):
     sources: list[SourceChunk]
     understanding: str
     subsystems: list[Subsystem]
-    specs: dict[str, str]
-    spec_results: dict[str, SpecResult]
+    specs: Annotated[dict[str, str], _dict_merge]
+    spec_results: Annotated[dict[str, SpecResult], _dict_merge]
     evaluation: dict[str, Any]
-    steps: list[AgentStep]
+    steps: Annotated[list[AgentStep], operator.add]
     top_k: int | None
+    current_step: str
     rework_passes: int
     needs_rework: bool
 
