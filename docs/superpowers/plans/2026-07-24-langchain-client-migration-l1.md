@@ -13,6 +13,7 @@
 - **接口不变**:`LLMClient` 的 `complete` / `complete_structured` / `complete_with_tools` / `stream` / `complete_document` 方法签名与 [`llm/types.py`](../../backend/src/porto_chatbot/llm/types.py) 的 `ToolDef`/`ToolCall`/`ToolLoopResult`/`Message`/`ModelCapabilities` 类型**一字不改**。8 处调用方零改动。
 - **降级保留**:`agent_api_key` 缺失时 `_client=None`、`enabled=False`,所有方法返回 `None`/空/`ToolLoopResult(text="")`。
 - **配置零改动**:`settings.py` 的 `agent_provider`/`agent_api_key`/`agent_base_url`/`agent_model`/`agent_temperature`/`agent_max_tokens`/`agent_request_timeout` 字段与 env 别名(`LANGCHAIN_*`)不变。
+- **测试构造 Settings(重要)**:`Settings` 字段带 `validation_alias` 且 `model_config` 未开 `populate_by_name`,直接 `Settings(agent_api_key="k")` 的 kwarg 会被**静默丢弃**(Task 2 发现)。测试里构造"带 key"的 settings 必须用 `Settings(kb_dirs=[...], data_dir=..., log_dir=...).model_copy(update={"agent_api_key": "k", "agent_provider": "openai", "agent_model": "..."})`。Task 5/11 的测试代码均按此模式,不要用裸 kwargs。
 - **检索层不动**:llama-index 相关文件零改动;`ToolDef.handler` 仍调 llama-index。
 - **tool calling 封装**:`complete_with_tools` 内部用 `bind_tools` 循环,不引入 graph 层 `ToolNode`。
 - **structured output 用土办法**:不用 `with_structured_output`,保留 prompt 注入 JSON schema + `_try_parse_json` 重试。
@@ -383,14 +384,7 @@ git commit -m "test(spike): SqliteSaver 多线程并发验证"
 
 - [ ] **Step 1: 修改 imports 与 `_build_client`**
 
-在 `backend/src/porto_chatbot/llm/client.py` 顶部,把:
-
-```python
-from anthropic import Anthropic
-from openai import OpenAI
-```
-
-替换为:
+在 `backend/src/porto_chatbot/llm/client.py` 顶部,**新增** langchain imports —— `from anthropic import Anthropic` / `from openai import OpenAI` **保留不删**(`complete_document` 走方案 B 仍需原生 SDK,见 §Spike Conclusions U4 / Task 10):
 
 ```python
 from langchain_anthropic import ChatAnthropic
@@ -832,7 +826,19 @@ from langchain_core.messages import (
                 )
 
         result.truncated = True
-        result.text = assistant_text or self.complete(system, "")
+        # 收尾:max_turns 达到时,基于 tool loop 历史(无 bind_tools)让 LLM 给最终文本。
+        # 不用 complete(system,"")——那会丢掉 convo 里的 tool 历史(旧版用 _strip_system(convo) 保留)。
+        if not assistant_text:
+            try:
+                final_resp = self._client.invoke(convo)
+                content = final_resp.content
+                assistant_text = content if isinstance(content, str) else "".join(
+                    b.get("text", "") for b in content if isinstance(b, dict)
+                )
+            except Exception:
+                self.logger.exception("llm tool loop final invoke failed")
+                assistant_text = ""
+        result.text = assistant_text
         self.logger.warning(
             "llm tool loop truncated max_turns=%s total=%s",
             resolved_turns, len(result.tool_calls),
@@ -858,7 +864,7 @@ git commit -m "refactor(llm): complete_with_tools 走 bind_tools 循环,删 prov
 
 ### Task 10: `complete_document()` 重写
 
-**依 §Spike Conclusions U4 结论二选一。** 若 PDF spike 成功(langchain 多模态能解析)走方案 A;否则走方案 B(该方法保留原生 SDK,设计文档 D10)。
+**结论:方案 B(保留原生 SDK)。** §Spike Conclusions U4 已确认——`backend/.env` 的 `LANGCHAIN_API_KEY`/`LANGCHAIN_BASE_URL` 实测为空,PDF spike 无法调真 LLM 验证 langchain 多模态路径,按设计 D10 走方案 B(`complete_document` 保留原生 SDK)。下方方案 A 的代码保留供未来配好 key 后切换。Task 10 的 Step 3(方案 A 测试)跳过,直接做替代 Step(方案 B:保留原生 + 补 mock 测试)。
 
 **Files:**
 - Modify: `backend/src/porto_chatbot/llm/client.py`(`complete_document`)
@@ -912,7 +918,25 @@ def test_complete_document_openai_multimodal(tmp_path):
 Run: `cd backend && python -m pytest tests/test_llm_langchain.py::test_complete_document_openai_multimodal -v`
 Expected: PASS。
 
-- [ ] **替代 Step(方案 B — 保留原生 SDK,若 U4 spike 失败):** `complete_document` 不改,在 `_build_client` 之外**额外**保留一个惰性的原生 client(`from anthropic import Anthropic; from openai import OpenAI`)仅给 `complete_document` 用,并在文件顶部加注释 `# complete_document 保留原生 SDK:langchain 对 provider PDF block 支持不足(见设计 D10)`。补一个 mock 原生 client 的测试保证不回归。**此方案下 `import anthropic/openai` 不从 dependencies 删除。**
+- [ ] **替代 Step(方案 B — 已定,U4 未验证):** `complete_document` 保留原生 SDK 路径,但因 `self._client` 现已是 langchain `ChatModel`(Task 5),`complete_document` 要改用一个**单独的原生 SDK client**(`self._native_client`),不能再调 `self._client`:
+
+```python
+# client.py:新增原生 client 构造(复用 Task 5 删掉的旧 _build_client 逻辑)
+def _build_native_client(self):
+    if not self.settings.agent_api_key:
+        return None
+    kwargs = {"api_key": self.settings.agent_api_key, "timeout": self.settings.agent_request_timeout}
+    if self.settings.agent_base_url:
+        kwargs["base_url"] = self.settings.agent_base_url
+    if self.settings.agent_provider == "openai":
+        return OpenAI(**kwargs)
+    if self.settings.agent_provider == "anthropic":
+        return Anthropic(**kwargs)
+    return None
+# __init__ 末尾: self._native_client = self._build_native_client()
+```
+
+`complete_document` 内:`if self._native_client is None: return None`(放在 native_pdf 检查之后);把 `self._client.chat.completions.create(...)` → `self._native_client.chat.completions.create(...)`,`self._client.messages.create(...)` → `self._native_client.messages.create(...)`。文件顶部加注释 `# complete_document 保留原生 SDK:U4 未验证 langchain 多模态 PDF(设计 D10)`。补 mock 测试到 `test_llm_langchain.py`:mock `client._native_client` 的 document API,断言 openai 走 `file` block / anthropic 走 `document` block + 返回文本(参照旧 test_llm_modern.py 的 document 断言风格)。**此方案下 `import anthropic/openai` 不从 dependencies 删除。**
 
 - [ ] **Step 4: 提交**
 
@@ -1186,7 +1210,7 @@ git commit -m "chore(backend): L1 全量回归通过,清理原生 SDK 依赖(若
 - **U1 (Send → 子图 → reducer map-reduce)**: _待填_(Task 3)
 - **U2 (sync Send 并行性)**: _待填_(Task 3,观察耗时/线程)
 - **U3 (SqliteSaver 多线程)**: _待填_(Task 4)
-- **U4 (ChatModel PDF document)**: _待填_(Task 2 Step 4;决定 Task 10 方案 A/B)
+- **U4 (ChatModel PDF document)**: 未验证 → **Task 10 方案 B**。`backend/.env` 的 `LANGCHAIN_API_KEY`/`LANGCHAIN_BASE_URL` 实测为空(Task 2 发现),spike 无法调真 LLM;按 D10 走方案 B(`complete_document` 保留原生 SDK)。未来配 key 后可补验证切方案 A。
 
 ## L1 完成判据
 
