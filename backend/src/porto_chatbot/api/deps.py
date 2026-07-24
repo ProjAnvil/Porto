@@ -284,10 +284,8 @@ def reset_rag_singletons() -> None:
             # TOCTOU window (worker starts after the check) does not arise in
             # tests because no new requests arrive during fixture teardown.
             ex = entry.get("workflow_executor")
-            if ex is not None:
-                with ex._global:
-                    if any(lk.locked() for lk in ex._guards.values()):
-                        continue  # worker still running; leak conn to avoid SIGSEGV
+            if ex is not None and ex.is_any_running():
+                continue  # worker still running; leak conn to avoid SIGSEGV
             entry["_checkpoint_conn"].close()
         except Exception:
             pass

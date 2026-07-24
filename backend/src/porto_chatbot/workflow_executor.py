@@ -78,6 +78,16 @@ class WorkflowExecutor:
     def _is_running(self, workflow_id: str) -> bool:
         return self._guard(workflow_id).locked()
 
+    def is_any_running(self) -> bool:
+        """True if any workflow's guard is currently held (a worker is mid-run).
+
+        Used by test-fixture teardown (reset_rag_singletons) to avoid closing the
+        shared sqlite checkpoint connection while a langgraph internal worker
+        thread may still be doing C-level sqlite ops (which segfaults).
+        """
+        with self._global:
+            return any(lk.locked() for lk in self._guards.values())
+
     def wait(self, workflow_id: str, timeout: float = 30.0) -> None:
         """测试用:轮询等当前后台任务结束。"""
         end = time.time() + timeout
