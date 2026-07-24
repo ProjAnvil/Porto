@@ -253,37 +253,14 @@ class LLMClient:
             self.settings.agent_model,
             len(msgs),
         )
-        if self.settings.agent_provider == "openai":
-            try:
-                stream = self._client.chat.completions.create(
-                    model=self.settings.agent_model,
-                    messages=msgs,
-                    temperature=self.settings.agent_temperature,
-                    stream=True,
-                )
-            except Exception:
-                self.logger.exception("openai stream failed model=%s", self.settings.agent_model)
-                raise
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content if chunk.choices else None
-                if delta:
+        try:
+            for chunk in self._client.stream(self._to_lc_messages(msgs)):
+                delta = chunk.content
+                if isinstance(delta, str) and delta:
                     yield delta
-        elif self.settings.agent_provider == "anthropic":
-            system_text, convo = self._split_system(msgs)
-            try:
-                with self._client.messages.stream(
-                    model=self.settings.agent_model,
-                    max_tokens=self.settings.agent_max_tokens,
-                    temperature=self.settings.agent_temperature,
-                    system=system_text,
-                    messages=convo,
-                ) as stream:
-                    yield from stream.text_stream
-            except Exception:
-                self.logger.exception("anthropic stream failed model=%s", self.settings.agent_model)
-                raise
-        else:
-            raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
+        except Exception:
+            self.logger.exception("llm stream failed model=%s", self.settings.agent_model)
+            raise
 
     # ------------------------------------------------------------------ #
     # 内部：provider 适配

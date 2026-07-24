@@ -92,3 +92,13 @@ def test_complete_uses_invoke(tmp_path):
     c = LLMClient(_settings(tmp_path))
     c._client = _StubModel(invoke_returns=AIMessage(content="hello"))
     assert c.complete("sys", "u") == "hello"
+
+
+def test_stream_yields_string_deltas(tmp_path):
+    from langchain_core.messages import AIMessageChunk
+
+    c = LLMClient(_settings(tmp_path))
+    c._client = _StubModel(stream_chunks=[
+        AIMessageChunk(content="he"), AIMessageChunk(content="llo"),
+    ])
+    assert "".join(c.stream("sys", "u")) == "hello"
