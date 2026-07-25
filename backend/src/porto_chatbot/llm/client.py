@@ -239,19 +239,7 @@ class LLMClient:
                 )
 
         result.truncated = True
-        # 收尾:max_turns 达到时,基于 tool loop 历史(无 bind_tools)让 LLM 给最终文本。
-        # 不用 complete(system,"")——那会丢掉 convo 里的 tool 历史(旧版用 _strip_system(convo) 保留)。
-        if not assistant_text:
-            try:
-                final_resp = self._client.invoke(convo)
-                content = final_resp.content
-                assistant_text = content if isinstance(content, str) else "".join(
-                    b.get("text", "") for b in content if isinstance(b, dict)
-                )
-            except Exception:
-                self.logger.exception("llm tool loop final invoke failed")
-                assistant_text = ""
-        result.text = assistant_text
+        result.text = ""  # 截断 = 无可靠产出;过渡语清空,不暴露给前端
         self.logger.warning(
             "llm tool loop truncated max_turns=%s total=%s",
             resolved_turns, len(result.tool_calls),
