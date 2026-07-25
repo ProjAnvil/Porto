@@ -476,3 +476,48 @@ def test_project_state_attaches_tool_meta_generate(tmp_path):
     executor._project_state(wid, {"configurable": {"thread_id": wid}})
     out = store.get_outputs(wid)["generate"]["output"]
     assert out["tool_meta"]["truncated"] is True  # any
+
+
+def test_project_state_tool_meta_isolated_per_step(tmp_path):
+    """跨步隔离:state.steps 同时含 understand_prd(带 tool_meta)与
+    identify_subsystems(无 tool_meta)时,understand 投到 tool_meta,
+    identify 不应误投 understand 的 tool_meta(回归 _tool_meta_for 曾缺 name 过滤)。
+    """
+    from unittest.mock import MagicMock
+
+    from porto_chatbot.models import AgentStep
+
+    store = WorkflowStore(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"))
+    wid = store.create("s", "p", "prd", 6, {}, {"agent_max_tool_turns": 10})
+    executor = WorkflowExecutor(
+        Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"), store, graph=MagicMock()
+    )
+    snap = MagicMock()
+    snap.values = {
+        "understanding": "understand 报告",
+        "subsystems": [{"name": "wallet"}],
+        "steps": [
+            AgentStep(
+                name="understand_prd",
+                status="completed",
+                data={"tool_meta": {"turns": 4, "truncated": True, "max_turns": 10}},
+            ),
+            AgentStep(
+                name="identify_subsystems",
+                status="completed",
+                data={"subsystems": [{"name": "wallet"}]},  # 无 tool_meta
+            ),
+        ],
+        "spec_results": {},
+    }
+    snap.next = ("generate",)  # → completed = ["retrieve", "understand", "identify"]
+    executor.graph.get_state = MagicMock(return_value=snap)
+    executor._project_state(wid, {"configurable": {"thread_id": wid}})
+    outs = store.get_outputs(wid)
+    # understand 拿到自己的 tool_meta
+    understand_out = outs["understand"]["output"]
+    assert understand_out["tool_meta"]["truncated"] is True
+    assert understand_out["tool_meta"]["turns"] == 4
+    # identify 不应被误投 understand 的 tool_meta
+    identify_out = outs["identify"]["output"]
+    assert "tool_meta" not in identify_out

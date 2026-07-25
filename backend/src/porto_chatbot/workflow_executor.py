@@ -288,7 +288,13 @@ class WorkflowExecutor:
             truncated = any(tm.get("truncated") for tm in per.values())
             return {"truncated": truncated}
         steps = values.get("steps") or []
+        # 必须按 step 名前缀过滤:state.steps 含多步 AgentStep,只有当前步的 tool_meta
+        # 才属于此 step(否则会把 understand 的红 chip 错投到 identify/evaluate)。
+        # AgentStep.name 约定为 f"{step}_*"(understand_prd / identify_subsystems / ...)。
         for st in reversed(steps):  # 取该 step 最新一条
+            name = getattr(st, "name", None) or (st.get("name") if isinstance(st, dict) else "")
+            if not name or not name.startswith(f"{step}_"):
+                continue
             data = getattr(st, "data", None) or (st.get("data") if isinstance(st, dict) else None)
             if data and "tool_meta" in data:
                 return data["tool_meta"]
