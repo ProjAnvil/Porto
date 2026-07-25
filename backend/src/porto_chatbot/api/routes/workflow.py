@@ -31,6 +31,7 @@ from ...documents import (
 from ...llm import LLMClient
 from ...logging_utils import get_component_logger
 from ...models import WorkflowRequest
+from ...workflow_executor import WorkflowRunning
 from ..deps import (
     apply_rag_settings,
     effective_agent_settings,
@@ -282,7 +283,7 @@ def advance_workflow(workflow_id: str):
     if row["status"] == "completed":
         raise HTTPException(409, "workflow already completed")
     if not get_workflow_executor().advance(workflow_id):
-        raise HTTPException(409, "workflow is currently running")
+        raise HTTPException(409, "workflow is currently running") from None
     return WorkflowCreated(workflow_id=workflow_id, status="running")
 
 
@@ -298,7 +299,10 @@ def save_step_output(workflow_id: str, step: str, body: dict[str, Any]):
         raise HTTPException(404, "workflow not found")
     if step not in _EDITABLE_STEPS:
         raise HTTPException(400, "step is not editable")
-    get_workflow_executor().update_step(workflow_id, step, body)
+    try:
+        get_workflow_executor().update_step(workflow_id, step, body)
+    except WorkflowRunning:
+        raise HTTPException(409, "workflow is currently running") from None
     return _detail(store, workflow_id)
 
 
@@ -310,8 +314,11 @@ def update_spec(workflow_id: str, payload: SpecUpdateRequest):
     store = get_workflow_store()
     if store.get(workflow_id) is None:
         raise HTTPException(404, "workflow not found")
-    if not get_workflow_executor().update_spec(workflow_id, payload.name, payload.body):
-        raise HTTPException(400, "spec not found")
+    try:
+        if not get_workflow_executor().update_spec(workflow_id, payload.name, payload.body):
+            raise HTTPException(400, "spec not found")
+    except WorkflowRunning:
+        raise HTTPException(409, "workflow is currently running") from None
     return _detail(store, workflow_id)
 
 

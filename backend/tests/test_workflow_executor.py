@@ -8,11 +8,12 @@ from __future__ import annotations
 import sqlite3
 import threading
 
+import pytest
 from langgraph.graph import END, START, StateGraph
 
 from porto_chatbot.agent.graph import STEPS
 from porto_chatbot.settings import Settings
-from porto_chatbot.workflow_executor import WorkflowExecutor
+from porto_chatbot.workflow_executor import WorkflowExecutor, WorkflowRunning
 from porto_chatbot.workflow_store import WorkflowStore
 
 
@@ -358,3 +359,55 @@ def test_step_output_keys_match_steps():
     from porto_chatbot.workflow_executor import _STEP_OUTPUT_KEYS
 
     assert list(_STEP_OUTPUT_KEYS.keys()) == STEPS
+
+
+# ---------------------------------------------------------------- F3: PUT/PATCH 并发 guard
+
+
+def test_update_step_rejects_while_running(tmp_path):
+    """F3: advance 进行中(worker 持 guard)时 update_step 必须 raise WorkflowRunning
+    (路由 → 409),而非默默与 graph.stream 并发丢更新(spike 确认 PUT 的 update_state
+    会被 worker 完成 identify 时的 checkpoint 写覆盖,edited 内容完全丢失)。"""
+    enter, release = threading.Event(), threading.Event()
+    settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
+    store = WorkflowStore(settings)
+    ex = WorkflowExecutor(
+        settings,
+        store,
+        _trivial_graph(tmp_path, slow_step="identify", slow_event=(enter, release)),
+    )
+    wid = _create(store)
+    ex.start_workflow(wid)
+    ex.wait(wid, timeout=5)  # 停 understand
+    ex.advance(wid)  # worker 进 identify(slow,持 guard)
+    assert enter.wait(timeout=2)
+
+    with pytest.raises(WorkflowRunning):
+        ex.update_step(wid, "understand", {"understanding": "edited-during-advance"})
+
+    release.set()
+    ex.wait(wid, timeout=5)
+
+
+def test_update_spec_rejects_while_running(tmp_path):
+    """F3: advance 进行中 update_spec 同样必须 raise WorkflowRunning(路由 → 409)。
+    acquire 在 store 查询前,故即使 spec 不存在也先以 running 拒绝。"""
+    enter, release = threading.Event(), threading.Event()
+    settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
+    store = WorkflowStore(settings)
+    ex = WorkflowExecutor(
+        settings,
+        store,
+        _trivial_graph(tmp_path, slow_step="identify", slow_event=(enter, release)),
+    )
+    wid = _create(store)
+    ex.start_workflow(wid)
+    ex.wait(wid, timeout=5)
+    ex.advance(wid)
+    assert enter.wait(timeout=2)
+
+    with pytest.raises(WorkflowRunning):
+        ex.update_spec(wid, "any", "body")
+
+    release.set()
+    ex.wait(wid, timeout=5)

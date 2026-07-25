@@ -58,6 +58,14 @@ def _to_jsonable(value: Any) -> Any:
     return value
 
 
+class WorkflowRunning(Exception):
+    """workflow 正在 advance(worker 持 guard),PUT/PATCH 不能并发编辑。
+
+    F3:advance 的 graph.stream 与 PUT/PATCH 的 graph.update_state 并发会丢更新
+    (worker 完成节点写 checkpoint 时覆盖 update_state)。路由 catch → 409。
+    """
+
+
 class WorkflowExecutor:
     """后台线程用 langgraph graph 推进 workflow;每 workflow 一把锁防并发 advance。
 
@@ -272,34 +280,46 @@ class WorkflowExecutor:
     def update_step(self, workflow_id: str, step: str, body: dict[str, Any]) -> None:
         """PUT /steps/{step}:覆盖产出 + 回退到该步(用户编辑)。
 
-        graph.update_state(as_node=step) 把图位置回退到该步之后(下游重算);
-        投影把该步标记 produced_by="user",清下游(等价旧 clear_outputs_after)。
-        update_state 不执行节点,不需要 agent。
+        graph.update_state(as_node=step) 把图位置回退到该步之后(下游重算);投影把
+        该步标记 produced_by="user",清下游。F3:acquire per-workflow guard —— advance
+        进行中(worker 持 guard)raise WorkflowRunning(路由→409),避免 graph.update_state
+        与 graph.stream 并发丢更新(worker 写 checkpoint 覆盖 update_state)。update_state
+        不执行节点,不需要 agent。
         """
-        config = self._config(workflow_id)
-        self.graph.update_state(
-            config, {**body, "current_step": step}, as_node=step
-        )
-        self._project_state(
-            workflow_id, config, produced_by_overrides={step: "user"}
-        )
-        self._sync_status(workflow_id, config)
+        guard = self._guard(workflow_id)
+        if not guard.acquire(blocking=False):
+            raise WorkflowRunning(workflow_id)
+        try:
+            config = self._config(workflow_id)
+            self.graph.update_state(config, {**body, "current_step": step}, as_node=step)
+            self._project_state(workflow_id, config, produced_by_overrides={step: "user"})
+            self._sync_status(workflow_id, config)
+        finally:
+            guard.release()
 
     def update_spec(self, workflow_id: str, name: str, body: str) -> bool:
         """PATCH /specs:轻量改单个 spec(审计 + graph state)。
 
-        store.update_spec 改 workflow_outputs(specs dict-merge,不动 produced_by/下游/status);
-        再 best-effort 同步到 graph state(无 checkpoint —— 如手工造的合成 workflow —— 则跳过)。
+        F3:acquire guard —— advance 进行中 raise WorkflowRunning(路由→409),避免 graph
+        同步与 stream 并发丢更新。store.update_spec 改 workflow_outputs(specs dict-merge,
+        不动 produced_by/下游/status);再 best-effort 同步到 graph state(无 checkpoint ——
+        如手工造的合成 workflow —— 则跳过)。
         """
-        if not self.store.update_spec(workflow_id, name, body):
-            return False
-        config = self._config(workflow_id)
+        guard = self._guard(workflow_id)
+        if not guard.acquire(blocking=False):
+            raise WorkflowRunning(workflow_id)
         try:
-            self.graph.update_state(config, {"specs": {name: body}})
-        except Exception:
-            # 无 checkpoint 或 graph 不可写:审计已落 store,graph 同步跳过
-            logger.warning("update_spec graph sync skipped workflow_id=%s", workflow_id, exc_info=True)
-        return True
+            if not self.store.update_spec(workflow_id, name, body):
+                return False
+            config = self._config(workflow_id)
+            try:
+                self.graph.update_state(config, {"specs": {name: body}})
+            except Exception:
+                # 无 checkpoint 或 graph 不可写:审计已落 store,graph 同步跳过
+                logger.warning("update_spec graph sync skipped workflow_id=%s", workflow_id, exc_info=True)
+            return True
+        finally:
+            guard.release()
 
     def recover_on_startup(self) -> int:
         """启动恢复:扫 status="running" 与 "awaiting_input"。
