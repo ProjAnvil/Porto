@@ -270,7 +270,7 @@ def test_tool_loop_handler_exception_does_not_crash(client):
 
 def test_tool_loop_truncated_at_max_turns(client, enabled_settings):
     """LLM 一直调 tool 不收尾，到 max_turns 必须截断。"""
-    # 每轮都调 tool；max_turns=2 → 2 轮 tool，然后 1 次兜底 invoke 收尾
+    # 每轮都调 tool；max_turns=2 → 2 轮 tool，然后截断:清空 text(B 方案,不做收尾 invoke)
     _wire(
         client,
         [
@@ -282,14 +282,13 @@ def test_tool_loop_truncated_at_max_turns(client, enabled_settings):
                 content="",
                 tool_calls=[{"id": "c2", "name": "loop", "args": {}, "type": "tool_call"}],
             ),
-            AIMessage(content="final"),
         ],
     )
     r = client.complete_with_tools("sys", "u", [_tool("loop", lambda a: "again")], max_turns=2)
     assert r.truncated is True
     assert r.turns == 2
     assert len(r.tool_calls) == 2
-    assert r.text == "final"
+    assert r.text == ""
 
 
 def test_tool_loop_no_tools_falls_back_to_complete(client):
