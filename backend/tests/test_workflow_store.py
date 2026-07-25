@@ -1,8 +1,6 @@
-import pytest
-from porto_chatbot.workflow_store import WorkflowStore
+from porto_chatbot.agent.graph import STEPS
 from porto_chatbot.settings import Settings
-
-STEPS = ["retrieve", "understand", "identify", "generate", "evaluate"]
+from porto_chatbot.workflow_store import WorkflowStore
 
 
 def _store(tmp_path):
@@ -44,7 +42,7 @@ def test_list_filters(tmp_path):
     s = _store(tmp_path)
     w1 = s.create("s1", "p1", "prd", 6, {}, {})
     s.update_status(w1, "completed", current_step="evaluate")
-    w2 = s.create("s2", "p2", "prd", 6, {}, {})
+    s.create("s2", "p2", "prd", 6, {}, {})  # 第二个 workflow(返回值此处不用)
     rows, total = s.list_workflows()
     assert total == 2
     assert len(rows) == 2
@@ -108,3 +106,20 @@ def test_update_spec_missing_returns_false(tmp_path):
     assert s.update_spec(wid, "Nope", "x") is False  # name 不在 specs
     s.save_output(wid, "generate", {"specs": "not a dict"}, "ai")
     assert s.update_spec(wid, "Auth", "x") is False  # specs 非 dict
+
+
+def test_clear_outputs_after_uses_graph_steps(monkeypatch, tmp_path):
+    """F2: clear_outputs_after 的步序来自 agent.graph.STEPS(单一来源),非硬编码副本。
+
+    monkeypatch store 模块的 STEPS 后,clear_outputs_after 应跟随 —— 证明 order 引用
+    STEPS 而非自带常量。当前 store 硬编码 order 且无 STEPS 模块属性 → 此测试 RED。
+    """
+    import porto_chatbot.workflow_store as store_mod
+
+    s = _store(tmp_path)
+    wid = s.create("sess", "p", "prd", 6, {}, {})
+    for step in ("a", "b", "c"):
+        s.save_output(wid, step, {"x": 1}, "ai")
+    monkeypatch.setattr(store_mod, "STEPS", ["a", "b", "c"])
+    s.clear_outputs_after(wid, "a")  # 清 a 之后的 b/c
+    assert set(s.get_outputs(wid).keys()) == {"a"}

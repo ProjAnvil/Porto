@@ -39,6 +39,11 @@ _STEP_OUTPUT_KEYS: dict[str, list[str]] = {
     "evaluate": ["evaluation"],
 }
 
+#: F2: _STEP_OUTPUT_KEYS 的 keys 必须与 agent.graph.STEPS 一致(单一来源,防漂移)。
+assert list(_STEP_OUTPUT_KEYS) == STEPS, (
+    f"_STEP_OUTPUT_KEYS keys drift from STEPS: {list(_STEP_OUTPUT_KEYS)} != {STEPS}"
+)
+
 
 def _to_jsonable(value: Any) -> Any:
     """把 Pydantic 模型 / dict / list 递归转为 json.dumps 可序列化的值。"""

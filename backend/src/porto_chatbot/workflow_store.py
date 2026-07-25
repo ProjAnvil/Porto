@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from .agent.graph import STEPS
 from .logging_utils import get_component_logger
 from .settings import Settings
 
@@ -137,9 +138,8 @@ class WorkflowStore:
         return out
 
     def clear_outputs_after(self, workflow_id, step_name) -> None:
-        order = ["retrieve", "understand", "identify", "generate", "evaluate"]
-        keep_idx = order.index(step_name)
-        victims = order[keep_idx + 1:]
+        keep_idx = STEPS.index(step_name)
+        victims = STEPS[keep_idx + 1:]
         if not victims:
             return
         placeholders = ",".join("?" * len(victims))

@@ -348,3 +348,13 @@ def test_recover_completed_graph_marks_completed(tmp_path):
     row = store.get(wid)
     assert row["status"] == "completed"
     assert row["current_step"] == "evaluate"
+
+
+def test_step_output_keys_match_steps():
+    """F2: _STEP_OUTPUT_KEYS 的 keys 与 agent.graph.STEPS 单一来源一致(防漂移)。
+
+    executor 模块级 assert 也 always-on 保护此处;测试显式记录意图。
+    """
+    from porto_chatbot.workflow_executor import _STEP_OUTPUT_KEYS
+
+    assert list(_STEP_OUTPUT_KEYS.keys()) == STEPS
