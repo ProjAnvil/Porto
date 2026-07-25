@@ -253,6 +253,10 @@ class WorkflowExecutor:
             }
             if not out:
                 continue
+            # 附加 tool_meta(单步从 AgentStep.data;generate 聚合 any truncated)
+            tool_meta = self._tool_meta_for(step, values)
+            if tool_meta is not None:
+                out["tool_meta"] = tool_meta
             existing_step = existing.get(step)
             forced = step in overrides
             if not forced and existing_step and existing_step["output"] == out:
@@ -265,6 +269,30 @@ class WorkflowExecutor:
         last = completed[-1] if completed else None
         if last is not None:
             self.store.clear_outputs_after(workflow_id, last)
+
+    @staticmethod
+    def _tool_meta_for(step: str, values: dict) -> dict | None:
+        """单步:从 state.steps 找该步 AgentStep.data["tool_meta"]。
+        generate:spec_results 已自带 per-subsystem tool_meta(经 _to_jsonable 转 dict),
+        此处只返回 step 级聚合 {truncated: any} 供红 chip 判断。
+        """
+        if step == "generate":
+            spec_results = values.get("spec_results") or {}
+            # 生产态 spec_results 值为 SpecResult(_to_jsonable 后是 dict);
+            # 防御非 dict 值(如 trivial 测试图用 str 作 stand-in)跳过,不影响 any 聚合。
+            per: dict[str, dict] = {}
+            for name, r in spec_results.items():
+                jr = _to_jsonable(r)
+                if isinstance(jr, dict):
+                    per[name] = jr.get("tool_meta") or {}
+            truncated = any(tm.get("truncated") for tm in per.values())
+            return {"truncated": truncated}
+        steps = values.get("steps") or []
+        for st in reversed(steps):  # 取该 step 最新一条
+            data = getattr(st, "data", None) or (st.get("data") if isinstance(st, dict) else None)
+            if data and "tool_meta" in data:
+                return data["tool_meta"]
+        return None
 
     def _sync_status(self, workflow_id: str, config: dict) -> None:
         snap = self.graph.get_state(config)

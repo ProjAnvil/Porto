@@ -418,3 +418,61 @@ def test_update_spec_rejects_while_running(tmp_path):
 
     release.set()
     ex.wait(wid, timeout=5)
+
+
+# ---------------------------------------------------------------- Task 6: tool_meta 投影
+
+
+def test_project_state_attaches_tool_meta_single_step(tmp_path):
+    from unittest.mock import MagicMock
+
+    from porto_chatbot.models import AgentStep
+
+    store = WorkflowStore(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"))
+    wid = store.create("s", "p", "prd", 6, {}, {"agent_max_tool_turns": 10})
+    executor = WorkflowExecutor(
+        Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"), store, graph=MagicMock()
+    )
+    snap = MagicMock()
+    snap.values = {
+        "understanding": "报告",
+        "steps": [
+            AgentStep(
+                name="understand_prd",
+                status="completed",
+                data={"tool_meta": {"turns": 4, "truncated": True, "max_turns": 10}},
+            )
+        ],
+        "spec_results": {},
+    }
+    snap.next = ("identify",)
+    executor.graph.get_state = MagicMock(return_value=snap)
+    executor._project_state(wid, {"configurable": {"thread_id": wid}})
+    out = store.get_outputs(wid)["understand"]["output"]
+    assert out["understanding"] == "报告"
+    assert out["tool_meta"]["truncated"] is True
+    assert out["tool_meta"]["turns"] == 4
+
+
+def test_project_state_attaches_tool_meta_generate(tmp_path):
+    from unittest.mock import MagicMock
+
+    store = WorkflowStore(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"))
+    wid = store.create("s", "p", "prd", 6, {}, {"agent_max_tool_turns": 10})
+    executor = WorkflowExecutor(
+        Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"), store, graph=MagicMock()
+    )
+    snap = MagicMock()
+    snap.values = {
+        "specs": {"wallet": "s1", "proc": "s2"},
+        "spec_results": {
+            "wallet": {"final": "s1", "tool_meta": {"truncated": True}},
+            "proc": {"final": "s2", "tool_meta": {"truncated": False}},
+        },
+        "steps": [],
+    }
+    snap.next = ("evaluate",)
+    executor.graph.get_state = MagicMock(return_value=snap)
+    executor._project_state(wid, {"configurable": {"thread_id": wid}})
+    out = store.get_outputs(wid)["generate"]["output"]
+    assert out["tool_meta"]["truncated"] is True  # any
