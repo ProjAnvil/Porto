@@ -1,7 +1,7 @@
 # LangChain / LangGraph 迁移设计
 
 - **日期**:2026-07-24
-- **状态**:已与用户对齐,待 writing-plans 出实现计划
+- **状态**:**L1 + L2 已完成并合入 main**(L1 @ 6187a9b;L2 @ 58a21f3,2026-07-25)。**L3(spec refine 子图 + Send map-reduce)未做**,另开 plan(§7/§10 阶段 3)。§11 全部 spike 项已验证。
 - **范围**:backend `porto_chatbot` 的 LLM client 层 + agent/workflow 编排层
 - **不影响**:前端、API 契约、检索层(llama-index)
 
@@ -338,8 +338,8 @@ LLM mock 从 mock 原生 SDK 改为 langchain `FakeChatModel` 或自定义 `Base
 
 | # | 未决项 | 影响 | 退化方案 | 状态 |
 |---|---|---|---|---|
-| U1 | `Send` → 子图节点 → reducer 的 map-reduce 行为是否成立 | L3 根基 | 节点内 ThreadPool 跑子图 | 待 L3 spike |
-| U2 | sync graph 下 `Send` 多路并发是否真并行 | L3 性能 | 同上,ThreadPool 兜底 | 待 L3 spike |
+| U1 | `Send` → 子图节点 → reducer 的 map-reduce 行为是否成立 | L3 根基 | 节点内 ThreadPool 跑子图 | **✅ 原语已验证**(L1 spike `test_langgraph_spike.py`:Send 作条件边 + 子图与父图共享 reducer key → 汇聚成立);L3 落地直接用 |
+| U2 | sync graph 下 `Send` 多路并发是否真并行 | L3 性能 | 同上,ThreadPool 兜底 | **✅ 已验证**(L1 spike:sync Send 真并行,内部线程池重叠,不需 ThreadPoolExecutor);L3 用原生 Send |
 | U3 | `SqliteSaver` 在多 workflow 并发 daemon 线程下行为 | L2 持久化 | 自定义 checkpointer / 加串行化层 | **✅ 已验证(L2 落地)** |
 | U4 | `ChatOpenAI`/`ChatAnthropic` 对 provider 特定 PDF document block 的支持 | L1 `complete_document` | 该方法保留原生 SDK(D10) | **✅ 已验证(L1 落地,D10 fallback)** |
 
