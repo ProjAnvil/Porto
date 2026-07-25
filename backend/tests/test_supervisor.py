@@ -175,6 +175,47 @@ def test_rag_available_reflects_index_state(sample_settings):
         sup.stop()
 
 
+def test_supervisor_stop_joins_worker(sample_settings):
+    """F4: stop() 必须 join worker —— teardown 时后台 reindex 须结束,否则 worker
+    继续操作 collection(reset 重建),与下个测试的 collection 操作竞争 → chromadb
+    TOCTOU NotFoundError(test_list_and_delete ~20% flake)。
+
+    worker 卡在 build 时,stop() 应阻塞直到 worker 退出(而非立即返回)。
+    """
+    release = threading.Event()
+
+    class _BlockingStore:
+        def build(self, reset=True, progress_cb=None):
+            release.wait(timeout=5)
+            return IndexStats(kb_path="x", documents=0, chunks=0, embedding_provider="local")
+
+        def is_rag_ready(self):
+            return True
+
+    lock = DbLockStore(sample_settings)
+    sup = IndexSupervisor(
+        lock_store=lock,
+        store_factory=lambda s: _BlockingStore(),
+        settings_provider=lambda: sample_settings,
+    )
+    sup.start()
+    try:
+        sup.submit(sample_settings, source="test")
+        time.sleep(0.1)  # 等 worker 进入 build
+        stopper = threading.Thread(target=sup.stop, daemon=True)
+        stopper.start()
+        time.sleep(0.2)
+        # worker 仍卡在 build(release 未 set)→ stop 若 join 必仍阻塞
+        assert stopper.is_alive(), (
+            "stop() 未阻塞等待 worker —— 后台 reindex 会在 stop 返回后继续操作 collection"
+        )
+        release.set()
+        stopper.join(timeout=5)
+        assert not stopper.is_alive(), "stop() 在 worker 完成后仍未返回"
+    finally:
+        release.set()
+
+
 # ----------------------------- HealthMonitor ----------------------------- #
 
 

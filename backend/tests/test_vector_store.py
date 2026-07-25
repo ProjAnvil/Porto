@@ -78,3 +78,22 @@ def test_search_retrieval_methods(sample_settings):
 
     assert vec and bm and hy
     sample_settings.retrieval_method = "hybrid"  # 复位
+
+
+def test_stats_tolerates_concurrent_collection_drop(monkeypatch, sample_settings):
+    """F4: GET /api/kb/stats 与 reindex reset(_reset_collection delete collection)
+    竞争时,stats/ensure_index 的 collection.count() 可能 NotFoundError。应 tolerate
+    返 chunks=0,不冒 500(test_list_and_delete ~20% flake 的 TOCTOU 根因)。"""
+    from chromadb.errors import NotFoundError
+
+    store = LocalVectorStore(sample_settings)
+
+    class _DroppedCollection:
+        """模拟 collection 被 reindex reset 删除:count() NotFoundError。"""
+
+        def count(self, read_level=None):
+            raise NotFoundError("Collection dropped by concurrent reset")
+
+    monkeypatch.setattr(store, "_compatible_collection", lambda: _DroppedCollection())
+    assert store.stats().chunks == 0
+    assert store.ensure_index().chunks == 0

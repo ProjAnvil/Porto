@@ -158,14 +158,19 @@ class ChromaVectorStore:
 
     def stats(self) -> IndexStats:
         collection = self._compatible_collection()
+        try:
+            dims = self._collection_embedding_dimensions(collection)
+        except Exception:
+            # collection 可能被 reindex reset 删除(TOCTOU),dims 不可读时降级 None
+            dims = None
         stats = IndexStats(
             kb_path=str(self.settings.kb_path),
             documents=len(iter_documents(self.settings.kb_dirs)),
-            chunks=collection.count(),
+            chunks=self._safe_count(collection),
             backend="chroma",
             embedding_provider=self.settings.embedding_provider,
             embedding_model=self.settings.embedding_model,
-            embedding_dimensions=self._collection_embedding_dimensions(collection),
+            embedding_dimensions=dims,
             chunk_size=self.settings.max_chunk_chars,
             chunk_overlap=self.settings.chunk_overlap,
         )
@@ -174,7 +179,7 @@ class ChromaVectorStore:
 
     def search(self, query: str, top_k: int | None = None) -> list[SourceChunk]:
         collection = self._compatible_collection()
-        if not self._is_collection_compatible(collection) or collection.count() == 0:
+        if not self._is_collection_compatible(collection) or self._safe_count(collection) == 0:
             self.logger.info("search skipped index unavailable query_chars=%s", len(query))
             return []
         resolved_top_k = top_k or self.settings.top_k
@@ -271,10 +276,11 @@ class ChromaVectorStore:
     def ensure_index(self) -> IndexStats:
         """只读：返回当前索引统计；**不触发 build**。重建由 IndexSupervisor 统一调度。"""
         collection = self._compatible_collection()
-        if collection.count() == 0:
+        count = self._safe_count(collection)
+        if count == 0:
             self.logger.info("ensure index empty (no build triggered)")
         else:
-            self.logger.info("ensure index existing count=%s", collection.count())
+            self.logger.info("ensure index existing count=%s", count)
         return self.stats()
 
     def _add_batch(self, collection, ids: list[str], texts: list[str], metadata: list[dict[str, Any]]):
@@ -305,6 +311,20 @@ class ChromaVectorStore:
             self.settings.vector_collection,
             metadata=self._expected_collection_metadata(),
         )
+
+    def _safe_count(self, collection) -> int:
+        """collection.count() with TOCTOU tolerate。
+
+        reindex 的 _reset_collection 会 delete_collection；与之并发的 stats/search
+        路径(GET /api/kb/stats、retrieve)在 get_or_create 拿到 collection 引用后、
+        count() 前 collection 被删 → chromadb NotFoundError。视为 0(collection 正重建),
+        避免 reindex 进行中读路径 500。F4。
+        """
+        try:
+            return collection.count()
+        except Exception:
+            self.logger.info("collection count failed (likely concurrent reset) -> 0")
+            return 0
 
     def is_rag_ready(self) -> bool:
         """索引是否可用于检索：collection 存在、元数据兼容、非空；含 bm25 时还要求 BM25 就绪。"""

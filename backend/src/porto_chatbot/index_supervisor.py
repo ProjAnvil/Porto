@@ -60,6 +60,12 @@ class IndexSupervisor:
         self._stop.set()
         with self._cv:
             self._cv.notify_all()
+        # F4: join worker —— teardown 时后台 reindex 必须结束,否则 worker 继续操作
+        # collection(reset 重建),与下个测试的 collection 操作竞争 → chromadb TOCTOU
+        # NotFoundError(test_list_and_delete ~20% flake)。
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=10.0)
         logger.info("index supervisor stop requested")
 
     # ---------------- 提交 ----------------
