@@ -2,6 +2,7 @@
 
 这些函数不依赖 LLM，是 understand/identify 节点降级路径与 LLM 输出校验的基础。
 """
+
 from __future__ import annotations
 
 import re
@@ -27,7 +28,9 @@ def extract_bullets(text: str, keywords: list[str]) -> list[str]:
 
 
 def extract_entities(text: str) -> list[str]:
-    candidates = re.findall(r"[一-鿿A-Za-z]{2,}(?:用户|订单|支付|账户|商品|通知|规则|任务|报表|服务|系统|记录)", text)
+    candidates = re.findall(
+        r"[一-鿿A-Za-z]{2,}(?:用户|订单|支付|账户|商品|通知|规则|任务|报表|服务|系统|记录)", text
+    )
     seen: list[str] = []
     for item in candidates:
         if item not in seen:

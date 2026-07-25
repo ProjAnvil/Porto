@@ -25,11 +25,7 @@ def generate_specs(state, *, config):
         return generate_spec_with_loop(sub_ctx, sub)
 
     results: dict[str, SpecResult] = {}
-    parallel = (
-        agent.llm.enabled
-        and agent.settings.spec_refine_enabled
-        and len(subs) > 1
-    )
+    parallel = agent.llm.enabled and agent.settings.spec_refine_enabled and len(subs) > 1
     if parallel:
         from concurrent.futures import ThreadPoolExecutor
 

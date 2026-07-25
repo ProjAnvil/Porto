@@ -66,6 +66,7 @@ def test_list_pagination_and_date(tmp_path):
     assert rows[0]["created_at"] >= rows2[0]["created_at"]
     # date 过滤：今天创建的
     from datetime import UTC, datetime
+
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     rows, total = s.list_workflows(date=today, limit=20, offset=0)
     assert total == 5

@@ -11,7 +11,6 @@ from porto_chatbot.locking import RAG_INDEX_LOCK, DbLockStore
 from porto_chatbot.models import IndexStats
 from porto_chatbot.vector_store import LocalVectorStore
 
-
 # ----------------------------- DbLockStore 状态机 ----------------------------- #
 
 

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import UTC, datetime
-from typing import Callable
 
+import ollama
 from anthropic import Anthropic
 from openai import OpenAI
-import ollama
 
 from .logging_utils import get_component_logger
 from .models import (

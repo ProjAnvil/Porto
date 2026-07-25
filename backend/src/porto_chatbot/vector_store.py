@@ -4,7 +4,8 @@ import hashlib
 import math
 import shutil
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import chromadb
 
@@ -113,7 +114,9 @@ class ChromaVectorStore:
                 overlap=self.settings.chunk_overlap,
             )
             for i, chunk in enumerate(chunks):
-                chunk_id = hashlib.sha1(f"{display_path}:{i}:{chunk.text[:120]}".encode()).hexdigest()
+                chunk_id = hashlib.sha1(
+                    f"{display_path}:{i}:{chunk.text[:120]}".encode()
+                ).hexdigest()
                 batch_ids.append(chunk_id)
                 batch_texts.append(chunk.text)
                 metadata = {
@@ -255,7 +258,9 @@ class ChromaVectorStore:
             rows.append(self._to_source(cid, text, metadata, 0.0))
         return rows
 
-    def _hybrid_search(self, collection, query_embedding, query: str, top_k: int) -> list[SourceChunk]:
+    def _hybrid_search(
+        self, collection, query_embedding, query: str, top_k: int
+    ) -> list[SourceChunk]:
         bm = Bm25Registry.get(self.settings)
         nodes = hybrid_fusion_search(
             collection=collection,
@@ -283,7 +288,9 @@ class ChromaVectorStore:
             self.logger.info("ensure index existing count=%s", count)
         return self.stats()
 
-    def _add_batch(self, collection, ids: list[str], texts: list[str], metadata: list[dict[str, Any]]):
+    def _add_batch(
+        self, collection, ids: list[str], texts: list[str], metadata: list[dict[str, Any]]
+    ):
         self.logger.info("embedding and adding batch size=%s", len(ids))
         embeddings = self.embeddings.embed_documents(texts)
         if embeddings:
@@ -389,4 +396,6 @@ class LocalVectorStore(ChromaVectorStore):
 def clear_vector_data(settings: Settings) -> None:
     if settings.chroma_dir.exists():
         shutil.rmtree(settings.chroma_dir)
-        get_component_logger("vector_store", settings).info("vector data cleared dir=%s", settings.chroma_dir)
+        get_component_logger("vector_store", settings).info(
+            "vector data cleared dir=%s", settings.chroma_dir
+        )

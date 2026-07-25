@@ -12,7 +12,13 @@ from ...llm import LLMClient, format_sources
 from ...logging_utils import get_component_logger
 from ...memory import get_compacted_history
 from ...models import ChatRequest, ChatResponse, EvalCase
-from ..deps import apply_rag_settings, effective_rag_settings, get_index_supervisor, get_memory, get_store
+from ..deps import (
+    apply_rag_settings,
+    effective_rag_settings,
+    get_index_supervisor,
+    get_memory,
+    get_store,
+)
 from ..sse import _ai_sdk_sse, _chat_request_from_stream_body, _text_chunks
 
 logger = get_component_logger("api")

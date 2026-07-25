@@ -56,6 +56,7 @@ def test_list_sessions_date_filter(sample_settings):
 def test_list_sessions_date_filter_uses_last_at(sample_settings):
     """spec: date 过滤 last_at 所在日期。多日期 session 按非最后日期不应匹配。"""
     import sqlite3
+
     from porto_chatbot.memory.store import MemoryStore
     s = MemoryStore(sample_settings)
     r1 = s.add(session_id="s1", role="user", content="day1 msg")

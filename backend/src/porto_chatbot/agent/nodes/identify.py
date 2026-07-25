@@ -35,7 +35,9 @@ def identify_subsystems(state, *, config):
         )
     if not subsystems:
         subsystems = _fallback_identify(state)
-        agent.logger.info("step identify_subsystems used fallback workflow_id=%s", state["workflow_id"])
+        agent.logger.info(
+            "step identify_subsystems used fallback workflow_id=%s", state["workflow_id"]
+        )
     return {
         "subsystems": subsystems,
         "current_step": "identify",
@@ -56,7 +58,9 @@ def _fallback_identify(state: PortoAgentState) -> list[Subsystem]:
     for domain, matches in domains.items():
         name = f"{domain}-service"
         sources_text = " ".join(s.text for s in state.get("sources", []))
-        subsystem_type = "extend" if domain in sources_text.lower() or name in sources_text.lower() else "new"
+        subsystem_type = (
+            "extend" if domain in sources_text.lower() or name in sources_text.lower() else "new"
+        )
         subsystems.append(
             Subsystem(
                 name=name,

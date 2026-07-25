@@ -27,7 +27,9 @@ def understand_prd(state, *, config):
         )
     if not understanding:
         understanding = _fallback_understanding(state)
-        agent.logger.info("step understand_prd used fallback workflow_id=%s", state.get("workflow_id"))
+        agent.logger.info(
+            "step understand_prd used fallback workflow_id=%s", state.get("workflow_id")
+        )
     return {
         "understanding": understanding,
         "current_step": "understand",
@@ -56,6 +58,9 @@ def _fallback_understanding(state: PortoAgentState) -> str:
             *(f"- {e}" for e in entities[:12]),
             "",
             "## 4. 子系统线索",
-            *(f"- {name}-service: {', '.join(hints[:3])}" for name, hints in matched_domains(text).items()),
+            *(
+                f"- {name}-service: {', '.join(hints[:3])}"
+                for name, hints in matched_domains(text).items()
+            ),
         ]
     )

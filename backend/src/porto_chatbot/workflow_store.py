@@ -58,7 +58,9 @@ class WorkflowStore:
                 )"""
             )
 
-    def create(self, session_id, project_name, prd_text, top_k, rag_snapshot, agent_snapshot) -> str:
+    def create(
+        self, session_id, project_name, prd_text, top_k, rag_snapshot, agent_snapshot
+    ) -> str:
         wid = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
         with self._conn() as conn:
@@ -68,10 +70,20 @@ class WorkflowStore:
                     rag_snapshot, agent_snapshot, status, current_step, error,
                     created_at, updated_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (wid, session_id, project_name, prd_text, top_k,
-                 json.dumps(rag_snapshot, ensure_ascii=False),
-                 json.dumps(agent_snapshot, ensure_ascii=False),
-                 "created", None, None, now, now),
+                (
+                    wid,
+                    session_id,
+                    project_name,
+                    prd_text,
+                    top_k,
+                    json.dumps(rag_snapshot, ensure_ascii=False),
+                    json.dumps(agent_snapshot, ensure_ascii=False),
+                    "created",
+                    None,
+                    None,
+                    now,
+                    now,
+                ),
             )
         logger.info("workflow created workflow_id=%s", wid)
         return wid
@@ -104,9 +116,7 @@ class WorkflowStore:
             params.append(date)
         where_sql = " WHERE " + " AND ".join(where) if where else ""
         with self._conn() as conn:
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM workflows{where_sql}", params
-            ).fetchone()[0]
+            total = conn.execute(f"SELECT COUNT(*) FROM workflows{where_sql}", params).fetchone()[0]
             rows = conn.execute(
                 f"SELECT * FROM workflows{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
@@ -139,7 +149,7 @@ class WorkflowStore:
 
     def clear_outputs_after(self, workflow_id, step_name) -> None:
         keep_idx = STEPS.index(step_name)
-        victims = STEPS[keep_idx + 1:]
+        victims = STEPS[keep_idx + 1 :]
         if not victims:
             return
         placeholders = ",".join("?" * len(victims))
@@ -158,8 +168,7 @@ class WorkflowStore:
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT output FROM workflow_outputs"
-                " WHERE workflow_id=? AND step_name='generate'",
+                "SELECT output FROM workflow_outputs WHERE workflow_id=? AND step_name='generate'",
                 (workflow_id,),
             ).fetchone()
             if row is None:
@@ -170,8 +179,7 @@ class WorkflowStore:
                 return False
             specs[name] = body
             conn.execute(
-                "UPDATE workflow_outputs SET output=?"
-                " WHERE workflow_id=? AND step_name='generate'",
+                "UPDATE workflow_outputs SET output=? WHERE workflow_id=? AND step_name='generate'",
                 (json.dumps(output, ensure_ascii=False), workflow_id),
             )
         return True
@@ -182,7 +190,9 @@ class WorkflowStore:
             row = conn.execute(
                 "SELECT current_step FROM workflows WHERE workflow_id=?", (workflow_id,)
             ).fetchone()
-            cur = current_step if current_step is not None else (row["current_step"] if row else None)
+            cur = (
+                current_step if current_step is not None else (row["current_step"] if row else None)
+            )
             conn.execute(
                 """UPDATE workflows SET status=?, current_step=?, error=?, updated_at=?
                    WHERE workflow_id=?""",

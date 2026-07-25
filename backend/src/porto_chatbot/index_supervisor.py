@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from .locking import RAG_INDEX_LOCK, DbLockStore
 from .logging_utils import get_component_logger
@@ -50,9 +50,7 @@ class IndexSupervisor:
     def start(self) -> None:
         """启动 worker。先清理上次崩溃残留（不重建），再起 daemon 线程。"""
         self._lock_store.mark_interrupted(RAG_INDEX_LOCK, error="interrupted by restart")
-        self._thread = threading.Thread(
-            target=self._run, name="index-supervisor", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="index-supervisor", daemon=True)
         self._thread.start()
         logger.info("index supervisor started")
 

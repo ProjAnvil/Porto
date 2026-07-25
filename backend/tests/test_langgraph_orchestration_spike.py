@@ -2,6 +2,7 @@
 
 结论见 plan §Spike Conclusions。这些行为是 Task 3–5(graph + executor)的实现依据。
 """
+
 from __future__ import annotations
 
 import operator
@@ -62,14 +63,14 @@ def test_interrupt_then_resume_and_pydantic_roundtrip(tmp_path):
 
     graph.invoke({"widgets": [], "specs": {}}, cfg)
     st = graph.get_state(cfg)
-    assert list(st.next) == ["b"]                      # 暂停在 a 之后
+    assert list(st.next) == ["b"]  # 暂停在 a 之后
     assert st.values["current_step"] == "a"
     assert [type(w).__name__ for w in st.values["widgets"]] == ["_Widget"]
 
-    list(graph.stream(None, cfg))                      # 续跑 a 之后 → b → END
+    list(graph.stream(None, cfg))  # 续跑 a 之后 → b → END
     st2 = graph.get_state(cfg)
-    assert list(st2.next) == []                        # 到 END
-    assert consumed["type"] == "_Widget"               # Pydantic 过 checkpoint 往返成功
+    assert list(st2.next) == []  # 到 END
+    assert consumed["type"] == "_Widget"  # Pydantic 过 checkpoint 往返成功
     assert consumed["name"] == "a"
     assert st2.values["specs"] == {"x": "b"}
 
@@ -82,6 +83,7 @@ def test_update_state_rewinds_and_reruns_downstream(tmp_path):
         def fn(state):
             order.append(name)
             return {"current_step": name}
+
         return fn
 
     g = StateGraph(_S)
@@ -94,21 +96,21 @@ def test_update_state_rewinds_and_reruns_downstream(tmp_path):
     graph = g.compile(checkpointer=_saver(tmp_path), interrupt_after=["a", "b"])
     cfg = {"configurable": {"thread_id": "t2"}}
 
-    graph.invoke({}, cfg)                              # 跑 a,停在 a 后
+    graph.invoke({}, cfg)  # 跑 a,停在 a 后
     assert order == ["a"]
-    list(graph.stream(None, cfg))                      # 跑 b,停在 b 后
+    list(graph.stream(None, cfg))  # 跑 b,停在 b 后
     assert order == ["a", "b"]
 
     graph.update_state(cfg, {"current_step": "a"}, as_node="a")  # 回退到 a 之后
     assert list(graph.get_state(cfg).next) == ["b"]
     order.clear()
-    list(graph.stream(None, cfg))                      # 必须重跑 b(下游重算)
+    list(graph.stream(None, cfg))  # 必须重跑 b(下游重算)
     assert order == ["b"], f"回退后应重跑 b,实际 {order}"
 
 
 # ---- ④ configurable 注入 agent(节点从 config 取对象)----
 def test_configurable_agent_injection(tmp_path):
-    def node(state, *, config):                        # langgraph 1.x: (state, config)
+    def node(state, *, config):  # langgraph 1.x: (state, config)
         return {"seen_agent": config["configurable"]["agent"]}
 
     g = StateGraph(_S)
@@ -125,11 +127,12 @@ def test_configurable_agent_injection(tmp_path):
 def test_shared_saver_concurrent_threads(tmp_path):
     def node(state):
         return {"specs": {"k": "v"}}
+
     g = StateGraph(_S)
     g.add_node("n", node)
     g.add_edge(START, "n")
     g.add_edge("n", END)
-    saver = _saver(tmp_path)                           # 单 saver,多 thread_id
+    saver = _saver(tmp_path)  # 单 saver,多 thread_id
     graph = g.compile(checkpointer=saver)
 
     errors: list[BaseException] = []

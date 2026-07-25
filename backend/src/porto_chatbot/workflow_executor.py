@@ -222,7 +222,7 @@ class WorkflowExecutor:
         snap = self.graph.get_state(config)
         nxt = list(snap.next or [])
         if not nxt:
-            return list(STEPS)                       # 到 END,全部完成
+            return list(STEPS)  # 到 END,全部完成
         first = nxt[0]
         end_idx = STEPS.index(first) - 1 if first in STEPS else len(STEPS) - 1
         return STEPS[: end_idx + 1] if end_idx >= 0 else []
@@ -249,9 +249,7 @@ class WorkflowExecutor:
         overrides = produced_by_overrides or {}
         for step in completed:
             out = {
-                k: _to_jsonable(values[k])
-                for k in _STEP_OUTPUT_KEYS.get(step, [])
-                if k in values
+                k: _to_jsonable(values[k]) for k in _STEP_OUTPUT_KEYS.get(step, []) if k in values
             }
             if not out:
                 continue
@@ -271,9 +269,7 @@ class WorkflowExecutor:
     def _sync_status(self, workflow_id: str, config: dict) -> None:
         snap = self.graph.get_state(config)
         status = "completed" if not snap.next else "awaiting_input"
-        self.store.update_status(
-            workflow_id, status, current_step=snap.values.get("current_step")
-        )
+        self.store.update_status(workflow_id, status, current_step=snap.values.get("current_step"))
 
     # ----------------------------------------------------- PUT / PATCH / recovery
 
@@ -316,7 +312,9 @@ class WorkflowExecutor:
                 self.graph.update_state(config, {"specs": {name: body}})
             except Exception:
                 # 无 checkpoint 或 graph 不可写:审计已落 store,graph 同步跳过
-                logger.warning("update_spec graph sync skipped workflow_id=%s", workflow_id, exc_info=True)
+                logger.warning(
+                    "update_spec graph sync skipped workflow_id=%s", workflow_id, exc_info=True
+                )
             return True
         finally:
             guard.release()
@@ -349,9 +347,7 @@ class WorkflowExecutor:
             try:
                 snap = self.graph.get_state(config)
             except Exception:
-                logger.warning(
-                    "recover get_state failed workflow_id=%s", wid, exc_info=True
-                )
+                logger.warning("recover get_state failed workflow_id=%s", wid, exc_info=True)
                 snap = None
             has_checkpoint = bool(snap and snap.values)
             if status == "awaiting_input" and has_checkpoint and snap.next:

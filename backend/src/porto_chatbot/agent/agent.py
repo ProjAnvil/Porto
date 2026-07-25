@@ -70,6 +70,4 @@ class PortoAgent:
         节点把它 spread 进自己的返回值(steps 走 ``operator.add`` reducer 追加)。
         """
         self.logger.info("step completed name=%s summary=%s", name, summary)
-        return {
-            "steps": [AgentStep(name=name, status="completed", summary=summary, data=data)]
-        }
+        return {"steps": [AgentStep(name=name, status="completed", summary=summary, data=data)]}

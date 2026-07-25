@@ -3,6 +3,7 @@
 测试用 trivial graph(stand-in 节点 + 临时 SqliteSaver)注入 executor,验证:
 start/advance/failed/并发 guard/投影保 produced_by。不跑真节点逻辑。
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -20,6 +21,7 @@ from porto_chatbot.workflow_store import WorkflowStore
 def _saver(tmp_path):
     conn = sqlite3.connect(str(tmp_path / "ex.sqlite3"), check_same_thread=False)
     from langgraph.checkpoint.sqlite import SqliteSaver
+
     sv = SqliteSaver(conn)
     sv.setup()
     return sv
@@ -54,6 +56,7 @@ def _trivial_graph(tmp_path, *, fail_on=None, slow_step=None, slow_event=None):
             if fail_on and name == fail_on:
                 raise RuntimeError("boom")
             return {**_OUT_VALS[name], "current_step": name}
+
         return fn
 
     g = StateGraph(PortoAgentState)
@@ -63,8 +66,9 @@ def _trivial_graph(tmp_path, *, fail_on=None, slow_step=None, slow_event=None):
     for a, b in zip(STEPS, STEPS[1:], strict=False):
         g.add_edge(a, b)
     g.add_edge(STEPS[-1], END)
-    return g.compile(checkpointer=_saver(tmp_path),
-                     interrupt_after=["understand", "identify", "generate"])
+    return g.compile(
+        checkpointer=_saver(tmp_path), interrupt_after=["understand", "identify", "generate"]
+    )
 
 
 def _make(tmp_path, **kw):
@@ -75,8 +79,9 @@ def _make(tmp_path, **kw):
 
 
 def _create(store):
-    return store.create("s", "p", "prd", 6, {"embedding_provider": "local"},
-                        {"agent_provider": "openai"})
+    return store.create(
+        "s", "p", "prd", 6, {"embedding_provider": "local"}, {"agent_provider": "openai"}
+    )
 
 
 def test_start_runs_to_understand_checkpoint(tmp_path):
@@ -120,15 +125,16 @@ def test_advance_returns_false_when_running(tmp_path):
     settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
     store = WorkflowStore(settings)
     ex = WorkflowExecutor(
-        settings, store,
+        settings,
+        store,
         _trivial_graph(tmp_path, slow_step="identify", slow_event=(enter, release)),
     )
     wid = _create(store)
     ex.start_workflow(wid)
-    ex.wait(wid, timeout=5)   # 停 understand;identify 未触发,不阻塞
-    assert ex.advance(wid) is True                     # worker 进 identify → 阻塞、持 guard
+    ex.wait(wid, timeout=5)  # 停 understand;identify 未触发,不阻塞
+    assert ex.advance(wid) is True  # worker 进 identify → 阻塞、持 guard
     assert enter.wait(timeout=2.0)
-    assert ex.advance(wid) is False                    # guard 被持 → 409 语义
+    assert ex.advance(wid) is False  # guard 被持 → 409 语义
     release.set()
     ex.wait(wid, timeout=5)
 
@@ -153,14 +159,14 @@ def test_persist_preserves_user_produced_by(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
     ex.start_workflow(wid)
-    ex.wait(wid, timeout=5)          # 停 understand
+    ex.wait(wid, timeout=5)  # 停 understand
     store.save_output(wid, "understand", {"understanding": "user-edited"}, "user")
 
     assert ex.advance(wid) is True
-    ex.wait(wid, timeout=5)                                   # → identify
+    ex.wait(wid, timeout=5)  # → identify
 
     outs = store.get_outputs(wid)
-    assert outs["understand"]["produced_by"] == "user"        # 未被覆盖为 ai
+    assert outs["understand"]["produced_by"] == "user"  # 未被覆盖为 ai
     assert outs["identify"]["produced_by"] == "ai"
 
 
@@ -171,18 +177,19 @@ def test_two_rapid_advances_first_wins(tmp_path):
     settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
     store = WorkflowStore(settings)
     ex = WorkflowExecutor(
-        settings, store,
+        settings,
+        store,
         _trivial_graph(tmp_path, slow_step="identify", slow_event=(enter, release)),
     )
     wid = _create(store)
     ex.start_workflow(wid)
-    ex.wait(wid, timeout=5)          # 停 understand,guard 空闲
+    ex.wait(wid, timeout=5)  # 停 understand,guard 空闲
 
     r1 = ex.advance(wid)
-    assert r1 is True                                         # advance 自己拿 guard 起 worker
-    assert enter.wait(timeout=2.0)                            # worker 已进 identify、持 guard
+    assert r1 is True  # advance 自己拿 guard 起 worker
+    assert enter.wait(timeout=2.0)  # worker 已进 identify、持 guard
     r2 = ex.advance(wid)
-    assert r2 is False                                        # guard 被持
+    assert r2 is False  # guard 被持
     release.set()
     ex.wait(wid, timeout=5)
     assert store.get(wid)["current_step"] == "identify"
@@ -194,9 +201,9 @@ def test_two_rapid_advances_first_wins(tmp_path):
 def test_update_step_rewinds_and_marks_user(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
-    ex.start_workflow(wid)                  # understand
+    ex.start_workflow(wid)  # understand
     ex.wait(wid, timeout=5)
-    ex.advance(wid)                         # identify
+    ex.advance(wid)  # identify
     ex.wait(wid, timeout=5)
     assert "identify" in store.get_outputs(wid)
 
@@ -207,7 +214,7 @@ def test_update_step_rewinds_and_marks_user(tmp_path):
     outs = store.get_outputs(wid)
     assert outs["understand"]["produced_by"] == "user"
     assert outs["understand"]["output"]["understanding"] == "edited"
-    assert "identify" not in outs                           # 下游被清
+    assert "identify" not in outs  # 下游被清
 
 
 def test_update_step_then_advance_preserves_user_edit(tmp_path):
@@ -220,9 +227,9 @@ def test_update_step_then_advance_preserves_user_edit(tmp_path):
     """
     ex, store = _make(tmp_path)
     wid = _create(store)
-    ex.start_workflow(wid)                  # 停 understand(原始 "understand-val")
+    ex.start_workflow(wid)  # 停 understand(原始 "understand-val")
     ex.wait(wid, timeout=5)
-    ex.advance(wid)                         # → identify(原始 "identify-val")
+    ex.advance(wid)  # → identify(原始 "identify-val")
     ex.wait(wid, timeout=5)
 
     # 用户编辑 understand(覆盖原始 "understand-val" → "user-edited")
@@ -240,8 +247,8 @@ def test_update_step_then_advance_preserves_user_edit(tmp_path):
     assert outs["understand"]["output"]["understanding"] == "user-edited", (
         "user-edited content lost after advance!"
     )
-    assert outs["understand"]["produced_by"] == "user"     # 审计字段也保留
-    assert "identify" in outs                              # identify 重跑后回来
+    assert outs["understand"]["produced_by"] == "user"  # 审计字段也保留
+    assert "identify" in outs  # identify 重跑后回来
 
 
 def test_update_spec_updates_store_and_graph(tmp_path):
@@ -255,10 +262,10 @@ def test_update_spec_updates_store_and_graph(tmp_path):
         ex.wait(wid, timeout=5)
     assert store.get(wid)["current_step"] == "generate"
 
-    ok = ex.update_spec(wid, "default", "new body")          # 改 specs 里的 "default" key
+    ok = ex.update_spec(wid, "default", "new body")  # 改 specs 里的 "default" key
     assert ok is True
     outs = store.get_outputs(wid)
-    assert outs["generate"]["produced_by"] == "ai"           # 审计不动
+    assert outs["generate"]["produced_by"] == "ai"  # 审计不动
     assert outs["generate"]["output"]["specs"]["default"] == "new body"
     # graph state 已 dict-merge(specs 是 dict-merge reducer)
     cfg = {"configurable": {"thread_id": wid}}
@@ -268,18 +275,18 @@ def test_update_spec_updates_store_and_graph(tmp_path):
 def test_update_spec_missing_returns_false(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
-    assert ex.update_spec(wid, "nope", "x") is False        # 无 generate output
+    assert ex.update_spec(wid, "nope", "x") is False  # 无 generate output
 
 
 def test_recover_at_interrupt_marks_awaiting(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
-    ex.start_workflow(wid)                 # understand(checkpoint 在)
+    ex.start_workflow(wid)  # understand(checkpoint 在)
     ex.wait(wid, timeout=5)
-    store.update_status(wid, "running")                     # 模拟崩溃时 status=running
+    store.update_status(wid, "running")  # 模拟崩溃时 status=running
     n = ex.recover_on_startup()
     assert n == 1
-    assert store.get(wid)["status"] == "awaiting_input"     # checkpoint 在 interrupt → 可续
+    assert store.get(wid)["status"] == "awaiting_input"  # checkpoint 在 interrupt → 可续
 
 
 def test_recover_no_checkpoint_marks_interrupted(tmp_path):
@@ -290,7 +297,7 @@ def test_recover_no_checkpoint_marks_interrupted(tmp_path):
     assert n == 1
     row = store.get(wid)
     assert row["status"] == "interrupted"
-    assert row["current_step"] == "understand"              # 无 checkpoint → 保既有
+    assert row["current_step"] == "understand"  # 无 checkpoint → 保既有
 
 
 def test_recover_awaiting_input_without_checkpoint_marks_interrupted(tmp_path):
@@ -305,8 +312,8 @@ def test_recover_awaiting_input_without_checkpoint_marks_interrupted(tmp_path):
     n = ex.recover_on_startup()
     assert n == 1
     row = store.get(wid)
-    assert row["status"] == "interrupted"                   # 提示用户无法简单续跑
-    assert row["current_step"] == "understand"              # 保既有
+    assert row["status"] == "interrupted"  # 提示用户无法简单续跑
+    assert row["current_step"] == "understand"  # 保既有
 
 
 def test_recover_awaiting_input_with_checkpoint_left_untouched(tmp_path):
@@ -316,14 +323,14 @@ def test_recover_awaiting_input_with_checkpoint_left_untouched(tmp_path):
     """
     ex, store = _make(tmp_path)
     wid = _create(store)
-    ex.start_workflow(wid)                                  # 停 understand,checkpoint 在
+    ex.start_workflow(wid)  # 停 understand,checkpoint 在
     ex.wait(wid, timeout=5)
     assert store.get(wid)["status"] == "awaiting_input"
 
     n = ex.recover_on_startup()
     assert n == 1
     row = store.get(wid)
-    assert row["status"] == "awaiting_input"                # 未被触碰
+    assert row["status"] == "awaiting_input"  # 未被触碰
     assert row["current_step"] == "understand"
 
 

@@ -13,13 +13,13 @@ def test_startup_marks_running_interrupted(monkeypatch, sample_settings):
     monkeypatch.setattr(main, "settings", sample_settings)
 
     # Phase 1: create a workflow and manually set it to running
-    with TestClient(main.app) as client:
+    with TestClient(main.app):
         store = get_workflow_store()
         wid = store.create("s", "p", "prd", 6, {}, {})
         store.update_status(wid, "running", current_step="understand")
 
     # Phase 2: restart app (new lifespan) — should recover running→interrupted
-    with TestClient(main.app) as client:
+    with TestClient(main.app):
         store = get_workflow_store()
         row = store.get(wid)
         assert row["status"] == "interrupted"
