@@ -124,3 +124,22 @@ def test_clear_outputs_after_uses_graph_steps(monkeypatch, tmp_path):
     monkeypatch.setattr(store_mod, "STEPS", ["a", "b", "c"])
     s.clear_outputs_after(wid, "a")  # 清 a 之后的 b/c
     assert set(s.get_outputs(wid).keys()) == {"a"}
+
+
+# ---------------------------------------------------------------- Task 7: update_agent_snapshot
+
+
+def test_update_agent_snapshot_merges(tmp_path):
+    s = _store(tmp_path)
+    wid = s.create("sess", "proj", "prd", 6, {"r": 1}, {"agent_max_tool_turns": 10, "other": 1})
+    ok = s.update_agent_snapshot(wid, {"agent_max_tool_turns": 15})
+    assert ok is True
+    import json
+    snap = json.loads(s.get(wid)["agent_snapshot"])
+    assert snap["agent_max_tool_turns"] == 15
+    assert snap["other"] == 1  # 未给的键保留
+
+
+def test_update_agent_snapshot_missing_returns_false(tmp_path):
+    s = _store(tmp_path)
+    assert s.update_agent_snapshot("nope", {"x": 1}) is False

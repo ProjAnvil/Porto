@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from typing import Any
@@ -352,6 +353,66 @@ class WorkflowExecutor:
             return True
         finally:
             guard.release()
+
+    # --------------------------------------------------------------- rerun
+
+    def _next_max_turns(self, workflow_id: str) -> int:
+        """ceil(current × 1.5),cap 到 tool_turn_hard_cap。"""
+        row = self.store.get(workflow_id)
+        snap = json.loads(row["agent_snapshot"])
+        cur = int(snap.get("agent_max_tool_turns") or self.settings.agent_max_tool_turns)
+        return min(math.ceil(cur * 1.5), self.settings.tool_turn_hard_cap)
+
+    def _apply_new_max(self, workflow_id: str, new_max: int) -> None:
+        self.store.update_agent_snapshot(workflow_id, {"agent_max_tool_turns": new_max})
+
+    def rerun_step(self, workflow_id: str, step: str) -> None:
+        """手动整步重跑:turn ×1.5 cap hard_cap;绕过 graph 直接调节点函数。
+
+        撞顶(current >= cap)或正在 running → raise WorkflowRunning(路由→409)。
+        """
+        guard = self._guard(workflow_id)
+        if not guard.acquire(blocking=False):
+            raise WorkflowRunning(workflow_id)
+        row = self.store.get(workflow_id)
+        if row is None:
+            guard.release()
+            raise RuntimeError(f"workflow {workflow_id} not found")
+        cur = int((json.loads(row["agent_snapshot"])).get("agent_max_tool_turns")
+                  or self.settings.agent_max_tool_turns)
+        if cur >= self.settings.tool_turn_hard_cap:
+            guard.release()
+            raise WorkflowRunning(workflow_id)  # 撞顶 → 409 引导手编
+        threading.Thread(
+            target=self._worker_rerun, args=(workflow_id, guard, step), daemon=True
+        ).start()
+
+    def _worker_rerun(self, workflow_id: str, guard: threading.Lock, step: str) -> None:
+        try:
+            self._run_rerun(workflow_id, step)
+        except Exception:
+            logger.exception("workflow rerun crashed workflow_id=%s", workflow_id)
+            try:
+                self.store.update_status(workflow_id, "failed", error="rerun crashed")
+            except Exception:
+                pass
+        finally:
+            guard.release()
+
+    def _run_rerun(self, workflow_id: str, step: str) -> None:
+        from .agent.graph import _NODE_FNS
+
+        new_max = self._next_max_turns(workflow_id)
+        self._apply_new_max(workflow_id, new_max)
+        self.store.update_status(workflow_id, "running")
+        agent = self._build_agent(self.store.get(workflow_id))  # 含 new_max 的 snapshot
+        config = self._config(workflow_id, agent)
+        state = self.graph.get_state(config).values
+        node_fn = _NODE_FNS[step]
+        partial = node_fn(state, config=config)
+        self.graph.update_state(config, partial, as_node=step)
+        self._project_state(workflow_id, config, default_produced_by="ai")
+        self._sync_status(workflow_id, config)
 
     def recover_on_startup(self) -> int:
         """启动恢复:扫 status="running" 与 "awaiting_input"。

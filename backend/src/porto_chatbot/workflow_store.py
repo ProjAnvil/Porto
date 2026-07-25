@@ -199,6 +199,23 @@ class WorkflowStore:
                 (status, cur, error, now, workflow_id),
             )
 
+    def update_agent_snapshot(self, workflow_id, updates: dict) -> bool:
+        """合并更新 workflows.agent_snapshot(JSON)里的键。返回 False = workflow 不存在。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT agent_snapshot FROM workflows WHERE workflow_id=?", (workflow_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            snap = json.loads(row["agent_snapshot"])
+            snap.update(updates)
+            conn.execute(
+                "UPDATE workflows SET agent_snapshot=?, updated_at=? WHERE workflow_id=?",
+                (json.dumps(snap, ensure_ascii=False),
+                 datetime.now(UTC).isoformat(), workflow_id),
+            )
+        return True
+
     def delete(self, workflow_id) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM workflow_outputs WHERE workflow_id=?", (workflow_id,))

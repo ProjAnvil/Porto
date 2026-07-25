@@ -521,3 +521,40 @@ def test_project_state_tool_meta_isolated_per_step(tmp_path):
     # identify 不应被误投 understand 的 tool_meta
     identify_out = outs["identify"]["output"]
     assert "tool_meta" not in identify_out
+
+
+# ---------------------------------------------------------------- Task 7: rerun_step
+
+
+def test_rerun_step_scales_max_turns_and_persists(tmp_path):
+    store = WorkflowStore(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"))
+    wid = store.create("s", "p", "prd", 6, {}, {"agent_max_tool_turns": 10})
+    # trivial graph + 真 agent 重建受 snapshot 驱动;此处直接验证 new_max 算法 + 持久化
+    import json
+    from unittest.mock import MagicMock
+    executor = WorkflowExecutor(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"), store, graph=MagicMock())
+    new_max = executor._next_max_turns(wid)  # ceil(10*1.5)=15
+    assert new_max == 15
+    executor._apply_new_max(wid, new_max)
+    snap = json.loads(store.get(wid)["agent_snapshot"])
+    assert snap["agent_max_tool_turns"] == 15
+
+
+def test_rerun_step_caps_at_hard_cap(tmp_path):
+    from unittest.mock import MagicMock
+    store = WorkflowStore(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"))
+    wid = store.create("s", "p", "prd", 6, {}, {"agent_max_tool_turns": 30})
+    executor = WorkflowExecutor(
+        Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", tool_turn_hard_cap=40), store, graph=MagicMock())
+    assert executor._next_max_turns(wid) == 40  # ceil(30*1.5)=45 → cap 40
+
+
+def test_rerun_step_at_cap_raises(tmp_path):
+    from unittest.mock import MagicMock
+    store = WorkflowStore(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"))
+    wid = store.create("s", "p", "prd", 6, {}, {"agent_max_tool_turns": 40})
+    executor = WorkflowExecutor(
+        Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", tool_turn_hard_cap=40), store, graph=MagicMock())
+    import pytest
+    with pytest.raises(WorkflowRunning):
+        executor.rerun_step(wid, "understand")
