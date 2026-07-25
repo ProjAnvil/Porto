@@ -152,6 +152,21 @@ export async function advanceWorkflow(id: string) {
   );
 }
 
+export async function rerunStep(
+  workflowId: string,
+  step: string,
+): Promise<{ workflow_id: string; status: string }> {
+  const resp = await fetch(
+    `/api/porto/workflows/${encodeURIComponent(workflowId)}/steps/${encodeURIComponent(step)}/rerun`,
+    { method: "POST" },
+  );
+  if (resp.status === 409) {
+    const body = await resp.json().catch(() => null);
+    throw new Error(body?.detail ?? "running or turn limit reached");
+  }
+  return parseJson<{ workflow_id: string; status: string }>(resp);
+}
+
 export async function saveStepOutput(
   id: string,
   step: WorkflowStepName,
@@ -243,7 +258,7 @@ export const defaultAgentConfig: AgentConfig = {
   memory_recent_keep: 8,
   context_char_budget: 16000,
   agent_stream_enabled: true,
-  agent_max_tool_turns: 4,
+  agent_max_tool_turns: 10,
   agent_request_timeout: 120,
 };
 

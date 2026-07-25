@@ -192,8 +192,18 @@ export type WorkflowStatus =
   | "failed"
   | "interrupted";
 
+// 工具循环元数据（agent_max_tool_turns 截断诊断用）
+export type ToolMeta = {
+  turns?: number;
+  tool_calls?: number;
+  truncated?: boolean;
+  max_turns?: number;
+  reason?: string | null;
+};
+
 export type WorkflowOutputEntry = {
   output: Record<string, unknown>;
+  tool_meta?: ToolMeta;
   produced_by: "ai" | "user";
   produced_at: string;
 };
