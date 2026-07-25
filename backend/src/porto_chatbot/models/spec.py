@@ -33,5 +33,6 @@ class SpecResult(BaseModel):
     final: str
     attempts: list[SpecAttempt] = Field(default_factory=list)
     iterations: int = 0
-    truncated: bool = False
+    truncated: bool = False          # refine-loop 截断(max_iter/budget),语义不动
     used_llm: bool = False
+    tool_meta: dict = Field(default_factory=dict)  # tool-calling 元数据;truncated 键 = tool 截断
