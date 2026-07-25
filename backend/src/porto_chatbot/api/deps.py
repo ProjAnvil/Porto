@@ -213,6 +213,32 @@ def get_workflow_store() -> WorkflowStore:
     return store
 
 
+def _build_checkpoint_serde():
+    """F1: 构造注册了 porto_chatbot.models.* 的 langgraph serde。
+
+    SqliteSaver 默认用 JsonPlusSerializer(msgpack)序列化 checkpoint values;porto
+    的 Pydantic 模型(AgentStep/SourceChunk/...)非 langchain 内置类型,往返时会发
+    "Deserializing unregistered type" deprecation warning(未来版本硬阻断,
+    LANGGRAPH_STRICT_MSGPACK=true 即现在阻断)。显式注册后无 warning。传 class 对象
+    (而非手写 module/class tuple)以跟随重命名。
+    """
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    from ..models.common import SourceChunk
+    from ..models.spec import SpecAttempt, SpecResult
+    from ..models.workflow import AgentStep, Subsystem
+
+    return JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            AgentStep,
+            Subsystem,
+            SourceChunk,
+            SpecAttempt,
+            SpecResult,
+        ]
+    )
+
+
 def get_checkpointer():
     """按 data_dir 缓存的 langgraph SqliteSaver 单例(独立于 workflows.sqlite3)。
 
@@ -230,7 +256,7 @@ def get_checkpointer():
         db_path = settings.data_dir / "langgraph_checkpoints.sqlite"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        cp = SqliteSaver(conn)
+        cp = SqliteSaver(conn, serde=_build_checkpoint_serde())
         cp.setup()
         entry["checkpointer"] = cp
         entry["_checkpoint_conn"] = conn
