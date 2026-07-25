@@ -20,6 +20,22 @@ from .parsing import _try_parse_json
 from .types import Message, ModelCapabilities, ToolCall, ToolDef, ToolLoopResult
 
 
+def _finish_reason(response) -> str | None:
+    """从 langchain AIMessage.response_metadata 取归一化的 finish_reason。
+
+    OpenAI provider 字段为 ``finish_reason``;Anthropic 为 ``stop_reason``。归一化:
+    Anthropic 的 ``"max_tokens"`` 映射为 OpenAI 语义的 ``"length"``,使上层检测分支
+    对两家 provider 通用。返回 None = 字段缺失/异常(视为非 length,走正常分支)。
+    """
+    meta = getattr(response, "response_metadata", None)
+    if not isinstance(meta, dict):
+        return None
+    fr = meta.get("finish_reason") or meta.get("stop_reason")
+    if fr == "max_tokens":  # Anthropic 语义 → 归一化为 OpenAI "length"
+        return "length"
+    return fr
+
+
 class LLMClient:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -203,13 +219,55 @@ class LLMClient:
         result = ToolLoopResult()
 
         convo = self._to_lc_messages(self._normalize_messages(system, user, messages))
-        assistant_text = ""
+        # 当前轮输出 token 上限:撞 finish_reason="length" 时升级(×4),整个 loop 仅升级一次。
+        # 通过 invoke(max_tokens=...) kwarg 覆盖(langgraph _get_request_payload: {**default, **kwargs})。
+        cur_max_tokens = self.settings.agent_max_tokens
+        escalated = False
 
         for turn in range(1, resolved_turns + 1):
             result.turns = turn
-            response = bound.invoke(convo)
+            response = bound.invoke(convo, max_tokens=cur_max_tokens)
             tool_calls = response.tool_calls or []
             assistant_text = response.content if isinstance(response.content, str) else ""
+            finish_reason = _finish_reason(response)
+
+            # ── 检测层:单次回复被 max_tokens 硬切(finish_reason="length")──
+            # 此时本轮输出(可能含 tool_call)不完整、不可直接使用(Anthropic 官方)。
+            if finish_reason == "length":
+                if not escalated:
+                    # 第 1 层·升级:丢弃本轮残缺输出,用更大 max_tokens 重发同一 convo(不执行残帧)
+                    escalated = True
+                    cur_max_tokens = self.settings.agent_max_tokens * 4
+                    self.logger.warning(
+                        "llm tool loop max_tokens truncated, escalating to %s",
+                        cur_max_tokens,
+                    )
+                    continue
+                # 升级后仍 length
+                if not tool_calls:
+                    # 第 2 层·续写:收敛输出被切 → 注入「请继续」续写拼接(火山方案)
+                    text, recovered = self._continue_after_length(
+                        bound, convo, response, cur_max_tokens
+                    )
+                    if recovered:
+                        result.text = text
+                        self.logger.info(
+                            "llm tool loop recovered via continue final_chars=%s",
+                            len(text),
+                        )
+                        return result
+                # 第 3 层·兜底:续写不收敛 / tool_call 仍被切 → 截断标记,走节点固定提示 + 重跑
+                result.truncated = True
+                result.text = ""  # 残缺产出不暴露
+                result.reason = "max_tokens_truncated"
+                self.logger.warning(
+                    "llm tool loop still truncated after escalate+continue "
+                    "max_tokens=%s tool_calls=%s",
+                    cur_max_tokens, len(tool_calls),
+                )
+                return result
+
+            # ── 正常分支 ──
             if not tool_calls:
                 result.text = assistant_text
                 self.logger.info(
@@ -238,13 +296,41 @@ class LLMClient:
                     name, list(args.keys()), len(outcome),
                 )
 
+        # tool-turn 用尽仍有 tool_calls(plan 原治理)
         result.truncated = True
         result.text = ""  # 截断 = 无可靠产出;过渡语清空,不暴露给前端
+        result.reason = "tool_loop_truncated"
         self.logger.warning(
             "llm tool loop truncated max_turns=%s total=%s",
             resolved_turns, len(result.tool_calls),
         )
         return result
+
+    def _continue_after_length(
+        self, bound, convo, partial_response, cur_max_tokens
+    ) -> tuple[str, bool]:
+        """升级后仍 ``finish_reason="length"``:注入「请继续」续写,多段拼接(火山方案)。
+
+        把部分输出作 assistant 消息进历史,再追加「请继续刚才的回答,不要重复内容:\\n{尾部
+        200 字}」user 消息,让模型基于自己已写的内容续写。最多 ``max_output_recovery_attempts``
+        轮。返回 ``(full_text, recovered)``;``recovered=False`` 表示轮数用尽仍 length。
+        """
+        max_rounds = self.settings.max_output_recovery_attempts
+        full = partial_response.content if isinstance(partial_response.content, str) else ""
+        # 部分输出进历史(assistant),模型基于完整上下文(含自己已写)续写
+        cont = list(convo) + [partial_response]
+        for _ in range(max_rounds):
+            tail = full[-200:]
+            cont = cont + [
+                HumanMessage(content=f"请继续刚才的回答，不要重复内容：\n{tail}")
+            ]
+            resp = bound.invoke(cont, max_tokens=cur_max_tokens)
+            chunk = resp.content if isinstance(resp.content, str) else ""
+            full += chunk
+            if _finish_reason(resp) != "length":
+                return full, True
+            cont = cont + [resp]  # 下一轮续写:把这次的部分输出也并入历史
+        return full, False
 
     # ------------------------------------------------------------------ #
     # 原生 token 级流式

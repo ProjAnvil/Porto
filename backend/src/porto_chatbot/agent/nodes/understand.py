@@ -5,8 +5,11 @@ from ..heuristics import extract_bullets, extract_entities, matched_domains, sum
 from ..state import PortoAgentState
 
 
-_TRUNCATED_NOTICE = (
+_TRUNCATED_NOTICE_TOOL = (
     "⚠️ 业务理解未能完成：本步工具调用已达上限（{calls}/{limit} turn）。建议重跑本步。"
+)
+_TRUNCATED_NOTICE_TOKENS = (
+    "⚠️ 业务理解未能完成：输出长度已达上限（max_tokens），自动升级 + 续写仍未收敛。建议重跑本步。"
 )
 
 
@@ -31,14 +34,18 @@ def understand_prd(state, *, config):
             "tool_calls": len(result.tool_calls),
             "truncated": result.truncated,
             "max_turns": max_turns,
-            "reason": "tool_loop_truncated" if result.truncated else None,
+            "reason": result.reason,
         }
         if result.truncated:
-            understanding = _TRUNCATED_NOTICE.format(
-                calls=tool_meta["tool_calls"], limit=max_turns)
+            if result.reason == "max_tokens_truncated":
+                understanding = _TRUNCATED_NOTICE_TOKENS
+            else:
+                understanding = _TRUNCATED_NOTICE_TOOL.format(
+                    calls=tool_meta["tool_calls"], limit=max_turns)
             agent.logger.info(
-                "step understand_prd truncated workflow_id=%s turns=%s calls=%s",
-                state.get("workflow_id"), result.turns, len(result.tool_calls))
+                "step understand_prd truncated workflow_id=%s reason=%s turns=%s calls=%s",
+                state.get("workflow_id"), result.reason, result.turns,
+                len(result.tool_calls))
         else:
             understanding = (result.text or "").strip()
             agent.logger.info(

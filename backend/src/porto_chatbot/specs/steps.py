@@ -9,8 +9,11 @@ from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
 
 # ----------------------------- LLM 驱动的三步 ----------------------------- #
 
-_TRUNCATED_NOTICE_SPEC = (
+_TRUNCATED_NOTICE_SPEC_TOOL = (
     "⚠️ 规格生成未能完成：本子系统工具调用已达上限（{calls}/{limit} turn）。建议重跑本步。"
+)
+_TRUNCATED_NOTICE_SPEC_TOKENS = (
+    "⚠️ 规格生成未能完成：输出长度已达上限（max_tokens），自动升级 + 续写仍未收敛。建议重跑本步。"
 )
 
 
@@ -44,12 +47,17 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
         "tool_calls": len(result.tool_calls),
         "truncated": result.truncated,
         "max_turns": max_turns,
-        "reason": "tool_loop_truncated" if result.truncated else None,
+        "reason": result.reason,
     }
     if result.truncated:
-        return _TRUNCATED_NOTICE_SPEC.format(
-            calls=tool_meta["tool_calls"], limit=max_turns
-        ), tool_meta
+        notice = (
+            _TRUNCATED_NOTICE_SPEC_TOKENS
+            if result.reason == "max_tokens_truncated"
+            else _TRUNCATED_NOTICE_SPEC_TOOL.format(
+                calls=tool_meta["tool_calls"], limit=max_turns
+            )
+        )
+        return notice, tool_meta
     return (result.text or "").strip(), tool_meta
 
 

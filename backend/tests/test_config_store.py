@@ -76,7 +76,7 @@ def test_effective_settings_default_to_qwen_and_agent_params(monkeypatch, tmp_pa
 
     assert app_settings.rag.embedding_model == "qwen3-embedding:0.6b"
     assert app_settings.agent.agent_temperature == 0.2
-    assert app_settings.agent.agent_max_tokens == 2000
+    assert app_settings.agent.agent_max_tokens == 8000
     assert app_settings.document.parse_mode == "hybrid"
     assert app_settings.document.local_parser == "pypdf"
 

@@ -33,6 +33,10 @@ class ToolLoopResult:
     tool_calls: list[ToolCall] = field(default_factory=list)
     turns: int = 0
     truncated: bool = False
+    # 截断原因(仅 truncated=True 时有意义,供节点层透传到 tool_meta.reason):
+    #   "tool_loop_truncated"   —— tool-turn 用尽仍有 tool_calls(plan 原治理)
+    #   "max_tokens_truncated"  —— 单次回复被 agent_max_tokens 硬切且升级+续写均未收敛
+    reason: str | None = None
 
 
 @dataclass(frozen=True)

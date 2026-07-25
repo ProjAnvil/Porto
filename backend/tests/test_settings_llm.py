@@ -21,7 +21,7 @@ def test_langchain_prefixed_agent_settings(monkeypatch, tmp_path):
     assert settings.agent_base_url == "https://example.test"
     assert settings.agent_api_key == "test-key"
     assert settings.agent_temperature == 0.2
-    assert settings.agent_max_tokens == 2000
+    assert settings.agent_max_tokens == 8000
 
 
 def test_llm_disabled_without_langchain_api_key(monkeypatch, tmp_path):

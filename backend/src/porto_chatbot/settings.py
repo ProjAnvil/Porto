@@ -47,7 +47,7 @@ class Settings(BaseSettings):
         validation_alias="LANGCHAIN_MODEL",
     )
     agent_temperature: float = Field(default=0.2, validation_alias="LANGCHAIN_TEMPERATURE")
-    agent_max_tokens: int = Field(default=2000, validation_alias="LANGCHAIN_MAX_TOKENS")
+    agent_max_tokens: int = Field(default=8000, validation_alias="LANGCHAIN_MAX_TOKENS")
 
     # --- Critic（spec loop 评判模型，缺省回退到 agent_*）---
     critic_provider: Literal["openai", "anthropic"] | None = None
@@ -76,6 +76,11 @@ class Settings(BaseSettings):
 
     # --- 整步重跑 turn 上调的隐藏天花板(不暴露给前端,仅 rerun ×1.5 时 cap)---
     tool_turn_hard_cap: int = Field(default=40, ge=1)
+
+    # --- 输出 token 截断续写(finish_reason=length 兜底,对齐 Qwen adaptive output escalation)---
+    # 单次回复被 agent_max_tokens 硬切时,先升级 max_tokens(×4)重发同一请求;
+    # 仍截断则注入「请继续 + 尾部 200 字」续写拼接,本字段为续写最大轮次。
+    max_output_recovery_attempts: int = Field(default=2, ge=0, le=5)
 
     # --- LLM 请求超时（秒），抗单次调用挂死 ---
     agent_request_timeout: int = Field(default=120, ge=10)

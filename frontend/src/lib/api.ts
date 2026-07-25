@@ -240,7 +240,7 @@ export const defaultAgentConfig: AgentConfig = {
   agent_base_url: "",
   agent_api_key: "",
   agent_temperature: 0.2,
-  agent_max_tokens: 2000,
+  agent_max_tokens: 8000,
   critic_provider: null,
   critic_model: null,
   critic_base_url: null,
