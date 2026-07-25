@@ -5,10 +5,18 @@ from ..heuristics import extract_bullets, extract_entities, matched_domains, sum
 from ..state import PortoAgentState
 
 
+_TRUNCATED_NOTICE = (
+    "⚠️ 业务理解未能完成：本步工具调用已达上限（{calls}/{limit} turn）。建议重跑本步。"
+)
+
+
 def understand_prd(state, *, config):
     agent = config["configurable"]["agent"]
     agent.logger.info("step understand_prd start workflow_id=%s", state.get("workflow_id"))
+    max_turns = agent.settings.agent_max_tool_turns
     understanding = ""
+    tool_meta = {"turns": 0, "tool_calls": 0, "truncated": False,
+                 "max_turns": max_turns, "reason": None}
     if agent.llm.enabled:
         ctx = AgentToolContext(state=state, vector_store=agent.vector_store)
         result = agent.llm.complete_with_tools(
@@ -18,25 +26,36 @@ def understand_prd(state, *, config):
             "请生成业务理解报告。",
             build_agent_tools(ctx),
         )
-        understanding = (result.text or "").strip()
-        agent.logger.info(
-            "step understand_prd llm tool_calls=%s turns=%s chars=%s",
-            len(result.tool_calls),
-            result.turns,
-            len(understanding),
-        )
+        tool_meta = {
+            "turns": result.turns,
+            "tool_calls": len(result.tool_calls),
+            "truncated": result.truncated,
+            "max_turns": max_turns,
+            "reason": "tool_loop_truncated" if result.truncated else None,
+        }
+        if result.truncated:
+            understanding = _TRUNCATED_NOTICE.format(
+                calls=tool_meta["tool_calls"], limit=max_turns)
+            agent.logger.info(
+                "step understand_prd truncated workflow_id=%s turns=%s calls=%s",
+                state.get("workflow_id"), result.turns, len(result.tool_calls))
+        else:
+            understanding = (result.text or "").strip()
+            agent.logger.info(
+                "step understand_prd llm tool_calls=%s turns=%s chars=%s",
+                len(result.tool_calls), result.turns, len(understanding))
     if not understanding:
         understanding = _fallback_understanding(state)
         agent.logger.info(
-            "step understand_prd used fallback workflow_id=%s", state.get("workflow_id")
-        )
+            "step understand_prd used fallback workflow_id=%s", state.get("workflow_id"))
     return {
         "understanding": understanding,
         "current_step": "understand",
         **agent._step(
             "understand_prd",
             "完成业务理解报告",
-            {"chars": len(understanding), "used_llm": bool(understanding) and agent.llm.enabled},
+            {"chars": len(understanding), "used_llm": bool(understanding) and agent.llm.enabled,
+             "tool_meta": tool_meta},
         ),
     }
 
