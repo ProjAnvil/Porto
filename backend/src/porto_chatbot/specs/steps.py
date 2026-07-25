@@ -1,4 +1,5 @@
 """LLM 驱动的三步：generate_initial_spec / critique_spec / refine_spec。"""
+
 from __future__ import annotations
 
 from ..models import Critique, Subsystem
@@ -8,10 +9,26 @@ from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
 
 # ----------------------------- LLM 驱动的三步 ----------------------------- #
 
-def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> str:
-    """LLM 生成首版 spec（带工具，可检索知识库）。失败返回空串，由 loop 层降级。"""
+_TRUNCATED_NOTICE_SPEC = (
+    "⚠️ 规格生成未能完成：本子系统工具调用已达上限（{calls}/{limit} turn）。建议重跑本步。"
+)
+
+
+def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
+    """LLM 生成首版 spec(带工具)。返回 (spec_text, tool_meta)。
+
+    tool 截断时 spec_text = 固定提示,由 loop 层跳过 critique/refine。
+    LLM 未启用时返回 ("", 空 tool_meta)。
+    """
+    max_turns = ctx.settings.agent_max_tool_turns
     if not ctx.llm.enabled:
-        return ""
+        return "", {
+            "turns": 0,
+            "tool_calls": 0,
+            "truncated": False,
+            "max_turns": max_turns,
+            "reason": None,
+        }
     tools_ctx = AgentToolContext(state=ctx.state, vector_store=ctx.vector_store)
     result = ctx.llm.complete_with_tools(
         f"你是资深系统规格工程师。为子系统 {sub.name} 生成详细的系统需求规格（markdown）。"
@@ -22,7 +39,18 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> str:
         f"请生成 {sub.name} 的规格文档。",
         build_agent_tools(tools_ctx),
     )
-    return (result.text or "").strip()
+    tool_meta = {
+        "turns": result.turns,
+        "tool_calls": len(result.tool_calls),
+        "truncated": result.truncated,
+        "max_turns": max_turns,
+        "reason": "tool_loop_truncated" if result.truncated else None,
+    }
+    if result.truncated:
+        return _TRUNCATED_NOTICE_SPEC.format(
+            calls=tool_meta["tool_calls"], limit=max_turns
+        ), tool_meta
+    return (result.text or "").strip(), tool_meta
 
 
 def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | None:
@@ -53,7 +81,12 @@ def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | Non
     score = max(0, min(12, score))
     per_dim = parsed.get("per_dimension")
     per_dim = per_dim if isinstance(per_dim, dict) else {}
-    return Critique(verdict=verdict, score=score, feedback=str(parsed.get("feedback", "")), per_dimension=per_dim)
+    return Critique(
+        verdict=verdict,
+        score=score,
+        feedback=str(parsed.get("feedback", "")),
+        per_dimension=per_dim,
+    )
 
 
 def refine_spec(ctx: SpecContext, sub: Subsystem, spec: str, feedback: str) -> str:
