@@ -7,6 +7,11 @@ import pytest
 
 from porto_chatbot.settings import Settings
 
+# F5: 测试态禁用 Settings 的 env_file,隔离生产 backend/.env(含真 LANGCHAIN_API_KEY)。
+# pydantic-settings 直读 env_file 文件,delenv(os.environ) 挡不住文件读取;patch 成 None
+# 后,测试态 Settings 只从 environ(_load_env_test / _isolate_llm_env 管控)+ defaults 读。
+Settings.model_config["env_file"] = None
+
 
 def _load_env_test() -> None:
     """加载 backend/.env.test 到环境变量（setdefault，不覆盖已有环境变量）。
@@ -36,13 +41,22 @@ _load_env_test()
 # (scripts/spec_baseline_eval.py) 使用。pydantic-settings 的 validation_alias
 # 字段会从 env 读取并覆盖 setattr，所以必须 delenv 而非 setattr。
 _ENV_KEYS_TO_ISOLATE = [
-    "LANGCHAIN_AGENT_PROVIDER", "LANGCHAIN_API_KEY", "LANGCHAIN_BASE_URL",
-    "LANGCHAIN_MODEL", "LANGCHAIN_TEMPERATURE", "LANGCHAIN_MAX_TOKENS",
-    "PORTO_CHATBOT_CRITIC_PROVIDER", "PORTO_CHATBOT_CRITIC_MODEL",
-    "PORTO_CHATBOT_CRITIC_API_KEY", "PORTO_CHATBOT_CRITIC_BASE_URL",
-    "PORTO_CHATBOT_SPEC_REFINE_ENABLED", "PORTO_CHATBOT_SPEC_REFINE_MAX_ITER",
-    "PORTO_CHATBOT_SPEC_REFINE_CONCURRENCY", "PORTO_CHATBOT_SPEC_REFINE_PASS_SCORE",
-    "PORTO_CHATBOT_WORKFLOW_REWORK_ENABLED", "PORTO_CHATBOT_WORKFLOW_REWORK_MAX_PASSES",
+    "LANGCHAIN_AGENT_PROVIDER",
+    "LANGCHAIN_API_KEY",
+    "LANGCHAIN_BASE_URL",
+    "LANGCHAIN_MODEL",
+    "LANGCHAIN_TEMPERATURE",
+    "LANGCHAIN_MAX_TOKENS",
+    "PORTO_CHATBOT_CRITIC_PROVIDER",
+    "PORTO_CHATBOT_CRITIC_MODEL",
+    "PORTO_CHATBOT_CRITIC_API_KEY",
+    "PORTO_CHATBOT_CRITIC_BASE_URL",
+    "PORTO_CHATBOT_SPEC_REFINE_ENABLED",
+    "PORTO_CHATBOT_SPEC_REFINE_MAX_ITER",
+    "PORTO_CHATBOT_SPEC_REFINE_CONCURRENCY",
+    "PORTO_CHATBOT_SPEC_REFINE_PASS_SCORE",
+    "PORTO_CHATBOT_WORKFLOW_REWORK_ENABLED",
+    "PORTO_CHATBOT_WORKFLOW_REWORK_MAX_PASSES",
     "PORTO_CHATBOT_AGENT_STREAM_ENABLED",
     "PORTO_CHATBOT_AGENT_REQUEST_TIMEOUT",
 ]
