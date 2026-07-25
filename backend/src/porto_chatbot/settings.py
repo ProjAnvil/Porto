@@ -72,7 +72,10 @@ class Settings(BaseSettings):
     agent_stream_enabled: bool = True
 
     # --- 节点内 tool calling（Phase 0/1）---
-    agent_max_tool_turns: int = Field(default=4, ge=1, le=20)
+    agent_max_tool_turns: int = Field(default=10, ge=1, le=20)
+
+    # --- 整步重跑 turn 上调的隐藏天花板(不暴露给前端,仅 rerun ×1.5 时 cap)---
+    tool_turn_hard_cap: int = Field(default=40, ge=1)
 
     # --- LLM 请求超时（秒），抗单次调用挂死 ---
     agent_request_timeout: int = Field(default=120, ge=10)
