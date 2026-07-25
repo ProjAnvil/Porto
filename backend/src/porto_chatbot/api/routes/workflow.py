@@ -1,15 +1,16 @@
 """Workflow API —— 异步分步推进 + checkpoint 编辑/回退。
 
-7 endpoints(顺序与 spec 2.1 对应):
+8 endpoints(顺序与 spec 2.1 对应):
 - POST   /api/porto/workflows                       创建 + 后台启动 workflow
 - POST   /api/porto/workflows/upload                上传文件 → 创建 + 启动
 - GET    /api/porto/workflows                       列表(可按 session_id/status 过滤)
 - GET    /api/porto/workflows/{id}                  详情(含各步 outputs)
 - POST   /api/porto/workflows/{id}/advance          推进到下个 checkpoint
 - PUT    /api/porto/workflows/{id}/steps/{step}     覆盖某步产出(用户编辑)+ 回退
+- POST   /api/porto/workflows/{id}/steps/{step}/rerun  整步重跑(turn ×1.5 cap hard_cap)
 - DELETE /api/porto/workflows/{id}                  删除
 
-创建/上传/advance 返回精简的 {workflow_id, status:"running"},详情/PUT 返回 WorkflowDetail。
+创建/上传/advance/rerun 返回精简的 {workflow_id, status:"running"},详情/PUT 返回 WorkflowDetail。
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from ...agent.graph import STEPS
 from ...documents import (
     SUPPORTED_EXTENSIONS,
     DocumentLimitError,
@@ -284,6 +286,29 @@ def advance_workflow(workflow_id: str):
         raise HTTPException(409, "workflow already completed")
     if not get_workflow_executor().advance(workflow_id):
         raise HTTPException(409, "workflow is currently running") from None
+    return WorkflowCreated(workflow_id=workflow_id, status="running")
+
+
+@router.post(
+    "/api/porto/workflows/{workflow_id}/steps/{step}/rerun", response_model=WorkflowCreated
+)
+def rerun_step(workflow_id: str, step: str):
+    """整步重跑:turn ×1.5(ceil) cap tool_turn_hard_cap,绕过 graph 调节点函数。
+
+    - 404: workflow 不存在
+    - 400: step 不在 STEPS
+    - 409: 已达 turn 硬上限(引导手编)或 workflow 正在 running
+    - 200: 已接受,后台 worker 重跑该步
+    """
+    store = get_workflow_store()
+    if store.get(workflow_id) is None:
+        raise HTTPException(404, "workflow not found")
+    if step not in STEPS:
+        raise HTTPException(400, f"step must be one of {STEPS}")
+    try:
+        get_workflow_executor().rerun_step(workflow_id, step)
+    except WorkflowRunning:
+        raise HTTPException(409, "workflow is running or turn limit reached") from None
     return WorkflowCreated(workflow_id=workflow_id, status="running")
 
 

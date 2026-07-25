@@ -284,3 +284,67 @@ def test_upload_maps_parse_and_strict_native_errors(monkeypatch, sample_settings
             files={"file": ("prd.pdf", pdf.getvalue(), "application/pdf")},
         )
         assert strict.status_code == 422
+
+
+# ----------------------------------------------------------- Task 8: rerun 步骤
+
+
+def test_rerun_step_accepted(monkeypatch, sample_settings):
+    """200: 合法 rerun 被接受 → {workflow_id, status:"running"}。
+
+    仿 test_patch_spec_updates_without_side_effects 的 fixture 风格:monkeypatch settings
+    + TestClient(main.app) + 直接 store.create 造 workflow(不经 executor/graph)。
+    另 monkeypatch executor.rerun_step 为 no-op,避开真实 graph/LLM 节点重跑 ——
+    本测试只验证路由层 404/400/409/200 分支,executor 内部行为由 test_workflow_executor 覆盖。
+    """
+    from porto_chatbot.api.deps import get_workflow_executor, get_workflow_store
+
+    sample_settings.health_probe_timeout = 1
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        store = get_workflow_store()
+        # 直接造 workflow(snapshot 默认 agent_max_tool_turns,远低于 hard_cap=40)
+        wid = store.create("s1", "proj", "prd", 6, {}, {"agent_max_tool_turns": 10})
+        # Mock executor.rerun_step 避开真实 graph 节点函数 / LLM 调用
+        ex = get_workflow_executor()
+        monkeypatch.setattr(ex, "rerun_step", lambda _wid, _step: None)
+
+        resp = client.post(f"/api/porto/workflows/{wid}/steps/understand/rerun")
+        assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body["workflow_id"] == wid
+        assert body["status"] == "running"
+
+
+def test_rerun_step_bad_step_returns_400(monkeypatch, sample_settings):
+    """400: step 不在 STEPS → 路由直接拒绝,不调用 executor。"""
+    from porto_chatbot.api.deps import get_workflow_store
+
+    sample_settings.health_probe_timeout = 1
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        store = get_workflow_store()
+        wid = store.create("s1", "proj", "prd", 6, {}, {})
+        resp = client.post(f"/api/porto/workflows/{wid}/steps/nope/rerun")
+        assert resp.status_code == 400, f"expected 400, got {resp.status_code}: {resp.text}"
+
+
+def test_rerun_step_at_cap_returns_409(monkeypatch, sample_settings):
+    """409: agent_snapshot.agent_max_tool_turns 已达 hard_cap(默认 40)→
+    executor.rerun_step 同步 raise WorkflowRunning → 路由 409。
+
+    不 mock executor —— rerun_step 在 spawn worker 之前就 raise,不触达真实 graph/LLM,
+    行为由 test_workflow_executor.test_rerun_step_at_cap_raises 已覆盖。
+    """
+    from porto_chatbot.api.deps import get_workflow_store
+
+    sample_settings.health_probe_timeout = 1
+    monkeypatch.setattr(main, "settings", sample_settings)
+    with TestClient(main.app) as client:
+        store = get_workflow_store()
+        # snapshot 直接设到 hard_cap,executor 读到 cur >= cap → raise WorkflowRunning
+        wid = store.create(
+            "s1", "proj", "prd", 6, {}, {"agent_max_tool_turns": sample_settings.tool_turn_hard_cap}
+        )
+        resp = client.post(f"/api/porto/workflows/{wid}/steps/understand/rerun")
+        assert resp.status_code == 409, f"expected 409, got {resp.status_code}: {resp.text}"
