@@ -48,6 +48,7 @@ import {
   getWorkflow,
   indexKnowledgeBase,
   listMemory,
+  rerunStep,
   saveAppSettings,
   saveStepOutput,
   updateWorkflowSpec,
@@ -63,7 +64,9 @@ import type {
   RagConfig,
   SourceChunk,
   Subsystem,
+  ToolMeta,
   WorkflowDetail,
+  WorkflowOutputEntry,
   WorkflowStepName,
 } from "@/lib/types";
 import { SessionList } from "@/components/session-list";
@@ -188,6 +191,46 @@ function readSubsystems(detail: WorkflowDetail): Subsystem[] {
   const subs = entry.output.subsystems;
   if (!Array.isArray(subs)) return [];
   return subs as Subsystem[];
+}
+
+/**
+ * 工具循环硬上限(与后端 settings.tool_turn_hard_cap 对齐)。
+ * rerun 按钮的"撞顶"判定与前端预算显示 newMax 都以此为天花板。
+ */
+const TOOL_TURN_HARD_CAP = 40;
+
+/**
+ * 后端把单步 tool_meta 写在 entry.output.tool_meta(见 workflow_executor._tool_meta_for:
+ * 单步从 AgentStep.data 取、generate 聚合 any truncated)。types.ts 的 WorkflowOutputEntry
+ * 顶层也声明了 tool_meta?,但实际 wire 上不存在 —— 统一从 output 取,避免静默 undefined。
+ */
+function readStepToolMeta(
+  entry: WorkflowOutputEntry | undefined,
+): ToolMeta | undefined {
+  if (!entry) return undefined;
+  const tm = entry.output.tool_meta;
+  if (tm && typeof tm === "object") return tm as ToolMeta;
+  return undefined;
+}
+
+/**
+ * generate 步的 per-subsystem tool_meta:output.spec_results[name].tool_meta。
+ * 后端 _to_jsonable(SpecResult) → model_dump,含 tool_meta: dict。
+ * 截断 UI(卡片左色条 + 子系统超限 chip)按此判定。
+ */
+type SpecResultWire = {
+  final?: string;
+  truncated?: boolean;
+  used_llm?: boolean;
+  tool_meta?: ToolMeta;
+};
+
+function readSpecResults(
+  detail: WorkflowDetail,
+): Record<string, SpecResultWire> {
+  const raw = detail.outputs.generate?.output.spec_results;
+  if (!raw || typeof raw !== "object") return {};
+  return raw as Record<string, SpecResultWire>;
 }
 
 const EMPTY_SUBSYSTEM: Subsystem = {
@@ -494,6 +537,23 @@ export function PortoWorkbench() {
     }
   }
 
+  async function onRerunStep(step: WorkflowStepName) {
+    if (!workflowId) return;
+    setBusyLabel("重跑本步");
+    setError("");
+    try {
+      const resp = await rerunStep(workflowId, step);
+      // rerun 异步在后台 worker 跑;立即拉一次详情触发 running 轮询分支,
+      // 让 status=running 与后续 detail 变化进入既有 polling 循环。
+      const detail = await getWorkflow(resp.workflow_id);
+      setWorkflowDetail(detail);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重跑失败");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
   async function onPickWorkflow(id: string) {
     setMode("workflow");
     setView("workbench");
@@ -608,6 +668,7 @@ export function PortoWorkbench() {
               fileInputRef={fileInputRef}
               onAdvance={onAdvance}
               onRun={runWorkflowAction}
+              onRerunStep={onRerunStep}
               onSaveStep={onSaveStep}
               onSaveSpec={onSaveSpec}
               onTextChange={setWorkflowText}
@@ -618,6 +679,7 @@ export function PortoWorkbench() {
               setSelectedFile={setSelectedFile}
               text={workflowText}
               workflowId={workflowId}
+              agentMaxToolTurns={agentConfig.agent_max_tool_turns}
             />
           )}
         </main>
@@ -2051,6 +2113,7 @@ function WorkflowPanel({
   fileInputRef,
   onAdvance,
   onRun,
+  onRerunStep,
   onSaveStep,
   onSaveSpec,
   onTextChange,
@@ -2061,6 +2124,7 @@ function WorkflowPanel({
   setSelectedFile,
   text,
   workflowId,
+  agentMaxToolTurns,
 }: {
   busy: boolean;
   detail: WorkflowDetail | null;
@@ -2069,6 +2133,7 @@ function WorkflowPanel({
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onAdvance: () => void;
   onRun: () => void;
+  onRerunStep: (step: WorkflowStepName) => Promise<void>;
   onSaveStep: (step: WorkflowStepName, output: Record<string, unknown>) => void;
   onSaveSpec: (name: string, body: string) => Promise<boolean>;
   onTextChange: (value: string) => void;
@@ -2079,6 +2144,7 @@ function WorkflowPanel({
   setSelectedFile: (value: File | null) => void;
   text: string;
   workflowId: string | null;
+  agentMaxToolTurns: number;
 }) {
   const curStep = detail?.current_step ?? null;
   const curIdx = curStep ? WORKFLOW_STEPS.indexOf(curStep) : -1;
@@ -2168,6 +2234,12 @@ function WorkflowPanel({
             ) : null}
           </div>
 
+          <StepRerunToolbar
+            detail={detail}
+            agentMaxToolTurns={agentMaxToolTurns}
+            onRerunStep={onRerunStep}
+          />
+
           {detail.status === "running" ? (
             <div className="my-6 flex items-center gap-2 text-sm text-zinc-500">
               <Loader2 className="animate-spin" size={16} />
@@ -2238,6 +2310,102 @@ function WorkflowPanel({
           {detail ? "重新拆解" : "运行拆解"}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 截断 step 重跑工具栏。
+ * - generate 步:any subsystem truncated 时显示「{n}/{total} 子系统超限」chip + 重跑按钮
+ * - understand/identify 单步 truncated 时仅显示重跑按钮
+ * - 三态:enabled(blue) / loading(gray + spinner) / at-cap disabled(gray,引导手编)
+ *
+ * 后端 T7 的 rerun 把 cur ×1.5 cap 到 hard_cap(40),撞顶 → 409,所以按钮这里也按
+ * curMax>=hard_cap 预禁用,避免无谓请求。turn 变化只放 tooltip,不挤进按钮文本。
+ */
+const RERUN_STEPS: WorkflowStepName[] = ["understand", "identify", "generate"];
+
+function StepRerunToolbar({
+  detail,
+  agentMaxToolTurns,
+  onRerunStep,
+}: {
+  detail: WorkflowDetail;
+  agentMaxToolTurns: number;
+  onRerunStep: (step: WorkflowStepName) => Promise<void>;
+}) {
+  const [rerunning, setRerunning] = useState<WorkflowStepName | null>(null);
+
+  const truncatedSteps = RERUN_STEPS.filter(
+    (step) => !!readStepToolMeta(detail.outputs[step])?.truncated,
+  );
+
+  const specResults = readSpecResults(detail);
+  const allSpecNames = Object.keys(specResults);
+  const truncSpecCount = allSpecNames.filter(
+    (n) => !!specResults[n]?.tool_meta?.truncated,
+  ).length;
+
+  const curMax = agentMaxToolTurns;
+  const newMax = Math.min(Math.ceil(curMax * 1.5), TOOL_TURN_HARD_CAP);
+  const atCap = curMax >= TOOL_TURN_HARD_CAP;
+
+  if (truncatedSteps.length === 0) return null;
+
+  async function handleRerun(step: WorkflowStepName) {
+    setRerunning(step);
+    try {
+      await onRerunStep(step);
+    } finally {
+      setRerunning(null);
+    }
+  }
+
+  return (
+    <div className="my-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
+      <span className="font-medium text-amber-900">工具调用截断</span>
+      {truncatedSteps.map((step) => {
+        const isRerunning = rerunning === step;
+        const label = STEP_LABELS[step];
+        const title = atCap
+          ? `已达 turn 硬上限(${TOOL_TURN_HARD_CAP}),请检查 prompt 或手动编辑产出`
+          : `${curMax}→${newMax} turn · 上限 ${TOOL_TURN_HARD_CAP}`;
+        const buttonClass = isRerunning
+          ? "cursor-not-allowed bg-gray-400 text-white"
+          : atCap
+            ? "cursor-not-allowed bg-gray-100 text-gray-500"
+            : "bg-blue-600 text-white hover:bg-blue-700";
+        return (
+          <span className="flex items-center gap-2" key={step}>
+            {step === "generate" && allSpecNames.length > 0 ? (
+              <span className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-red-700">
+                {truncSpecCount}/{allSpecNames.length} 子系统超限
+              </span>
+            ) : null}
+            <button
+              className={`flex items-center gap-1 rounded-md border border-transparent px-2.5 py-1 text-xs font-medium ${buttonClass}`}
+              disabled={isRerunning || atCap}
+              onClick={() => void handleRerun(step)}
+              title={title}
+              type="button"
+            >
+              {isRerunning ? (
+                <>
+                  <Loader2 size={12} className="animate-spin" />
+                  重跑中…
+                </>
+              ) : atCap ? (
+                `重跑${label} · 已达上限`
+              ) : (
+                <>
+                  <span aria-hidden>⟳</span>
+                  重跑{label}
+                </>
+              )}
+            </button>
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -2595,15 +2763,18 @@ function SpecCard({
   name,
   body,
   onSave,
+  toolMeta,
 }: {
   name: string;
   body: string;
   onSave: (name: string, body: string) => Promise<boolean>;
+  toolMeta?: ToolMeta;
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(body);
   const [saving, setSaving] = useState(false);
+  const truncated = !!toolMeta?.truncated;
 
   function startEdit(e: React.MouseEvent) {
     e.stopPropagation();
@@ -2636,7 +2807,11 @@ function SpecCard({
 
   return (
     <details
-      className="rounded-lg border border-zinc-200 bg-zinc-50"
+      className={`rounded-lg border bg-zinc-50 ${
+        truncated
+          ? "border-zinc-200 border-l-4 border-l-red-500"
+          : "border-zinc-200"
+      }`}
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
     >
@@ -2685,6 +2860,19 @@ function SpecCard({
           </ReactMarkdown>
         </div>
       )}
+      {truncated && toolMeta ? (
+        <div className="mx-3 mb-3 mt-2 flex items-center gap-2 border-t border-dashed border-red-300 pt-2 text-xs text-red-700">
+          <span>
+            ⚠️ 工具超限 {toolMeta.tool_calls ?? "?"}/{toolMeta.max_turns ?? "?"}
+          </span>
+          <span
+            className="cursor-help border-b border-dotted border-red-700"
+            title={`工具调用达上限 ${toolMeta.tool_calls ?? "?"}/${toolMeta.turns ?? "?"} turn · max_turns=${toolMeta.max_turns ?? "?"}`}
+          >
+            ⓘ 详情
+          </span>
+        </div>
+      ) : null}
     </details>
   );
 }
@@ -2702,6 +2890,7 @@ function CompletedView({
   const specs = detail.outputs.generate?.output.specs as
     | Record<string, string>
     | undefined;
+  const specResults = readSpecResults(detail);
   const evaluateOutput = detail.outputs.evaluate?.output;
   const score =
     evaluateOutput && typeof evaluateOutput === "object" && "score" in evaluateOutput
@@ -2812,6 +3001,7 @@ function CompletedView({
                     name={name}
                     body={specBody}
                     onSave={onSaveSpec}
+                    toolMeta={specResults[name]?.tool_meta}
                   />
                 ))
               : null}
