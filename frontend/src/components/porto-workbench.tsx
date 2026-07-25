@@ -32,9 +32,7 @@ import {
   Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
-import remarkGfm from "remark-gfm";
+import { MarkdownView } from "./markdown-view";
 import {
   advanceWorkflow,
   createWorkflow,
@@ -1022,11 +1020,10 @@ function AssistantMessage() {
 
 function MarkdownText({ text }: { text: string }) {
   return (
-    <div className="prose prose-zinc max-w-none prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
-      <ReactMarkdown rehypePlugins={[rehypeHighlight]} remarkPlugins={[remarkGfm]}>
-        {text}
-      </ReactMarkdown>
-    </div>
+    <MarkdownView
+      value={text}
+      className="prose prose-zinc max-w-none prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50"
+    />
   );
 }
 
@@ -2155,7 +2152,7 @@ function WorkflowPanel({
     CHECKPOINT_STEPS.includes(curStep);
 
   return (
-    <div className="flex flex-1 flex-col p-4">
+    <div className="flex min-h-0 flex-1 flex-col p-4">
       {error ? (
         <div className="mb-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
           {error}
@@ -2517,41 +2514,34 @@ function MarkdownCheckpoint({
   setDraft: (value: string) => void;
   title: string;
 }) {
-  const [preview, setPreview] = useState(false);
+  // 默认预览(AI 产出先看),一个开关切到分栏编辑
+  const [editing, setEditing] = useState(false);
   return (
-    <div className="my-4 flex flex-1 flex-col rounded-xl border border-zinc-200 bg-white">
+    <div className="my-4 flex min-h-0 flex-1 flex-col rounded-xl border border-zinc-200 bg-white">
       <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
         <h3 className="text-sm font-semibold">{title}</h3>
-        <div className="flex items-center gap-2 text-xs">
-          <button
-            className={`rounded-md px-2 py-1 ${!preview ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-100"}`}
-            onClick={() => setPreview(false)}
-            type="button"
-          >
-            编辑
-          </button>
-          <button
-            className={`rounded-md px-2 py-1 ${preview ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-100"}`}
-            onClick={() => setPreview(true)}
-            type="button"
-          >
-            预览
-          </button>
-        </div>
+        <button
+          className={`rounded-md px-2 py-1 text-xs ${editing ? "text-zinc-600 hover:bg-zinc-100" : "bg-zinc-950 text-white"}`}
+          onClick={() => setEditing((e) => !e)}
+          type="button"
+        >
+          {editing ? "完成编辑" : "编辑"}
+        </button>
       </div>
-      {preview ? (
-        <div className="prose prose-zinc max-w-none flex-1 overflow-y-auto p-4 prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
-          <ReactMarkdown rehypePlugins={[rehypeHighlight]} remarkPlugins={[remarkGfm]}>
-            {draft || "_（空）_"}
-          </ReactMarkdown>
-        </div>
-      ) : (
-        <SpecMdxEditor
-          value={draft}
-          onChange={setDraft}
-          className="min-h-[280px] flex-1 p-4"
-        />
-      )}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
+        {editing ? (
+          <SpecMdxEditor
+            value={draft}
+            onChange={setDraft}
+            preview="live"
+            className="min-h-0 flex-1"
+          />
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <MarkdownView value={draft} />
+          </div>
+        )}
+      </div>
       <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-2">
         <button
           className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2847,17 +2837,13 @@ function SpecCard({
           <SpecMdxEditor
             value={draft}
             onChange={setDraft}
-            className="max-h-[60vh]"
+            preview="live"
+            height={400}
           />
         </div>
       ) : (
-        <div className="prose prose-zinc max-h-[60vh] max-w-none overflow-y-auto px-3 pb-3 prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
-          <ReactMarkdown
-            rehypePlugins={[rehypeHighlight]}
-            remarkPlugins={[remarkGfm]}
-          >
-            {body}
-          </ReactMarkdown>
+        <div className="max-h-[60vh] overflow-y-auto px-3 pb-3">
+          <MarkdownView value={body} />
         </div>
       )}
       {truncated && toolMeta ? (
@@ -2937,16 +2923,13 @@ function CompletedView({
       </div>
       <div className="flex-1 overflow-y-auto p-4">
         {tab === "understand" ? (
-          <div className="prose prose-zinc max-w-none prose-pre:rounded-lg prose-pre:bg-zinc-950 prose-pre:text-zinc-50">
-            <ReactMarkdown
-              rehypePlugins={[rehypeHighlight]}
-              remarkPlugins={[remarkGfm]}
-            >
-              {typeof understanding === "string"
+          <MarkdownView
+            value={
+              typeof understanding === "string"
                 ? understanding
-                : "_（无 understanding 输出）_"}
-            </ReactMarkdown>
-          </div>
+                : "_（无 understanding 输出）_"
+            }
+          />
         ) : null}
         {tab === "subsystems" ? (
           <div className="grid gap-2 md:grid-cols-2">
