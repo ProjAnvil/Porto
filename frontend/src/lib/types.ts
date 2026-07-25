@@ -203,7 +203,6 @@ export type ToolMeta = {
 
 export type WorkflowOutputEntry = {
   output: Record<string, unknown>;
-  tool_meta?: ToolMeta;
   produced_by: "ai" | "user";
   produced_at: string;
 };

@@ -383,9 +383,13 @@ class WorkflowExecutor:
         if cur >= self.settings.tool_turn_hard_cap:
             guard.release()
             raise WorkflowRunning(workflow_id)  # 撞顶 → 409 引导手编
-        threading.Thread(
-            target=self._worker_rerun, args=(workflow_id, guard, step), daemon=True
-        ).start()
+        try:
+            threading.Thread(
+                target=self._worker_rerun, args=(workflow_id, guard, step), daemon=True
+            ).start()
+        except Exception:
+            guard.release()
+            raise
 
     def _worker_rerun(self, workflow_id: str, guard: threading.Lock, step: str) -> None:
         try:
