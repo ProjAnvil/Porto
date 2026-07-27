@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 import uuid
 from datetime import UTC, datetime
 
@@ -268,3 +270,58 @@ def _retract_by_match(
                 "facts retract match id=%s session=%s category=%s score=%s",
                 best_id, session_id, category, round(best_score, 3),
             )
+
+
+# ---------------------------------------------------------------------- #
+# Triggers(Task 7): daemon 线程 / asyncio.create_task
+# ---------------------------------------------------------------------- #
+
+def trigger_facts_extraction_sync(
+    *, store: SessionFactsStore, llm, session_id: str,
+    new_message: str, recent_turns: list, settings: Settings,
+) -> None:
+    """非流式路径:开 daemon 线程 fire-and-forget。
+
+    facts_enabled=False 时直接返回,不创建线程。
+    同步路径无法在调用方等待线程结束;线程内 extract_facts 自带 fail-open。
+    """
+    if not settings.facts_enabled:
+        return
+    t = threading.Thread(
+        target=extract_facts,
+        kwargs=dict(
+            store=store, llm=llm, session_id=session_id,
+            new_message=new_message, recent_turns=list(recent_turns),
+            settings=settings,
+        ),
+        daemon=True,
+        name=f"facts-extract-{session_id}",
+    )
+    t.start()
+    store.logger.info("facts trigger thread started session=%s", session_id)
+
+
+def trigger_facts_extraction_async(
+    *, store: SessionFactsStore, llm, session_id: str,
+    new_message: str, recent_turns: list, settings: Settings,
+):
+    """流式路径:返回 asyncio.Task 供调用方 fire-and-forget(create_task)。
+
+    内部用 asyncio.to_thread 包装同步 extract_facts,避免阻塞事件循环。
+    facts 关闭时返回 None(调用方不 create_task)。
+    必须在运行中的 event loop 里调用。
+    """
+    if not settings.facts_enabled:
+        return None
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(
+        asyncio.to_thread(
+            extract_facts,
+            store=store, llm=llm, session_id=session_id,
+            new_message=new_message, recent_turns=list(recent_turns),
+            settings=settings,
+        ),
+        name=f"facts-extract-{session_id}",
+    )
+    store.logger.info("facts trigger task created session=%s", session_id)
+    return task
