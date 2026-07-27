@@ -160,3 +160,111 @@ def build_facts_prompt(grouped: dict[str, list[SessionFact]]) -> str:
         for f in facts:
             lines.append(f"- {f.content}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------- #
+# LLM 提取(Task 6)
+# ---------------------------------------------------------------------- #
+
+_FACTS_SCHEMA_HINT = {
+    "facts": [
+        {
+            "category": "user_decision | user_preference | project_context | open_question",
+            "content": "简洁陈述,保留专有名词/变量名/数字原样",
+            "action": "add | amend | retract",
+        }
+    ]
+}
+
+_FACTS_SYSTEM_PROMPT = """从以下最新对话中提取值得长期记住的关键事实。
+
+只提取用户明确表达的:
+- user_decision: 用户确认或否决的决定
+- user_preference: 用户表达的偏好
+- project_context: 项目背景、约束、领域信息
+- open_question: 待澄清的问题
+
+不提取:agent 提问、寒暄、临时试探。无事实则返回 {"facts": []}。
+
+强制要求:content 保留所有专有名词、变量名、数字原样;每条事实原子化,不合并。
+
+action 语义:
+- add / amend: 实现上等价,都走 upsert(模糊匹配 ≥ 阈值则更新,否则新增)
+- retract: 撤销事实(用户改主意,如"不用 OAuth 了"),会撤掉匹配的同 category fact"""
+
+
+def extract_facts(
+    *, store: SessionFactsStore, llm, session_id: str,
+    new_message: str, recent_turns: list, settings: Settings,
+) -> int:
+    """同步提取(供 trigger_facts_extraction 在线程/to_thread 里调用)。
+
+    LLM 不可用 / 解析失败 / 异常 → fail-open 返回 0。
+    """
+    if not settings.facts_enabled or not getattr(llm, "enabled", False):
+        return 0
+    recent_text = "\n".join(
+        f"{getattr(r, 'role', 'user')}: {getattr(r, 'content', '')}" for r in recent_turns
+    )
+    user_prompt = f"最新用户消息:\n{new_message}\n\n最近上下文:\n{recent_text}"
+    try:
+        result = llm.complete_structured(
+            _FACTS_SYSTEM_PROMPT, user_prompt, _FACTS_SCHEMA_HINT,
+        )
+    except Exception:
+        store.logger.exception("facts extract llm failed session=%s", session_id)
+        return 0
+    if not isinstance(result, dict):
+        store.logger.info("facts extract no json session=%s", session_id)
+        return 0
+    facts = result.get("facts") or []
+    written = 0
+    for item in facts:
+        category = item.get("category")
+        content = (item.get("content") or "").strip()
+        action = item.get("action", "add")
+        if category not in _CATEGORY_PRIORITY or not content:
+            continue
+        if action == "retract":
+            _retract_by_match(store, session_id, category, content)
+            written += 1
+        else:  # add / amend 等价
+            store.upsert(
+                session_id=session_id, category=category,
+                content=content, source_msg_id=None,
+            )
+            written += 1
+    store.logger.info(
+        "facts extract done session=%s extracted=%s written=%s",
+        session_id, len(facts), written,
+    )
+    return written
+
+
+def _retract_by_match(
+    store: SessionFactsStore, session_id: str, category: str, content: str,
+) -> None:
+    """retract 时按 Jaccard 找最匹配的 active fact 撤掉;无命中则跳过。"""
+    import sqlite3
+
+    target = set(tokens(content))
+    with sqlite3.connect(store.settings.memory_db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, content FROM session_facts "
+            "WHERE session_id=? AND category=? AND status='active'",
+            (session_id, category),
+        ).fetchall()
+        best_id, best_score = None, store.settings.facts_similarity_threshold
+        for row in rows:
+            score = _jaccard(target, set(tokens(row["content"])))
+            if score >= best_score:
+                best_id, best_score = row["id"], score
+        if best_id is not None:
+            conn.execute(
+                "UPDATE session_facts SET status='retracted' WHERE id=?", (best_id,),
+            )
+            store.logger.info(
+                "facts retract match id=%s session=%s category=%s score=%s",
+                best_id, session_id, category, round(best_score, 3),
+            )
