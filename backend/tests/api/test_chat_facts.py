@@ -127,6 +127,63 @@ def test_chat_stream_triggers_async_extraction(monkeypatch, tmp_path):
     assert "用 OAuth 吧" in triggered.get("new_message", "")
 
 
+def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
+    """facts_store.by_category 抛 OperationalError 时 chat 不报错(fail-open)。
+
+    主 chat 链路读 facts 任何环节失败都不得阻塞响应。这里 monkeypatch by_category
+    抛 sqlite3.OperationalError("db locked"),验证 chat() 不抛 + facts_block 为空。
+    """
+    import sqlite3
+
+    from porto_chatbot import main
+    from porto_chatbot.api.routes import chat as chat_mod
+    from porto_chatbot.memory.facts import SessionFactsStore
+    from porto_chatbot.memory.store import MemoryStore
+    from porto_chatbot.settings import Settings
+
+    settings = Settings(data_dir=tmp_path, facts_enabled=True)
+    monkeypatch.setattr(main, "settings", settings)
+    MemoryStore(settings)  # 初始化 memory 表 schema
+
+    captured: dict = {}
+
+    fake_llm = MagicMock()
+    fake_llm.enabled = True
+    fake_llm.complete.side_effect = lambda system, user, **kw: (
+        captured.update(system=system, user=user) or "回答"
+    )
+
+    # 让 by_category 抛 db 锁异常(模拟磁盘满 / db locked / 老 db 缺 migration)
+    def _raise(self, sid):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(SessionFactsStore, "by_category", _raise)
+
+    with (
+        patch.object(chat_mod, "get_store") as gs,
+        patch.object(chat_mod, "get_memory") as gm,
+        patch.object(chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(chat_mod, "get_index_supervisor") as gi,
+        patch.object(chat_mod, "route_chat_intent") as ri,
+        patch.object(chat_mod, "trigger_facts_extraction_sync") as trig_sync,
+    ):
+        gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
+        gm.return_value = _mock_memory()
+        gi.return_value.rag_available.return_value = (True, "")
+        ri.return_value = MagicMock(intent="rag", reason="x")
+
+        req = chat_mod.ChatRequest(message="用 OAuth 吧", session_id="s1")
+        resp = chat_mod.chat(req)  # 不抛即通过
+
+    assert resp.answer == "回答"
+    # facts_block 为空,facts 头 "关键事实" 不应出现在注入给 LLM 的 user 文本里
+    assert "关键事实" not in captured["user"]
+    # 用户原消息仍然在
+    assert "用 OAuth 吧" in captured["user"]
+    # trigger 仍被调(内部按 settings.facts_enabled 走,不依赖 facts_block)
+    trig_sync.assert_called_once()
+
+
 @pytest.mark.parametrize("facts_enabled", [True, False])
 def test_chat_facts_fail_open_when_empty(monkeypatch, tmp_path, facts_enabled):
     """facts 为空或关闭时 chat 行为不破坏(注入空串,trigger 跳过)。"""

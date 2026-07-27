@@ -172,12 +172,16 @@ def chat(req: ChatRequest):
 
     # Session facts(最高优先级注入):active facts 拼成 prompt 片段插在用户问题之后;
     # 同步 fire-and-forget 触发 LLM 提取(daemon 线程,不阻塞响应)。
+    # facts 读取 fail-open:任何异常(db 锁/磁盘满/老 db 缺 migration)都降级为空串,
+    # 不阻塞主 chat 链路。
     facts_store = SessionFactsStore(runtime_settings)
-    facts_block = (
-        build_facts_prompt(facts_store.by_category(req.session_id))
-        if runtime_settings.facts_enabled
-        else ""
-    )
+    facts_block = ""
+    if runtime_settings.facts_enabled:
+        try:
+            facts_block = build_facts_prompt(facts_store.by_category(req.session_id))
+        except Exception:
+            logger.exception("facts load failed session=%s", req.session_id)
+            facts_block = ""
     trigger_facts_extraction_sync(
         store=facts_store,
         llm=llm,
@@ -338,12 +342,16 @@ async def chat_stream(body: dict[str, Any]):
             # Session facts(最高优先级注入):active facts 拼成 prompt 片段插在用户问题之后;
             # 异步 fire-and-forget 触发 LLM 提取(asyncio.create_task + to_thread,
             # 不阻塞 SSE 流)。
+            # facts 读取 fail-open:任何异常(db 锁/磁盘满/老 db 缺 migration)都降级为空串,
+            # 不阻塞主 chat 链路。
             facts_store = SessionFactsStore(runtime_settings)
-            facts_block = (
-                build_facts_prompt(facts_store.by_category(req.session_id))
-                if runtime_settings.facts_enabled
-                else ""
-            )
+            facts_block = ""
+            if runtime_settings.facts_enabled:
+                try:
+                    facts_block = build_facts_prompt(facts_store.by_category(req.session_id))
+                except Exception:
+                    logger.exception("facts load failed session=%s", req.session_id)
+                    facts_block = ""
             trigger_facts_extraction_async(
                 store=facts_store,
                 llm=llm,
