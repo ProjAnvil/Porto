@@ -74,3 +74,44 @@ def test_upsert_scoped_by_session_category(store):
                  content="登录采用 OAuth", source_msg_id="m1")  # 同内容不同 session
     assert len(store.list_active("s1")) == 1
     assert len(store.list_active("s2")) == 1
+
+
+def test_retract_marks_status(store):
+    fid = store.upsert(session_id="s1", category="user_decision",
+                       content="登录采用 OAuth", source_msg_id="m1")
+    store.retract(fid)
+    active = store.list_active("s1")
+    assert len(active) == 0  # retracted 的不进 active
+
+
+def test_retract_idempotent(store):
+    fid = store.upsert(session_id="s1", category="user_decision",
+                       content="登录采用 OAuth", source_msg_id="m1")
+    store.retract(fid)
+    store.retract(fid)  # 不报错
+
+
+def test_list_active_orders_by_category_priority(store):
+    store.upsert(session_id="s1", category="open_question",
+                 content="前端框架未定", source_msg_id="m1")
+    store.upsert(session_id="s1", category="user_decision",
+                 content="登录采用 OAuth", source_msg_id="m2")
+    store.upsert(session_id="s1", category="user_preference",
+                 content="后端用 Go", source_msg_id="m3")
+    active = store.list_active("s1")
+    assert [f.category for f in active] == [
+        "user_decision", "user_preference", "open_question",
+    ]
+
+
+def test_by_category_groups(store):
+    store.upsert(session_id="s1", category="user_decision",
+                 content="登录采用 OAuth", source_msg_id="m1")
+    store.upsert(session_id="s1", category="user_decision",
+                 content="不用 SAML", source_msg_id="m2")
+    store.upsert(session_id="s1", category="project_context",
+                 content="金融客户项目", source_msg_id="m3")
+    grouped = store.by_category("s1")
+    assert len(grouped["user_decision"]) == 2
+    assert len(grouped["project_context"]) == 1
+    assert "open_question" not in grouped  # 空组不出现

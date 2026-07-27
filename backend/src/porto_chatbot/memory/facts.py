@@ -96,16 +96,39 @@ class SessionFactsStore:
             "facts cap evicted session=%s category=%s count=%s", session_id, category, to_delete,
         )
 
+    def retract(self, fact_id: str) -> None:
+        """软删:标记 status='retracted'。对已 retracted 的行再 UPDATE 幂等。"""
+        with sqlite3.connect(self.settings.memory_db_path) as conn:
+            conn.execute(
+                "UPDATE session_facts SET status='retracted' WHERE id=?",
+                (fact_id,),
+            )
+        self.logger.info("facts retract id=%s", fact_id)
+
     def list_active(self, session_id: str) -> list[SessionFact]:
-        """桩:Task 4 会重写加 category 优先级排序 + by_category / retract。"""
+        """按 category 优先级(decision>preference>context>open_question)排序。
+
+        同 category 内按 updated_at DESC(由 by_category 保证)。
+        """
+        grouped = self.by_category(session_id)
+        ordered: list[SessionFact] = []
+        for cat in sorted(grouped, key=lambda c: _CATEGORY_PRIORITY.get(c, 99)):
+            ordered.extend(grouped[cat])
+        return ordered
+
+    def by_category(self, session_id: str) -> dict[str, list[SessionFact]]:
+        """分组返回 active facts,空 category 不出现在 key 中。"""
         with sqlite3.connect(self.settings.memory_db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT * FROM session_facts WHERE session_id=? AND status='active' "
-                "ORDER BY updated_at DESC",
+                "SELECT * FROM session_facts "
+                "WHERE session_id=? AND status='active' ORDER BY updated_at DESC",
                 (session_id,),
             ).fetchall()
-        return [self._row_to_fact(r) for r in rows]
+        grouped: dict[str, list[SessionFact]] = {}
+        for row in rows:
+            grouped.setdefault(row["category"], []).append(self._row_to_fact(row))
+        return grouped
 
     def _row_to_fact(self, row: sqlite3.Row) -> SessionFact:
         return SessionFact(
