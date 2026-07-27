@@ -43,3 +43,16 @@ class MemoryRecord(BaseModel):
 class MemorySearchResponse(BaseModel):
     query: str
     results: list[SourceChunk]
+
+
+class SessionFact(BaseModel):
+    """会话级关键事实(a2)。每条独立原子化,带 category 优先级与 status 生命周期。"""
+
+    id: str
+    session_id: str
+    category: Literal["user_decision", "user_preference", "project_context", "open_question"]
+    content: str
+    status: Literal["active", "retracted"] = "active"
+    source_msg_id: str | None = None
+    created_at: str
+    updated_at: str

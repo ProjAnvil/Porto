@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     memory_collection: str = "porto_memory"
     memory_compact_threshold: int = Field(default=20, ge=4)
     memory_recent_keep: int = Field(default=8, ge=1)
+    # Session facts (a2 long-term key facts)
+    facts_enabled: bool = True
+    facts_max_per_category: int = Field(default=20, ge=1, le=100)
+    facts_similarity_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    facts_recent_context_turns: int = Field(default=6, ge=1, le=20)
+    facts_provider: Literal["openai", "anthropic"] | None = None
+    facts_model: str | None = None
     context_char_budget: int = Field(default=16000, ge=1000)
     max_chunk_chars: int = 1400
     chunk_overlap: int = 180

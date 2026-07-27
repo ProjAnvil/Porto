@@ -6,6 +6,7 @@ from .chat import (
     ChatResponse,
     MemoryRecord,
     MemorySearchResponse,
+    SessionFact,
 )
 from .common import (
     DependencyHealth,
@@ -52,6 +53,7 @@ __all__ = [
     "ChatResponse",
     "MemoryRecord",
     "MemorySearchResponse",
+    "SessionFact",
     "EvalCase",
     "EvalRequest",
     "Subsystem",
