@@ -16,6 +16,13 @@ _CATEGORY_PRIORITY = {
     "open_question": 3,
 }
 
+_CATEGORY_HEADERS: dict[str, str] = {
+    "user_decision": "[决策]",
+    "user_preference": "[偏好]",
+    "project_context": "[背景]",
+    "open_question": "[待澄清]",
+}
+
 
 def _jaccard(a: set[str], b: set[str]) -> float:
     if not a and not b:
@@ -137,3 +144,19 @@ class SessionFactsStore:
             source_msg_id=row["source_msg_id"],
             created_at=row["created_at"], updated_at=row["updated_at"],
         )
+
+
+def build_facts_prompt(grouped: dict[str, list[SessionFact]]) -> str:
+    """按 category 优先级拼成 system prompt 片段。空输入返回 ""(调用方据此跳过插入)。"""
+    if not grouped:
+        return ""
+    lines: list[str] = ["关键事实(用户已确认,优先参考):"]
+    for cat in sorted(grouped, key=lambda c: _CATEGORY_PRIORITY.get(c, 99)):
+        facts = grouped[cat]
+        if not facts:
+            continue
+        header = _CATEGORY_HEADERS.get(cat, f"[{cat}]")
+        lines.append(header)
+        for f in facts:
+            lines.append(f"- {f.content}")
+    return "\n".join(lines)
