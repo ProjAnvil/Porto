@@ -124,3 +124,14 @@ def test_extract_facts_retract_action(tmp_path):
     n = _call_extract(store, llm, settings, "不用 OAuth 了")
     assert n == 1
     assert store.list_active("s1") == []  # 被 retract
+
+
+def test_extract_facts_llm_exception_fail_open(tmp_path):
+    """complete_structured 抛异常时 fail-open 返回 0,不向上抛。"""
+    store, settings = _make_store(tmp_path)
+    llm = MagicMock()
+    llm.enabled = True
+    llm.complete_structured.side_effect = RuntimeError("LLM timeout")
+    n = _call_extract(store, llm, settings, "用 OAuth 吧")
+    assert n == 0
+    assert store.list_active("s1") == []
