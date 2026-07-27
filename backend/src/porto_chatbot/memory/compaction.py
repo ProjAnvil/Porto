@@ -16,8 +16,13 @@ def summarize_records(records: list[MemoryRecord], llm: LLMClient) -> str:
         return ""
     transcript = "\n".join(f"{r.role}: {r.content}" for r in records)
     summary = llm.complete(
-        "你是会话摘要助手。把以下对话历史压缩成简洁的中文摘要，"
-        "保留关键事实、用户意图、已确认的结论和未解决的问题，去掉寒暄与冗余。",
+        "你是会话摘要助手。把以下对话历史压缩成简洁的中文摘要。\n\n"
+        "强制要求:\n"
+        "- 保留所有专有名词、变量名、API 名、产品名原样(不要抽象化成\"某功能\")\n"
+        "- 保留所有数字、版本号、阈值\n"
+        "- 保留已确认的决策(明确写\"用户确认 X\")和已否决的选项(\"用户否决 Y\")\n"
+        "- 保留未解决的问题,标注\"待澄清:Z\"\n"
+        "- 去掉寒暄、试探性提问、重复内容",
         f"对话历史:\n{transcript}",
     )
     return (summary or "").strip()
