@@ -282,3 +282,24 @@ class MemoryStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_facts (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    source_msg_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_facts_session ON session_facts(session_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_facts_session_cat "
+                "ON session_facts(session_id, category)"
+            )
