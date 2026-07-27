@@ -10,7 +10,13 @@ from ...evaluation import evaluate_rag_cases
 from ...intent import IntentDecision, route_chat_intent
 from ...llm import LLMClient, format_sources
 from ...logging_utils import get_component_logger
-from ...memory import get_compacted_history
+from ...memory import (
+    SessionFactsStore,
+    build_facts_prompt,
+    get_compacted_history,
+    trigger_facts_extraction_async,
+    trigger_facts_extraction_sync,
+)
 from ...models import ChatRequest, ChatResponse, EvalCase
 from ..deps import (
     apply_rag_settings,
@@ -50,7 +56,9 @@ def _trim_to_budget(parts: list[str], budget: int) -> list[str]:
     return [p for p in result if p]
 
 
-def _direct_chat_answer(req: ChatRequest, runtime_settings, decision: IntentDecision, llm: LLMClient | None = None) -> ChatResponse:
+def _direct_chat_answer(
+    req: ChatRequest, runtime_settings, decision: IntentDecision, llm: LLMClient | None = None
+) -> ChatResponse:
     llm = llm or LLMClient(runtime_settings)
     answer = llm.complete(
         "你是 Porto 助手。用户当前消息不需要检索知识库，直接、简洁、友好地回应。",
@@ -124,7 +132,12 @@ def _rag_unavailable_answer(req: ChatRequest, reason: str | None) -> ChatRespons
                 "summary": hint,
                 "data": {},
             },
-            {"name": "answer", "status": "completed", "summary": "RAG 不可用，返回提示", "data": {}},
+            {
+                "name": "answer",
+                "status": "completed",
+                "summary": "RAG 不可用，返回提示",
+                "data": {},
+            },
         ],
     )
 
@@ -157,12 +170,29 @@ def chat(req: ChatRequest):
     summary, recent = get_compacted_history(req.session_id, memory, llm)
     memory.add(session_id=req.session_id, role="user", content=req.message)
 
+    # Session facts(最高优先级注入):active facts 拼成 prompt 片段插在用户问题之后;
+    # 同步 fire-and-forget 触发 LLM 提取(daemon 线程,不阻塞响应)。
+    facts_store = SessionFactsStore(runtime_settings)
+    facts_block = (
+        build_facts_prompt(facts_store.by_category(req.session_id))
+        if runtime_settings.facts_enabled
+        else ""
+    )
+    trigger_facts_extraction_sync(
+        store=facts_store,
+        llm=llm,
+        session_id=req.session_id,
+        new_message=req.message,
+        recent_turns=recent,
+        settings=runtime_settings,
+    )
+
     prompt_parts = [f"用户问题:\n{req.message}"]
+    if facts_block:
+        prompt_parts.append(facts_block)
     if summary:
         prompt_parts.append(f"会话历史摘要:\n{summary}")
-    prompt_parts.append(
-        "最近会话:\n" + "\n".join(f"{m.role}: {m.content}" for m in recent)
-    )
+    prompt_parts.append("最近会话:\n" + "\n".join(f"{m.role}: {m.content}" for m in recent))
     prompt_parts.append(f"记忆检索:\n{format_sources(memories)}")
     prompt_parts.append(f"知识库片段:\n{format_sources(sources)}")
     prompt_parts = _trim_to_budget(prompt_parts, runtime_settings.context_char_budget)
@@ -214,7 +244,11 @@ def chat(req: ChatRequest):
                 "status": "completed",
                 "summary": f"检索到 {len(memories)} 条记忆，近期 {len(recent)} 条"
                 + ("（含历史摘要）" if summary else ""),
-                "data": {"compacted": bool(summary), "recent": len(recent), "memory_hits": len(memories)},
+                "data": {
+                    "compacted": bool(summary),
+                    "recent": len(recent),
+                    "memory_hits": len(memories),
+                },
             },
             {
                 "name": "retrieve_knowledge",
@@ -249,21 +283,31 @@ async def chat_stream(body: dict[str, Any]):
         try:
             if decision.intent == "direct":
                 response = _direct_chat_answer(req, runtime_settings, decision, llm)
-                yield _ai_sdk_sse({"type": "start", "messageMetadata": {"session_id": req.session_id}})
+                yield _ai_sdk_sse(
+                    {"type": "start", "messageMetadata": {"session_id": req.session_id}}
+                )
                 yield _ai_sdk_sse({"type": "start-step"})
                 yield _ai_sdk_sse({"type": "text-start", "id": text_id})
                 for chunk in _text_chunks(response.answer):
                     yield _ai_sdk_sse({"type": "text-delta", "id": text_id, "delta": chunk})
                 yield _ai_sdk_sse({"type": "text-end", "id": text_id})
                 yield _ai_sdk_sse({"type": "finish-step"})
-                yield _ai_sdk_sse({"type": "finish", "finishReason": "stop", "messageMetadata": {"source_count": 0}})
+                yield _ai_sdk_sse(
+                    {
+                        "type": "finish",
+                        "finishReason": "stop",
+                        "messageMetadata": {"source_count": 0},
+                    }
+                )
                 yield "data: [DONE]\n\n"
                 return
 
             available, reason = get_index_supervisor().rag_available()
             if not available:
                 hint = _rag_unavailable_hint(reason)
-                yield _ai_sdk_sse({"type": "start", "messageMetadata": {"session_id": req.session_id}})
+                yield _ai_sdk_sse(
+                    {"type": "start", "messageMetadata": {"session_id": req.session_id}}
+                )
                 yield _ai_sdk_sse({"type": "start-step"})
                 yield _ai_sdk_sse({"type": "text-start", "id": text_id})
                 for chunk in _text_chunks(hint):
@@ -271,10 +315,16 @@ async def chat_stream(body: dict[str, Any]):
                 yield _ai_sdk_sse({"type": "text-end", "id": text_id})
                 yield _ai_sdk_sse({"type": "finish-step"})
                 yield _ai_sdk_sse(
-                    {"type": "finish", "finishReason": "stop", "messageMetadata": {"source_count": 0}}
+                    {
+                        "type": "finish",
+                        "finishReason": "stop",
+                        "messageMetadata": {"source_count": 0},
+                    }
                 )
                 yield "data: [DONE]\n\n"
-                logger.info("chat stream rag unavailable session_id=%s reason=%s", req.session_id, reason)
+                logger.info(
+                    "chat stream rag unavailable session_id=%s reason=%s", req.session_id, reason
+                )
                 return
 
             store = get_store(runtime_settings)
@@ -285,7 +335,27 @@ async def chat_stream(body: dict[str, Any]):
             summary, recent = get_compacted_history(req.session_id, memory, llm)
             memory.add(session_id=req.session_id, role="user", content=req.message)
 
+            # Session facts(最高优先级注入):active facts 拼成 prompt 片段插在用户问题之后;
+            # 异步 fire-and-forget 触发 LLM 提取(asyncio.create_task + to_thread,
+            # 不阻塞 SSE 流)。
+            facts_store = SessionFactsStore(runtime_settings)
+            facts_block = (
+                build_facts_prompt(facts_store.by_category(req.session_id))
+                if runtime_settings.facts_enabled
+                else ""
+            )
+            trigger_facts_extraction_async(
+                store=facts_store,
+                llm=llm,
+                session_id=req.session_id,
+                new_message=req.message,
+                recent_turns=recent,
+                settings=runtime_settings,
+            )
+
             prompt_parts = [f"用户问题:\n{req.message}"]
+            if facts_block:
+                prompt_parts.append(facts_block)
             if summary:
                 prompt_parts.append(f"会话历史摘要:\n{summary}")
             prompt_parts.append("最近会话:\n" + "\n".join(f"{m.role}: {m.content}" for m in recent))
@@ -348,7 +418,11 @@ async def chat_stream(body: dict[str, Any]):
                     "status": "completed",
                     "summary": f"检索到 {len(memories)} 条记忆，近期 {len(recent)} 条"
                     + ("（含历史摘要）" if summary else ""),
-                    "data": {"compacted": bool(summary), "recent": len(recent), "memory_hits": len(memories)},
+                    "data": {
+                        "compacted": bool(summary),
+                        "recent": len(recent),
+                        "memory_hits": len(memories),
+                    },
                 },
                 {
                     "name": "retrieve_knowledge",
@@ -356,7 +430,12 @@ async def chat_stream(body: dict[str, Any]):
                     "summary": f"检索到 {len(sources)} 个片段",
                     "data": {},
                 },
-                {"name": "answer", "status": "completed", "summary": "完成回答生成", "data": {"streamed": streamed}},
+                {
+                    "name": "answer",
+                    "status": "completed",
+                    "summary": "完成回答生成",
+                    "data": {"streamed": streamed},
+                },
                 {
                     "name": "evaluate_rag",
                     "status": "completed",
