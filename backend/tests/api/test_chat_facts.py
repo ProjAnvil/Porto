@@ -228,3 +228,75 @@ def test_chat_facts_fail_open_when_empty(monkeypatch, tmp_path, facts_enabled):
     # trigger 无论 facts_enabled 都被调一次(内部按 settings.facts_enabled fail-open,
     # Task 7 已覆盖)
     trig_sync.assert_called_once()
+
+
+def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
+    """流式 chat_stream:facts_store.by_category 抛 OperationalError 时不报错(fail-open)。
+
+    镜像 test_chat_facts_load_fail_open 的流式版本。chat_stream 与 chat 的 facts
+    读取代码同源(同 try/except + logger.exception 模式),此测试锁住流式路径也遵守
+    fail-open 铁律,防止后续重构流式 prompt 拼装时悄悄破坏 fail-open。
+    """
+    import sqlite3
+
+    from porto_chatbot import main
+    from porto_chatbot.api.routes import chat as chat_mod
+    from porto_chatbot.memory.facts import SessionFactsStore
+    from porto_chatbot.memory.store import MemoryStore
+    from porto_chatbot.settings import Settings
+
+    settings = Settings(data_dir=tmp_path, facts_enabled=True)
+    monkeypatch.setattr(main, "settings", settings)
+    MemoryStore(settings)
+
+    captured: dict = {}
+
+    fake_llm = MagicMock()
+    fake_llm.enabled = True
+    # 流式路径按 agent_stream_enabled 走 stream 或 complete;两个都 mock 以覆盖任一分支
+    fake_llm.stream = MagicMock(
+        side_effect=lambda system, user, **kw: (
+            captured.update(system=system, user=user) or iter(["回答"])
+        )
+    )
+    fake_llm.complete = MagicMock(
+        side_effect=lambda system, user, **kw: (
+            captured.update(system=system, user=user) or "回答"
+        )
+    )
+
+    # 让 by_category 抛 db 锁异常(模拟磁盘满 / db locked / 老 db 缺 migration)
+    def _raise(self, sid):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(SessionFactsStore, "by_category", _raise)
+
+    with (
+        patch.object(chat_mod, "get_store") as gs,
+        patch.object(chat_mod, "get_memory") as gm,
+        patch.object(chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(chat_mod, "get_index_supervisor") as gi,
+        patch.object(chat_mod, "route_chat_intent") as ri,
+        patch.object(chat_mod, "trigger_facts_extraction_async") as trig_async,
+    ):
+        gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
+        gm.return_value = _mock_memory()
+        gi.return_value.rag_available.return_value = (True, "")
+        ri.return_value = MagicMock(intent="rag", reason="x")
+
+        body = {"message": "用 OAuth 吧", "session_id": "s1"}
+
+        async def _drain() -> None:
+            # chat_stream 返回 StreamingResponse,内部 events() 才是 async iterator
+            response = await chat_mod.chat_stream(body)
+            async for _ in response.body_iterator:
+                pass
+
+        asyncio.run(_drain())  # 不抛即通过
+
+    # facts_block 为空,"关键事实" 头不应出现在注入给 LLM 的 user 文本里
+    assert "关键事实" not in captured["user"]
+    # 用户原消息仍然在
+    assert "用 OAuth 吧" in captured["user"]
+    # trigger 仍被调(内部按 settings.facts_enabled 走,不依赖 facts_block)
+    trig_async.assert_called_once()
