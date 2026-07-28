@@ -53,8 +53,9 @@ export function MermaidDiagram({
           containerRef.current.innerHTML = svg;
           setStatus("done");
         }
-      } catch {
+      } catch (err) {
         if (!cancelled) setStatus("error");
+        console.error("[MermaidDiagram] render failed:", err);
       }
     }
 
