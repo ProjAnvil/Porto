@@ -22,6 +22,7 @@ import {
   Gauge,
   History,
   Loader2,
+  Network,
   Pencil,
   Play,
   Plus,
@@ -67,6 +68,7 @@ import type {
   WorkflowOutputEntry,
   WorkflowStepName,
 } from "@/lib/types";
+import { ArchitectureView } from "@/components/architecture-view";
 import { SessionList } from "@/components/session-list";
 import { WorkflowList } from "@/components/workflow-list";
 import dynamic from "next/dynamic";
@@ -79,7 +81,7 @@ const SpecMdxEditor = dynamic(
 
 type Mode = "chat" | "workflow";
 type View = "workbench" | "settings";
-type SettingsSection = "rag" | "agent" | "document" | "knowledge";
+type SettingsSection = "rag" | "agent" | "document" | "knowledge" | "architecture";
 
 const emptyInspector: InspectorState = {
   steps: [],
@@ -1168,6 +1170,11 @@ function SettingsPage({
               label: "Knowledge",
               icon: <Database size={15} />,
             },
+            {
+              id: "architecture" as const,
+              label: "架构",
+              icon: <Network size={15} />,
+            },
           ].map((item) => (
             <button
               className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm ${
@@ -1363,6 +1370,8 @@ function SettingsPage({
             ) : null}
           </SettingsCard>
         ) : null}
+
+        {section === "architecture" ? <ArchitectureView /> : null}
       </section>
     </div>
   );
