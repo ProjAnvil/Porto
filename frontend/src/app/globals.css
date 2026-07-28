@@ -65,3 +65,18 @@ button:disabled {
   overflow: auto;
   padding: 0.75rem;
 }
+
+/*
+ * @uiw/react-markdown-preview 在 .wmde-markdown 上强制 background-color:#fff
+ * 与 color:var(--color-fg-default)(light=#24292f 深色),会盖住聊天气泡的底色与
+ * 字色(bg-zinc-950 text-white / bg-zinc-50 text-zinc-900)。该库 CSS 经普通
+ * import 引入,落在 unlayered 区;Tailwind utility 位于 @layer utilities,按 CSS
+ * cascade-layer 规则永远输给 unlayered,所以无法用 Tailwind class 覆盖。
+ * 这里用同等 unlayered + !important 兜底,并让 color 走 inherit 透传到气泡 div
+ * 的 text-white / text-zinc-900(.prose 与 .wmde-markdown 子元素均不设 color,
+ * 继承链通畅)。
+ */
+.wmde-markdown {
+  background-color: transparent !important;
+  color: inherit !important;
+}
