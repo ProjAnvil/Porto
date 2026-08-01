@@ -36,6 +36,7 @@ try:
         HookMatcher,
         ResultMessage,
         StreamEvent,
+        SystemMessage,
         TextBlock,
         ToolUseBlock,
         create_sdk_mcp_server,
@@ -47,9 +48,16 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
     HookMatcher = None  # type: ignore[assignment]
     ResultMessage = None  # type: ignore[assignment]
     StreamEvent = None  # type: ignore[assignment]
+    SystemMessage = None  # type: ignore[assignment]
     TextBlock = None  # type: ignore[assignment]
     ToolUseBlock = None  # type: ignore[assignment]
     create_sdk_mcp_server = None  # type: ignore[assignment]
+
+# Process-level cache: Porto session_id → Claude Code CLI session_id.
+# Enables conversation continuity across separate /api/chat/stream requests.
+# Each request spawns a new CLI subprocess; passing resume=<session_id> tells
+# the CLI to restore the full conversation context from its session store.
+_claude_session_map: dict[str, str] = {}
 
 
 class AgentSDKBackend:
@@ -255,7 +263,7 @@ class AgentSDKBackend:
                 )
             return {}  # no-op hook JSON output (SyncHookJSONOutput is all-optional)
 
-        options = ClaudeAgentOptions(
+        options_kwargs: dict[str, Any] = dict(
             system_prompt=(
                 "你是 Porto 知识库问答助手。你可以调用工具检索知识库、对话记忆和结构化事实。"
                 "优先基于工具返回的信息回答；不确定时说明缺口。"
@@ -268,6 +276,17 @@ class AgentSDKBackend:
             max_turns=settings.agent_max_tool_turns,
             hooks={"Stop": [HookMatcher(matcher="", hooks=[on_stop])]},
         )
+        # Session resume: if we have a Claude Code session_id for this Porto
+        # session, pass it as `resume` so the CLI restores full conversation
+        # context (including auto-compaction) from its session store.
+        existing_claude_sid = _claude_session_map.get(req.session_id)
+        if existing_claude_sid:
+            options_kwargs["resume"] = existing_claude_sid
+            self.logger.info(
+                "agent_sdk resume session porto=%s claude=%s",
+                req.session_id, existing_claude_sid,
+            )
+        options = ClaudeAgentOptions(**options_kwargs)
         return options, state, ctx
 
     async def chat(self, req: ChatRequest, settings: Settings) -> ChatResponse:
@@ -320,7 +339,17 @@ class AgentSDKBackend:
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(req.message)
                 async for msg in client.receive_response():
-                    if isinstance(msg, AssistantMessage):
+                    # Capture Claude Code session_id from init SystemMessage
+                    if SystemMessage is not None and isinstance(msg, SystemMessage):
+                        if msg.subtype == "init":
+                            claude_sid = msg.data.get("session_id")
+                            if claude_sid:
+                                _claude_session_map[req.session_id] = claude_sid
+                                self.logger.info(
+                                    "agent_sdk session captured porto=%s claude=%s",
+                                    req.session_id, claude_sid,
+                                )
+                    elif isinstance(msg, AssistantMessage):
                         for block in msg.content:
                             if isinstance(block, TextBlock):
                                 state["answer_text"] += block.text
@@ -442,8 +471,18 @@ class AgentSDKBackend:
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(req.message)
                 async for msg in client.receive_response():
+                    # Capture Claude Code session_id from init SystemMessage
+                    if SystemMessage is not None and isinstance(msg, SystemMessage):
+                        if msg.subtype == "init":
+                            claude_sid = msg.data.get("session_id")
+                            if claude_sid:
+                                _claude_session_map[req.session_id] = claude_sid
+                                self.logger.info(
+                                    "agent_sdk stream session captured porto=%s claude=%s",
+                                    req.session_id, claude_sid,
+                                )
                     # Token-level streaming: StreamEvent carries content_block_delta
-                    if StreamEvent is not None and isinstance(msg, StreamEvent):
+                    elif StreamEvent is not None and isinstance(msg, StreamEvent):
                         event = msg.event
                         if (
                             event.get("type") == "content_block_delta"
