@@ -1970,7 +1970,14 @@ function AgentSettingsForm({
           )}
         </label>
         <label className="block md:col-span-2">
-          <span className="text-xs text-zinc-500">Base URL</span>
+          <span className="text-xs text-zinc-500">
+            Base URL
+            {providerLocked ? (
+              <span className="ml-1 text-amber-600">
+                （Agent SDK：作为 ANTHROPIC_BASE_URL 传递给 Claude Code CLI）
+              </span>
+            ) : null}
+          </span>
           <input
             className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
             placeholder="可选"
@@ -1981,7 +1988,14 @@ function AgentSettingsForm({
           />
         </label>
         <label className="block md:col-span-2">
-          <span className="text-xs text-zinc-500">API Key</span>
+          <span className="text-xs text-zinc-500">
+            API Key
+            {providerLocked ? (
+              <span className="ml-1 text-amber-600">
+                （Agent SDK：作为 ANTHROPIC_API_KEY 传递给 Claude Code CLI）
+              </span>
+            ) : null}
+          </span>
           <input
             className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
             placeholder="留空则禁用 LLM"
