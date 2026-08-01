@@ -36,7 +36,9 @@ class PortoAgent:
         self.vector_store = vector_store or LocalVectorStore(settings)
         self.llm = llm or LLMClient(settings)
         self.critic_llm = self._build_critic_llm()
-        self.logger.info("agent ready")
+        from .factory import create_backend
+        self.backend = create_backend(settings, llm=self.llm, scope="workflow")
+        self.logger.info("agent ready backend=%s", type(self.backend).__name__)
 
     def _build_critic_llm(self) -> LLMClient:
         """构造 spec loop 的评判模型。未配 critic_* 时回退到 generator(``self.llm``)。

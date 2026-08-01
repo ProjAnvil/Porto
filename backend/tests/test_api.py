@@ -127,14 +127,14 @@ def test_chat_stream_native_streaming_when_llm_enabled(monkeypatch, sample_setti
 
 
 def test_trim_to_budget_under_budget():
-    from porto_chatbot.api.routes.chat import _trim_to_budget
+    from porto_chatbot.agent.langchain_chat import _trim_to_budget
 
     parts = ["问题", "摘要", "片段"]
     assert _trim_to_budget(parts, 1000) == ["问题", "摘要", "片段"]
 
 
 def test_trim_to_budget_trims_from_back():
-    from porto_chatbot.api.routes.chat import _trim_to_budget
+    from porto_chatbot.agent.langchain_chat import _trim_to_budget
 
     parts = ["问题", "摘要", "片段" * 100]
     result = _trim_to_budget(parts, 20)
@@ -143,7 +143,7 @@ def test_trim_to_budget_trims_from_back():
 
 
 def test_trim_to_budget_drops_empty_parts():
-    from porto_chatbot.api.routes.chat import _trim_to_budget
+    from porto_chatbot.agent.langchain_chat import _trim_to_budget
 
     parts = ["a", "b", "c" * 200]
     result = _trim_to_budget(parts, 5)
@@ -152,7 +152,7 @@ def test_trim_to_budget_drops_empty_parts():
 
 
 def test_trim_to_budget_zero_budget_noop():
-    from porto_chatbot.api.routes.chat import _trim_to_budget
+    from porto_chatbot.agent.langchain_chat import _trim_to_budget
 
     parts = ["a", "b"]
     assert _trim_to_budget(parts, 0) == ["a", "b"]

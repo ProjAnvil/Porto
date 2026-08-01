@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "anthropic>=0.60.0",
   "chromadb>=1.0.0",
+  "claude-agent-sdk>=0.2.128",
   "fastapi>=0.116.0",
   "httpx>=0.28.0",
   "langchain-anthropic>=0.3.0",
@@ -50,6 +51,9 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+markers = [
+    "integration: end-to-end tests requiring real API/CLI access (skipped in CI by default)",
+]
 
 [tool.ruff]
 line-length = 100

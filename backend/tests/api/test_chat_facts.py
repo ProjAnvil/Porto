@@ -24,6 +24,7 @@ def _mock_memory() -> MagicMock:
 def test_chat_injects_facts_into_prompt(monkeypatch, tmp_path):
     """非流式 chat:facts 被注入 prompt_parts(LLM 收到的 user 文本中)。"""
     from porto_chatbot import main
+    from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.api.routes import chat as chat_mod
     from porto_chatbot.memory.facts import SessionFactsStore
     from porto_chatbot.memory.store import MemoryStore
@@ -51,12 +52,12 @@ def test_chat_injects_facts_into_prompt(monkeypatch, tmp_path):
     )
 
     with (
-        patch.object(chat_mod, "get_store") as gs,
-        patch.object(chat_mod, "get_memory") as gm,
-        patch.object(chat_mod, "LLMClient", return_value=fake_llm),
-        patch.object(chat_mod, "get_index_supervisor") as gi,
-        patch.object(chat_mod, "route_chat_intent") as ri,
-        patch.object(chat_mod, "trigger_facts_extraction_sync") as trig_sync,
+        patch.object(langchain_chat_mod, "get_store") as gs,
+        patch.object(langchain_chat_mod, "get_memory") as gm,
+        patch.object(langchain_chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(langchain_chat_mod, "get_index_supervisor") as gi,
+        patch.object(langchain_chat_mod, "route_chat_intent") as ri,
+        patch.object(langchain_chat_mod, "trigger_facts_extraction_sync") as trig_sync,
     ):
         gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
         gm.return_value = _mock_memory()
@@ -80,6 +81,7 @@ def test_chat_injects_facts_into_prompt(monkeypatch, tmp_path):
 def test_chat_stream_triggers_async_extraction(monkeypatch, tmp_path):
     """流式 chat_stream:每轮 user msg 后触发异步提取(不阻塞 SSE)。"""
     from porto_chatbot import main
+    from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.api.routes import chat as chat_mod
     from porto_chatbot.memory.store import MemoryStore
     from porto_chatbot.settings import Settings
@@ -101,12 +103,12 @@ def test_chat_stream_triggers_async_extraction(monkeypatch, tmp_path):
     fake_llm.complete = MagicMock(return_value="回答")
 
     with (
-        patch.object(chat_mod, "get_store") as gs,
-        patch.object(chat_mod, "get_memory") as gm,
-        patch.object(chat_mod, "LLMClient", return_value=fake_llm),
-        patch.object(chat_mod, "get_index_supervisor") as gi,
-        patch.object(chat_mod, "route_chat_intent") as ri,
-        patch.object(chat_mod, "trigger_facts_extraction_async", fake_trigger),
+        patch.object(langchain_chat_mod, "get_store") as gs,
+        patch.object(langchain_chat_mod, "get_memory") as gm,
+        patch.object(langchain_chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(langchain_chat_mod, "get_index_supervisor") as gi,
+        patch.object(langchain_chat_mod, "route_chat_intent") as ri,
+        patch.object(langchain_chat_mod, "trigger_facts_extraction_async", fake_trigger),
     ):
         gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
         gm.return_value = _mock_memory()
@@ -136,6 +138,7 @@ def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
     import sqlite3
 
     from porto_chatbot import main
+    from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.api.routes import chat as chat_mod
     from porto_chatbot.memory.facts import SessionFactsStore
     from porto_chatbot.memory.store import MemoryStore
@@ -160,12 +163,12 @@ def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
     monkeypatch.setattr(SessionFactsStore, "by_category", _raise)
 
     with (
-        patch.object(chat_mod, "get_store") as gs,
-        patch.object(chat_mod, "get_memory") as gm,
-        patch.object(chat_mod, "LLMClient", return_value=fake_llm),
-        patch.object(chat_mod, "get_index_supervisor") as gi,
-        patch.object(chat_mod, "route_chat_intent") as ri,
-        patch.object(chat_mod, "trigger_facts_extraction_sync") as trig_sync,
+        patch.object(langchain_chat_mod, "get_store") as gs,
+        patch.object(langchain_chat_mod, "get_memory") as gm,
+        patch.object(langchain_chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(langchain_chat_mod, "get_index_supervisor") as gi,
+        patch.object(langchain_chat_mod, "route_chat_intent") as ri,
+        patch.object(langchain_chat_mod, "trigger_facts_extraction_sync") as trig_sync,
     ):
         gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
         gm.return_value = _mock_memory()
@@ -188,6 +191,7 @@ def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
 def test_chat_facts_fail_open_when_empty(monkeypatch, tmp_path, facts_enabled):
     """facts 为空或关闭时 chat 行为不破坏(注入空串,trigger 跳过)。"""
     from porto_chatbot import main
+    from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.api.routes import chat as chat_mod
     from porto_chatbot.memory.store import MemoryStore
     from porto_chatbot.settings import Settings
@@ -205,12 +209,12 @@ def test_chat_facts_fail_open_when_empty(monkeypatch, tmp_path, facts_enabled):
     )
 
     with (
-        patch.object(chat_mod, "get_store") as gs,
-        patch.object(chat_mod, "get_memory") as gm,
-        patch.object(chat_mod, "LLMClient", return_value=fake_llm),
-        patch.object(chat_mod, "get_index_supervisor") as gi,
-        patch.object(chat_mod, "route_chat_intent") as ri,
-        patch.object(chat_mod, "trigger_facts_extraction_sync") as trig_sync,
+        patch.object(langchain_chat_mod, "get_store") as gs,
+        patch.object(langchain_chat_mod, "get_memory") as gm,
+        patch.object(langchain_chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(langchain_chat_mod, "get_index_supervisor") as gi,
+        patch.object(langchain_chat_mod, "route_chat_intent") as ri,
+        patch.object(langchain_chat_mod, "trigger_facts_extraction_sync") as trig_sync,
     ):
         gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
         gm.return_value = _mock_memory()
@@ -240,6 +244,7 @@ def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
     import sqlite3
 
     from porto_chatbot import main
+    from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.api.routes import chat as chat_mod
     from porto_chatbot.memory.facts import SessionFactsStore
     from porto_chatbot.memory.store import MemoryStore
@@ -272,12 +277,12 @@ def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
     monkeypatch.setattr(SessionFactsStore, "by_category", _raise)
 
     with (
-        patch.object(chat_mod, "get_store") as gs,
-        patch.object(chat_mod, "get_memory") as gm,
-        patch.object(chat_mod, "LLMClient", return_value=fake_llm),
-        patch.object(chat_mod, "get_index_supervisor") as gi,
-        patch.object(chat_mod, "route_chat_intent") as ri,
-        patch.object(chat_mod, "trigger_facts_extraction_async") as trig_async,
+        patch.object(langchain_chat_mod, "get_store") as gs,
+        patch.object(langchain_chat_mod, "get_memory") as gm,
+        patch.object(langchain_chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(langchain_chat_mod, "get_index_supervisor") as gi,
+        patch.object(langchain_chat_mod, "route_chat_intent") as ri,
+        patch.object(langchain_chat_mod, "trigger_facts_extraction_async") as trig_async,
     ):
         gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
         gm.return_value = _mock_memory()

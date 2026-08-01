@@ -16,6 +16,7 @@ def generate_specs(state, *, config):
     def _gen(sub: Subsystem) -> SpecResult:
         # 浅拷贝 state：并行时各子任务 tool 检索写各自的 tool_sources，互不干扰
         sub_ctx = SpecContext(
+            backend=agent.backend,
             llm=agent.llm,
             state={**state},
             settings=agent.settings,
