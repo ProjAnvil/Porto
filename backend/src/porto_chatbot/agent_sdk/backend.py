@@ -14,6 +14,7 @@ the SDK.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -60,6 +61,15 @@ class AgentSDKBackend:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.logger = get_component_logger("backend.agent_sdk", settings)
+        # Claude Code CLI (bundled in claude-agent-sdk) authenticates via
+        # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL env vars or ~/.claude/ OAuth
+        # profile. Map Porto's langchain-oriented settings so the CLI subprocess
+        # inherits them — users who already configured API key in Settings get
+        # seamless auth without a separate `claude /login`.
+        if settings.agent_api_key:
+            os.environ["ANTHROPIC_API_KEY"] = settings.agent_api_key
+        if settings.agent_base_url:
+            os.environ["ANTHROPIC_BASE_URL"] = settings.agent_base_url
 
     def build_tools(self, ctx: AgentToolContext) -> list:
         """Return the SDK ``@tool`` list bound to ``ctx``.
