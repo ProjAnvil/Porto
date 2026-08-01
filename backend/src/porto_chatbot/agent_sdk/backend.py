@@ -437,6 +437,27 @@ class AgentSDKBackend:
             return
 
         yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+        yield _ai_sdk_sse(
+            {
+                "type": "data-porto",
+                "id": "porto-inspector",
+                "transient": True,
+                "data": {
+                    "steps": [
+                        {
+                            "name": "agent_react",
+                            "status": "completed",
+                            "summary": "Agent SDK ReAct loop",
+                            "data": {},
+                        }
+                    ],
+                    "sources": [],
+                    "memory": [],
+                    "evaluation": {"score": 0.0, "passed": True, "cases": []},
+                    "workflow": None,
+                },
+            }
+        )
         yield _ai_sdk_sse({"type": "finish-step"})
         yield _ai_sdk_sse(
             {

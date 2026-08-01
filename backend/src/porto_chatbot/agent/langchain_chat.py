@@ -130,7 +130,7 @@ def _rag_unavailable_answer(req: ChatRequest, reason: str | None) -> ChatRespons
             },
             {
                 "name": "retrieve_knowledge",
-                "status": "skipped",
+                "status": "completed",
                 "summary": hint,
                 "data": {},
             },
