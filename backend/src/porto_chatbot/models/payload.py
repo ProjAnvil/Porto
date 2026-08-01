@@ -24,6 +24,9 @@ class RagSettingsPayload(BaseModel):
 
 
 class AgentSettingsPayload(BaseModel):
+    # --- Agent 引擎选择 ---
+    chatbot_backend: Literal["langchain", "agent_sdk"] | None = None
+    workflow_backend: Literal["langchain", "agent_sdk"] | None = None
     # LLM 连接
     agent_provider: Literal["openai", "anthropic"] | None = None
     agent_model: str | None = None

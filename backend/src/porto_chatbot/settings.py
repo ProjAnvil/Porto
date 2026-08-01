@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     chunk_overlap: int = 180
     top_k: int = 6
 
+    # --- Agent 引擎选择 ---
+    chatbot_backend: Literal["langchain", "agent_sdk"] = "langchain"
+    workflow_backend: Literal["langchain", "agent_sdk"] = "langchain"
+
     agent_provider: Literal["openai", "anthropic"] = Field(
         default="openai",
         validation_alias="LANGCHAIN_AGENT_PROVIDER",
