@@ -237,15 +237,48 @@ class AgentSDKBackend:
     # ------------------------------------------------------------------ #
     # Chatbot-mode entry points (Task 7)
     # ------------------------------------------------------------------ #
+    def _capture_session(
+        self,
+        settings: Settings,
+        porto_sid: str,
+        returned_sid: str | None,
+        expected_sid: str | None,
+    ) -> None:
+        """Record the Claude Code session_id returned by the SDK at init.
+
+        When ``expected_sid`` was passed to ``resume`` but the SDK returns a
+        different session_id, the resume likely failed silently (upstream
+        issue #555) and prior conversation context may be lost. Log a warning
+        so the break is observable in monitoring rather than swallowed.
+        """
+        if not returned_sid:
+            return
+        if expected_sid and returned_sid != expected_sid:
+            self.logger.warning(
+                "agent_sdk resume mismatch porto=%s expected=%s got=%s — "
+                "resume may have silently created a new session, "
+                "conversation context may be lost",
+                porto_sid, expected_sid, returned_sid,
+            )
+        _set_claude_session(settings, porto_sid, returned_sid)
+        self.logger.info(
+            "agent_sdk session captured porto=%s claude=%s",
+            porto_sid, returned_sid,
+        )
+
     def _build_chat_options(
         self, req: ChatRequest, settings: Settings
-    ) -> tuple[Any, dict[str, str], AgentToolContext]:
+    ) -> tuple[Any, dict[str, str], AgentToolContext, str | None]:
         """Build ``ClaudeAgentOptions`` + mutable state for chat/chat_stream.
 
-        Returns ``(options, state)`` where ``state['answer_text']`` is updated
-        by the caller as ``AssistantMessage`` TextBlocks arrive. The Stop hook
-        closure reads ``state['answer_text']`` to persist the full conversation
-        turn to :class:`MemoryStore` and trigger facts extraction.
+        Returns ``(options, state, ctx, resume_sid)`` where ``state['answer_text']``
+        is updated by the caller as ``AssistantMessage`` TextBlocks arrive, and
+        ``resume_sid`` is the Claude Code session_id passed to ``resume`` (``None``
+        for a fresh session). Callers compare it against the session_id returned
+        at init to detect silent resume failures (see ``_capture_session``).
+
+        The Stop hook closure reads ``state['answer_text']`` to persist the full
+        conversation turn to :class:`MemoryStore` and trigger facts extraction.
 
         No intent routing — Claude decides autonomously via the registered
         MCP tools (search_knowledgebase, search_memory, get_session_facts…).
@@ -329,7 +362,7 @@ class AgentSDKBackend:
                 req.session_id, existing_claude_sid,
             )
         options = ClaudeAgentOptions(**options_kwargs)
-        return options, state, ctx
+        return options, state, ctx, existing_claude_sid
 
     async def chat(self, req: ChatRequest, settings: Settings) -> ChatResponse:
         """Chatbot-mode entry — Claude Agent SDK ReAct loop.
@@ -377,20 +410,17 @@ class AgentSDKBackend:
             )
 
         try:
-            options, state, ctx = self._build_chat_options(req, settings)
+            options, state, ctx, expected_sid = self._build_chat_options(req, settings)
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(req.message)
                 async for msg in client.receive_response():
                     # Capture Claude Code session_id from init SystemMessage
                     if SystemMessage is not None and isinstance(msg, SystemMessage):
                         if msg.subtype == "init":
-                            claude_sid = msg.data.get("session_id")
-                            if claude_sid:
-                                _set_claude_session(settings, req.session_id, claude_sid)
-                                self.logger.info(
-                                    "agent_sdk session captured porto=%s claude=%s",
-                                    req.session_id, claude_sid,
-                                )
+                            self._capture_session(
+                                settings, req.session_id,
+                                msg.data.get("session_id"), expected_sid,
+                            )
                     elif isinstance(msg, AssistantMessage):
                         for block in msg.content:
                             if isinstance(block, TextBlock):
@@ -508,7 +538,7 @@ class AgentSDKBackend:
         yield _ai_sdk_sse({"type": "text-start", "id": text_id})
 
         try:
-            options, state, ctx = self._build_chat_options(req, settings)
+            options, state, ctx, expected_sid = self._build_chat_options(req, settings)
             streamed = False  # True once we emit via StreamEvent deltas
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(req.message)
@@ -516,13 +546,10 @@ class AgentSDKBackend:
                     # Capture Claude Code session_id from init SystemMessage
                     if SystemMessage is not None and isinstance(msg, SystemMessage):
                         if msg.subtype == "init":
-                            claude_sid = msg.data.get("session_id")
-                            if claude_sid:
-                                _set_claude_session(settings, req.session_id, claude_sid)
-                                self.logger.info(
-                                    "agent_sdk stream session captured porto=%s claude=%s",
-                                    req.session_id, claude_sid,
-                                )
+                            self._capture_session(
+                                settings, req.session_id,
+                                msg.data.get("session_id"), expected_sid,
+                            )
                     # Token-level streaming: StreamEvent carries content_block_delta
                     elif StreamEvent is not None and isinstance(msg, StreamEvent):
                         event = msg.event
