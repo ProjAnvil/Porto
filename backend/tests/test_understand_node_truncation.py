@@ -1,16 +1,26 @@
 from __future__ import annotations
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from porto_chatbot.agent.nodes.understand import understand_prd
-from porto_chatbot.llm.types import ToolLoopResult
+from porto_chatbot.agent.backends import NodeExecutionResult
 from porto_chatbot.models import AgentStep
 
 
 def _agent(truncated, turns=4, n_calls=11, max_turns=10, reason="tool_loop_truncated"):
+    """Mock agent with backend.execute_node returning a NodeExecutionResult.
+
+    Previously this mocked agent.llm.complete_with_tools (ToolLoopResult);
+    after Task 4 the node dispatches through agent.backend.execute_node,
+    so we mock at that layer instead. Same behavior coverage.
+    """
     agent = MagicMock()
     agent.llm.enabled = True
-    agent.llm.complete_with_tools.return_value = ToolLoopResult(
-        text="", tool_calls=[object()] * n_calls, turns=turns,
-        truncated=truncated, reason=reason if truncated else None)
+    agent.backend.execute_node = AsyncMock(return_value=NodeExecutionResult(
+        text="",
+        tool_calls=[object()] * n_calls,
+        turns=turns,
+        truncated=truncated,
+        reason=reason if truncated else None,
+    ))
     agent.settings.agent_max_tool_turns = max_turns
     # 用真实 _step(只记 data)
     agent._step = lambda name, summary, data: {"steps": [AgentStep(
@@ -45,8 +55,8 @@ def test_understand_max_tokens_truncated_uses_tokens_notice():
 def test_understand_normal_keeps_text():
     agent = MagicMock()
     agent.llm.enabled = True
-    agent.llm.complete_with_tools.return_value = ToolLoopResult(
-        text="正常理解报告", tool_calls=[object()], turns=2, truncated=False)
+    agent.backend.execute_node = AsyncMock(return_value=NodeExecutionResult(
+        text="正常理解报告", tool_calls=[object()], turns=2, truncated=False))
     agent.settings.agent_max_tool_turns = 10
     agent._step = lambda name, summary, data: {"steps": [AgentStep(
         name=name, status="completed", summary=summary, data=data)]}

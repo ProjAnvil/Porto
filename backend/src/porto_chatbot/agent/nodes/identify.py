@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from ...models import Subsystem
 from ..heuristics import (
     capabilities_for,
@@ -17,12 +19,20 @@ def identify_subsystems(state, *, config):
     agent.logger.info("step identify_subsystems start workflow_id=%s", state["workflow_id"])
     subsystems: list[Subsystem] = []
     if agent.llm.enabled:
-        parsed = agent.llm.complete_structured(
-            "你是资深系统架构师。按领域驱动设计原则，根据业务理解报告与 PRD 识别需要拆分的子系统。"
-            "每个子系统职责单一、边界清晰，数量控制在 2-6 个，命名形如 xxx-service。",
-            f"业务理解报告:\n{state['understanding']}\n\nPRD 节选:\n{state['prd_text'][:2000]}",
-            subsystem_schema(),
+        result = asyncio.run(
+            agent.backend.execute_node(
+                system=(
+                    "你是资深系统架构师。按领域驱动设计原则，根据业务理解报告与 PRD 识别需要拆分的子系统。"
+                    "每个子系统职责单一、边界清晰，数量控制在 2-6 个，命名形如 xxx-service。"
+                ),
+                user=(
+                    f"业务理解报告:\n{state['understanding']}\n\n"
+                    f"PRD 节选:\n{state['prd_text'][:2000]}"
+                ),
+                structured_schema=subsystem_schema(),
+            )
         )
+        parsed = result.structured
         raw_list = (parsed or {}).get("subsystems", []) if isinstance(parsed, dict) else []
         for raw in raw_list:
             norm = normalize_sub_dict(raw)

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from ..models import Critique, Subsystem
-from ..tools import AgentToolContext, build_agent_tools
+from ..tools import AgentToolContext
 from .context import SpecContext
 from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
 
@@ -33,14 +35,19 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
             "reason": None,
         }
     tools_ctx = AgentToolContext(state=ctx.state, vector_store=ctx.vector_store)
-    result = ctx.llm.complete_with_tools(
-        f"你是资深系统规格工程师。为子系统 {sub.name} 生成详细的系统需求规格（markdown）。"
-        f"子系统职责：{sub.responsibility}；能力：{', '.join(sub.capabilities) or '（待识别）'}。"
-        f"必须包含这些章节：{', '.join(_SPEC_SECTIONS)}。"
-        "API 需求要给出具体端点/方法/输入输出/错误码；数据模型要列实体与关键字段；验收标准要具体可测。"
-        "可调用工具检索知识库以参考现有系统约定。",
-        f"请生成 {sub.name} 的规格文档。",
-        build_agent_tools(tools_ctx),
+    result = asyncio.run(
+        ctx.backend.execute_node(
+            system=(
+                f"你是资深系统规格工程师。为子系统 {sub.name} 生成详细的系统需求规格（markdown）。"
+                f"子系统职责：{sub.responsibility}；能力：{', '.join(sub.capabilities) or '（待识别）'}。"
+                f"必须包含这些章节：{', '.join(_SPEC_SECTIONS)}。"
+                "API 需求要给出具体端点/方法/输入输出/错误码；数据模型要列实体与关键字段；验收标准要具体可测。"
+                "可调用工具检索知识库以参考现有系统约定。"
+            ),
+            user=f"请生成 {sub.name} 的规格文档。",
+            tools=ctx.backend.build_tools(tools_ctx),
+            max_turns=max_turns,
+        )
     )
     tool_meta = {
         "turns": result.turns,
@@ -101,10 +108,16 @@ def refine_spec(ctx: SpecContext, sub: Subsystem, spec: str, feedback: str) -> s
     """LLM 依据反馈修订 spec。失败返回原 spec（不改）。"""
     if not ctx.llm.enabled:
         return spec
-    result = ctx.llm.complete(
-        f"你是资深系统规格工程师。根据评审反馈改进 {sub.name} 的规格文档（职责：{sub.responsibility}）。"
-        "保持原有 markdown 结构与章节，只针对反馈改进；不要删除已有合理内容；不要输出解释，直接给完整文档。",
-        f"评审反馈：\n{feedback}\n\n当前规格：\n{spec}\n\n请输出改进后的完整规格文档。",
+    result = asyncio.run(
+        ctx.backend.execute_node(
+            system=(
+                f"你是资深系统规格工程师。根据评审反馈改进 {sub.name} 的规格文档（职责：{sub.responsibility}）。"
+                "保持原有 markdown 结构与章节，只针对反馈改进；不要删除已有合理内容；不要输出解释，直接给完整文档。"
+            ),
+            user=(
+                f"评审反馈：\n{feedback}\n\n当前规格：\n{spec}\n\n请输出改进后的完整规格文档。"
+            ),
+        )
     )
-    refined = (result or "").strip()
+    refined = (result.text or "").strip()
     return refined or spec

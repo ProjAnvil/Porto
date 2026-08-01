@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from ...tools import AgentToolContext, build_agent_tools
+import asyncio
+
+from ...tools import AgentToolContext
 from ..heuristics import extract_bullets, extract_entities, matched_domains, summary_sentence
 from ..state import PortoAgentState
 
@@ -22,12 +24,17 @@ def understand_prd(state, *, config):
                  "max_turns": max_turns, "reason": None}
     if agent.llm.enabled:
         ctx = AgentToolContext(state=state, vector_store=agent.vector_store)
-        result = agent.llm.complete_with_tools(
-            "你是资深业务分析师。根据 PRD 和知识库片段，输出简洁的中文业务理解报告，"
-            "包含：执行摘要、业务目标、核心实体、子系统线索。"
-            "可调用工具获取 PRD 原文与检索知识库，自主决定检索什么。",
-            "请生成业务理解报告。",
-            build_agent_tools(ctx),
+        result = asyncio.run(
+            agent.backend.execute_node(
+                system=(
+                    "你是资深业务分析师。根据 PRD 和知识库片段，输出简洁的中文业务理解报告，"
+                    "包含：执行摘要、业务目标、核心实体、子系统线索。"
+                    "可调用工具获取 PRD 原文与检索知识库，自主决定检索什么。"
+                ),
+                user="请生成业务理解报告。",
+                tools=agent.backend.build_tools(ctx),
+                max_turns=max_turns,
+            )
         )
         tool_meta = {
             "turns": result.turns,
