@@ -189,7 +189,7 @@ class AgentSDKBackend:
     # ------------------------------------------------------------------ #
     def _build_chat_options(
         self, req: ChatRequest, settings: Settings
-    ) -> tuple[Any, dict[str, str]]:
+    ) -> tuple[Any, dict[str, str], AgentToolContext]:
         """Build ``ClaudeAgentOptions`` + mutable state for chat/chat_stream.
 
         Returns ``(options, state)`` where ``state['answer_text']`` is updated
@@ -268,7 +268,7 @@ class AgentSDKBackend:
             max_turns=settings.agent_max_tool_turns,
             hooks={"Stop": [HookMatcher(matcher="", hooks=[on_stop])]},
         )
-        return options, state
+        return options, state, ctx
 
     async def chat(self, req: ChatRequest, settings: Settings) -> ChatResponse:
         """Chatbot-mode entry — Claude Agent SDK ReAct loop.
@@ -316,7 +316,7 @@ class AgentSDKBackend:
             )
 
         try:
-            options, state = self._build_chat_options(req, settings)
+            options, state, ctx = self._build_chat_options(req, settings)
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(req.message)
                 async for msg in client.receive_response():
@@ -324,6 +324,13 @@ class AgentSDKBackend:
                         for block in msg.content:
                             if isinstance(block, TextBlock):
                                 state["answer_text"] += block.text
+                            elif isinstance(block, ToolUseBlock):
+                                state.setdefault("tool_steps", []).append({
+                                    "name": f"tool:{block.name}",
+                                    "status": "completed",
+                                    "summary": f"Claude 调用了 {block.name}",
+                                    "data": {"arguments": block.input},
+                                })
         except Exception as exc:
             self.logger.exception(
                 "agent_sdk chat failed session=%s", req.session_id,
@@ -344,25 +351,33 @@ class AgentSDKBackend:
             )
 
         answer_text = state["answer_text"] or "（Agent 未返回内容，请重试或检查配置）"
+        sources = ctx.state.get("tool_sources", [])
+        memories = ctx.state.get("tool_memory", [])
+        tool_steps = state.get("tool_steps", [])
+        from ..evaluation import evaluate_rag_cases
+        from ..models import EvalCase
+        evaluation = evaluate_rag_cases([
+            EvalCase(question=req.message, answer=answer_text,
+                     contexts=[s.text for s in sources])
+        ]) if sources else {"score": 0.0, "passed": True, "cases": []}
         return ChatResponse(
             answer=answer_text,
-            sources=[],
-            memory=[],
-            evaluation={"score": 0.0, "passed": True, "cases": []},
-            steps=[
-                {
-                    "name": "agent_react",
-                    "status": "completed",
-                    "summary": "Agent SDK ReAct loop",
-                    "data": {},
-                },
+            sources=sources,
+            memory=memories,
+            evaluation=evaluation,
+            steps=tool_steps + [
                 {
                     "name": "answer",
                     "status": "completed",
                     "summary": "完成回答生成",
                     "data": {},
                 },
-            ],
+            ] + ([{
+                "name": "evaluate_rag",
+                "status": "completed",
+                "summary": f"RAG eval score {evaluation['score']}",
+                "data": evaluation,
+            }] if sources else []),
         )
 
     async def chat_stream(
@@ -422,7 +437,7 @@ class AgentSDKBackend:
         yield _ai_sdk_sse({"type": "text-start", "id": text_id})
 
         try:
-            options, state = self._build_chat_options(req, settings)
+            options, state, ctx = self._build_chat_options(req, settings)
             streamed = False  # True once we emit via StreamEvent deltas
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(req.message)
@@ -445,11 +460,9 @@ class AgentSDKBackend:
                                         "delta": delta_text,
                                     },
                                 )
-                    # Fallback: if no StreamEvent deltas arrived, use the
-                    # complete AssistantMessage text (non-streaming mode).
-                    elif isinstance(msg, AssistantMessage) and not streamed:
+                    elif isinstance(msg, AssistantMessage):
                         for block in msg.content:
-                            if isinstance(block, TextBlock) and block.text:
+                            if isinstance(block, TextBlock) and block.text and not streamed:
                                 state["answer_text"] += block.text
                                 yield _ai_sdk_sse(
                                     {
@@ -458,6 +471,13 @@ class AgentSDKBackend:
                                         "delta": block.text,
                                     },
                                 )
+                            elif isinstance(block, ToolUseBlock):
+                                state.setdefault("tool_steps", []).append({
+                                    "name": f"tool:{block.name}",
+                                    "status": "completed",
+                                    "summary": f"Claude 调用了 {block.name}",
+                                    "data": {"arguments": block.input},
+                                })
         except Exception as exc:
             self.logger.exception(
                 "agent_sdk chat_stream failed session=%s", req.session_id,
@@ -470,23 +490,38 @@ class AgentSDKBackend:
             return
 
         yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+
+        # Extract tool-collected data from ctx.state for Inspector panel
+        sources = ctx.state.get("tool_sources", [])
+        memories = ctx.state.get("tool_memory", [])
+        tool_steps = state.get("tool_steps", [])
+        from ..evaluation import evaluate_rag_cases
+        from ..models import EvalCase
+        evaluation = evaluate_rag_cases([
+            EvalCase(question=req.message, answer=state["answer_text"],
+                     contexts=[s.text for s in sources])
+        ]) if sources else {"score": 0.0, "passed": True, "cases": []}
+        inspector_steps = tool_steps + [
+            {"name": "answer", "status": "completed",
+             "summary": "完成回答生成", "data": {}},
+        ]
+        if sources:
+            inspector_steps.append({
+                "name": "evaluate_rag", "status": "completed",
+                "summary": f"RAG eval score {evaluation['score']}",
+                "data": evaluation,
+            })
+
         yield _ai_sdk_sse(
             {
                 "type": "data-porto",
                 "id": "porto-inspector",
                 "transient": True,
                 "data": {
-                    "steps": [
-                        {
-                            "name": "agent_react",
-                            "status": "completed",
-                            "summary": "Agent SDK ReAct loop",
-                            "data": {},
-                        }
-                    ],
-                    "sources": [],
-                    "memory": [],
-                    "evaluation": {"score": 0.0, "passed": True, "cases": []},
+                    "steps": inspector_steps,
+                    "sources": [s.model_dump() for s in sources],
+                    "memory": [m.model_dump() for m in memories],
+                    "evaluation": evaluation,
                     "workflow": None,
                 },
             }

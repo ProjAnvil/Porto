@@ -288,7 +288,7 @@ def test_stop_hook_persists_conversation(tmp_path):
 
     with _patch_rag(available=True), \
          _patch_mcp_server():
-        options, state = backend._build_chat_options(req, s)
+        options, state, _ctx = backend._build_chat_options(req, s)
 
     # Extract the Stop hook callback from the options.
     stop_matchers = options.hooks["Stop"]
@@ -321,7 +321,7 @@ def test_stop_hook_swallows_memory_errors(tmp_path):
 
     with _patch_rag(available=True), \
          _patch_mcp_server():
-        options, state = backend._build_chat_options(req, s)
+        options, state, _ctx = backend._build_chat_options(req, s)
 
     hook_cb = options.hooks["Stop"][0].hooks[0]
     state["answer_text"] = "answer"

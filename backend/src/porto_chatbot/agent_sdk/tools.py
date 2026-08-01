@@ -112,6 +112,7 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
             )
             from ..tools.context import _format_chunks
 
+            ctx.state.setdefault("tool_memory", []).extend(results)
             return _mcp_text(
                 _format_chunks(results) if results else "无匹配记忆。"
             )
