@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from ..agent_sdk.skills import deploy_skills
 from ..logging_utils import get_component_logger
 from ..settings import settings
 from .deps import get_health_monitor, get_index_supervisor, get_workflow_executor
@@ -33,6 +34,9 @@ async def lifespan(app: FastAPI):
     supervisor.start() 仅清理上次崩溃残留（running→interrupted），**不自动重建**；
     重建始终由用户手动触发。关闭时优雅停止两个 daemon。
     """
+    # Deploy Agent SDK skills (idempotent, overwrites each startup).
+    # Code is the source of truth; SKILL.md / CLAUDE.md are generated products.
+    deploy_skills(settings.data_dir)
     supervisor = get_index_supervisor()
     health = get_health_monitor()
     supervisor.start()
