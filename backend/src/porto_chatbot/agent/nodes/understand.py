@@ -6,7 +6,6 @@ from ...tools import AgentToolContext
 from ..heuristics import extract_bullets, extract_entities, matched_domains, summary_sentence
 from ..state import PortoAgentState
 
-
 _TRUNCATED_NOTICE_TOOL = (
     "⚠️ 业务理解未能完成：本步工具调用已达上限（{calls}/{limit} turn）。建议重跑本步。"
 )

@@ -12,6 +12,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from ..api.deps import (
+    get_index_supervisor,
+    get_memory,
+    get_store,
+)
+from ..api.sse import _ai_sdk_sse, _text_chunks
 from ..evaluation import evaluate_rag_cases
 from ..intent import IntentDecision, route_chat_intent
 from ..llm import LLMClient, format_sources
@@ -24,12 +30,6 @@ from ..memory import (
     trigger_facts_extraction_sync,
 )
 from ..models import ChatRequest, ChatResponse, EvalCase
-from ..api.deps import (
-    get_index_supervisor,
-    get_memory,
-    get_store,
-)
-from ..api.sse import _ai_sdk_sse, _text_chunks
 
 logger = get_component_logger("api")
 
