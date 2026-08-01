@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 from ..agent.backends import BackendTools, NodeExecutionResult
@@ -55,9 +57,49 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
 
 # Process-level cache: Porto session_id → Claude Code CLI session_id.
 # Enables conversation continuity across separate /api/chat/stream requests.
-# Each request spawns a new CLI subprocess; passing resume=<session_id> tells
-# the CLI to restore the full conversation context from its session store.
 _claude_session_map: dict[str, str] = {}
+
+
+def _get_claude_session(settings: Settings, porto_session_id: str) -> str | None:
+    """Read porto→claude session mapping. Memory cache first, then sqlite."""
+    if porto_session_id in _claude_session_map:
+        return _claude_session_map[porto_session_id]
+    try:
+        with sqlite3.connect(str(settings.memory_db_path)) as conn:
+            row = conn.execute(
+                "SELECT claude_session_id FROM session_metadata WHERE session_id=?",
+                (porto_session_id,),
+            ).fetchone()
+            if row:
+                _claude_session_map[porto_session_id] = row[0]
+                return row[0]
+    except Exception:
+        pass
+    return None
+
+
+def _set_claude_session(settings: Settings, porto_session_id: str, claude_session_id: str) -> None:
+    """Persist porto→claude session mapping to memory cache + sqlite."""
+    _claude_session_map[porto_session_id] = claude_session_id
+    try:
+        with sqlite3.connect(str(settings.memory_db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_metadata ("
+                "  session_id TEXT PRIMARY KEY,"
+                "  claude_session_id TEXT,"
+                "  updated_at TEXT"
+                ")"
+            )
+            conn.execute(
+                "INSERT INTO session_metadata (session_id, claude_session_id, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "  claude_session_id=excluded.claude_session_id, "
+                "  updated_at=excluded.updated_at",
+                (porto_session_id, claude_session_id, datetime.now(UTC).isoformat()),
+            )
+    except Exception:
+        pass
 
 
 class AgentSDKBackend:
@@ -279,7 +321,7 @@ class AgentSDKBackend:
         # Session resume: if we have a Claude Code session_id for this Porto
         # session, pass it as `resume` so the CLI restores full conversation
         # context (including auto-compaction) from its session store.
-        existing_claude_sid = _claude_session_map.get(req.session_id)
+        existing_claude_sid = _get_claude_session(settings, req.session_id)
         if existing_claude_sid:
             options_kwargs["resume"] = existing_claude_sid
             self.logger.info(
@@ -344,7 +386,7 @@ class AgentSDKBackend:
                         if msg.subtype == "init":
                             claude_sid = msg.data.get("session_id")
                             if claude_sid:
-                                _claude_session_map[req.session_id] = claude_sid
+                                _set_claude_session(settings, req.session_id, claude_sid)
                                 self.logger.info(
                                     "agent_sdk session captured porto=%s claude=%s",
                                     req.session_id, claude_sid,
@@ -476,7 +518,7 @@ class AgentSDKBackend:
                         if msg.subtype == "init":
                             claude_sid = msg.data.get("session_id")
                             if claude_sid:
-                                _claude_session_map[req.session_id] = claude_sid
+                                _set_claude_session(settings, req.session_id, claude_sid)
                                 self.logger.info(
                                     "agent_sdk stream session captured porto=%s claude=%s",
                                     req.session_id, claude_sid,
