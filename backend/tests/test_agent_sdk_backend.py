@@ -255,20 +255,5 @@ def test_execute_node_omits_mcp_when_tools_empty(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# chat / chat_stream stubs (Task 7 implements them)
+# chat / chat_stream — implemented in Task 7 (see test_agent_sdk_chat.py)
 # --------------------------------------------------------------------------- #
-def test_chat_raises_not_implemented(tmp_path):
-    backend = _make_backend(tmp_path)
-    with pytest.raises(NotImplementedError):
-        asyncio.run(backend.chat(MagicMock(), Settings()))
-
-
-def test_chat_stream_raises_not_implemented(tmp_path):
-    backend = _make_backend(tmp_path)
-
-    async def _consume():
-        async for _ in backend.chat_stream(MagicMock(), Settings()):
-            pass
-
-    with pytest.raises(NotImplementedError):
-        asyncio.run(_consume())

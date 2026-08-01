@@ -32,6 +32,7 @@ try:
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
+        HookMatcher,
         ResultMessage,
         TextBlock,
         ToolUseBlock,
@@ -41,6 +42,7 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
     AssistantMessage = None  # type: ignore[assignment]
     ClaudeAgentOptions = None  # type: ignore[assignment]
     ClaudeSDKClient = None  # type: ignore[assignment]
+    HookMatcher = None  # type: ignore[assignment]
     ResultMessage = None  # type: ignore[assignment]
     TextBlock = None  # type: ignore[assignment]
     ToolUseBlock = None  # type: ignore[assignment]
@@ -170,15 +172,277 @@ class AgentSDKBackend:
             reason=reason,
         )
 
+    # ------------------------------------------------------------------ #
+    # Chatbot-mode entry points (Task 7)
+    # ------------------------------------------------------------------ #
+    def _build_chat_options(
+        self, req: ChatRequest, settings: Settings
+    ) -> tuple[Any, dict[str, str]]:
+        """Build ``ClaudeAgentOptions`` + mutable state for chat/chat_stream.
+
+        Returns ``(options, state)`` where ``state['answer_text']`` is updated
+        by the caller as ``AssistantMessage`` TextBlocks arrive. The Stop hook
+        closure reads ``state['answer_text']`` to persist the full conversation
+        turn to :class:`MemoryStore` and trigger facts extraction.
+
+        No intent routing — Claude decides autonomously via the registered
+        MCP tools (search_knowledgebase, search_memory, get_session_facts…).
+        """
+        from ..api.deps import get_memory, get_store
+        from ..llm import LLMClient
+        from ..memory import SessionFactsStore, trigger_facts_extraction_sync
+
+        store = get_store(settings)
+        memory = get_memory(settings)
+        facts_store = SessionFactsStore(settings)
+        store.ensure_index()
+
+        ctx = AgentToolContext(
+            state={},
+            vector_store=store,
+            memory_store=memory,
+            facts_store=facts_store,
+        )
+        sdk_tools = build_sdk_tools(ctx)
+        server = create_sdk_mcp_server(
+            name="porto", version="1.0.0", tools=sdk_tools,
+        )
+
+        # Mutable container shared between caller (accumulates text) and the
+        # Stop hook (reads the final text). A plain dict avoids ``nonlocal``
+        # plumbing and works naturally with the helper extraction.
+        state: dict[str, str] = {"answer_text": ""}
+
+        async def on_stop(input_data, tool_use_id, context):  # noqa: ANN001
+            """Stop hook: persist user+assistant turn, then trigger facts extraction.
+
+            Fail-open — any exception is logged but never propagated, so a
+            memory/facts hiccup cannot crash the chat response.
+            """
+            try:
+                memory.add(
+                    session_id=req.session_id, role="user", content=req.message,
+                )
+                if state["answer_text"]:
+                    memory.add(
+                        session_id=req.session_id,
+                        role="assistant",
+                        content=state["answer_text"],
+                    )
+                trigger_facts_extraction_sync(
+                    store=facts_store,
+                    llm=LLMClient(settings),
+                    session_id=req.session_id,
+                    new_message=req.message,
+                    recent_turns=[],
+                    settings=settings,
+                )
+            except Exception:
+                self.logger.exception(
+                    "stop hook failed session=%s", req.session_id,
+                )
+            return {}  # no-op hook JSON output (SyncHookJSONOutput is all-optional)
+
+        options = ClaudeAgentOptions(
+            system_prompt=(
+                "你是 Porto 知识库问答助手。你可以调用工具检索知识库、对话记忆和结构化事实。"
+                "优先基于工具返回的信息回答；不确定时说明缺口。"
+                f"当前 session_id: {req.session_id}"
+            ),
+            setting_sources=["project"],
+            cwd=str(settings.data_dir),
+            mcp_servers={"porto": server},
+            allowed_tools=["mcp__porto__*"],
+            max_turns=settings.agent_max_tool_turns,
+            hooks={"Stop": [HookMatcher(matcher="", hooks=[on_stop])]},
+        )
+        return options, state
+
     async def chat(self, req: ChatRequest, settings: Settings) -> ChatResponse:
-        """Chatbot-mode entry — implemented in Task 7."""
-        raise NotImplementedError("AgentSDKBackend.chat is implemented in Task 7")
+        """Chatbot-mode entry — Claude Agent SDK ReAct loop.
+
+        No intent routing: Claude autonomously decides which tools to call
+        (search_knowledgebase, search_memory, get_session_facts…). The Stop
+        hook persists the conversation turn and triggers facts extraction.
+        SDK failures degrade to a :class:`ChatResponse` with an error message
+        instead of raising (callers get a user-friendly answer, never a 500).
+        """
+        if ClaudeSDKClient is None or ClaudeAgentOptions is None:
+            return ChatResponse(
+                answer="claude_agent_sdk 未安装，请在 Settings 切换到 Langchain 引擎。",
+                sources=[],
+                memory=[],
+                evaluation={"score": 0.0, "passed": False, "cases": []},
+                steps=[
+                    {
+                        "name": "agent_init",
+                        "status": "failed",
+                        "summary": "claude_agent_sdk not installed",
+                        "data": {},
+                    },
+                ],
+            )
+
+        from ..api.deps import get_index_supervisor
+
+        # RAG availability check — mirrors langchain_chat gating.
+        available, reason = get_index_supervisor().rag_available()
+        if not available:
+            return ChatResponse(
+                answer=f"知识库当前不可用（{reason}），请稍后重试。",
+                sources=[],
+                memory=[],
+                evaluation={"score": 0.0, "passed": False, "cases": []},
+                steps=[
+                    {
+                        "name": "rag_check",
+                        "status": "completed",
+                        "summary": f"rag unavailable: {reason}",
+                        "data": {"reason": reason},
+                    },
+                ],
+            )
+
+        try:
+            options, state = self._build_chat_options(req, settings)
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(req.message)
+                async for msg in client.receive_response():
+                    if isinstance(msg, AssistantMessage):
+                        for block in msg.content:
+                            if isinstance(block, TextBlock):
+                                state["answer_text"] += block.text
+        except Exception as exc:
+            self.logger.exception(
+                "agent_sdk chat failed session=%s", req.session_id,
+            )
+            return ChatResponse(
+                answer=f"Agent 引擎暂时不可用：{exc}。请在 Settings 切换到 Langchain 引擎。",
+                sources=[],
+                memory=[],
+                evaluation={"score": 0.0, "passed": False, "cases": []},
+                steps=[
+                    {
+                        "name": "agent_react",
+                        "status": "failed",
+                        "summary": str(exc),
+                        "data": {},
+                    },
+                ],
+            )
+
+        answer_text = state["answer_text"] or "（Agent 未返回内容，请重试或检查配置）"
+        return ChatResponse(
+            answer=answer_text,
+            sources=[],
+            memory=[],
+            evaluation={"score": 0.0, "passed": True, "cases": []},
+            steps=[
+                {
+                    "name": "agent_react",
+                    "status": "completed",
+                    "summary": "Agent SDK ReAct loop",
+                    "data": {},
+                },
+                {
+                    "name": "answer",
+                    "status": "completed",
+                    "summary": "完成回答生成",
+                    "data": {},
+                },
+            ],
+        )
 
     async def chat_stream(
         self, req: ChatRequest, settings: Settings
     ) -> AsyncIterator[str]:
-        """SSE streaming chatbot entry — implemented in Task 7."""
-        raise NotImplementedError(
-            "AgentSDKBackend.chat_stream is implemented in Task 7"
+        """SSE streaming chatbot entry — wraps the SDK message stream.
+
+        Emits ai-sdk SSE events (start → start-step → text-start →
+        text-delta(s) → text-end → finish-step → finish → [DONE]) mirroring
+        :func:`langchain_chat_stream`. RAG-unavailable and SDK-error paths
+        emit a proper SSE error/finish sequence so the frontend stream always
+        terminates cleanly.
+        """
+        from ..api.deps import get_index_supervisor
+        from ..api.sse import _ai_sdk_sse, _text_chunks
+
+        text_id = "answer-1"
+
+        # -- RAG availability check (mirror chat's early return) -------------
+        available, reason = get_index_supervisor().rag_available()
+        if not available:
+            hint = f"知识库当前不可用（{reason}），请稍后重试。"
+            yield _ai_sdk_sse(
+                {"type": "start", "messageMetadata": {"session_id": req.session_id}},
+            )
+            yield _ai_sdk_sse({"type": "start-step"})
+            yield _ai_sdk_sse({"type": "text-start", "id": text_id})
+            for chunk in _text_chunks(hint):
+                yield _ai_sdk_sse(
+                    {"type": "text-delta", "id": text_id, "delta": chunk},
+                )
+            yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+            yield _ai_sdk_sse({"type": "finish-step"})
+            yield _ai_sdk_sse(
+                {
+                    "type": "finish",
+                    "finishReason": "stop",
+                    "messageMetadata": {"source_count": 0},
+                },
+            )
+            yield "data: [DONE]\n\n"
+            return
+
+        if ClaudeSDKClient is None or ClaudeAgentOptions is None:
+            yield _ai_sdk_sse(
+                {"type": "start", "messageMetadata": {"session_id": req.session_id}},
+            )
+            yield _ai_sdk_sse({"type": "error", "errorText": "claude_agent_sdk 未安装"})
+            yield _ai_sdk_sse({"type": "finish", "finishReason": "error"})
+            yield "data: [DONE]\n\n"
+            return
+
+        yield _ai_sdk_sse(
+            {"type": "start", "messageMetadata": {"session_id": req.session_id}},
         )
-        yield  # pragma: no cover — make this a generator for type checkers
+        yield _ai_sdk_sse({"type": "start-step"})
+        yield _ai_sdk_sse({"type": "text-start", "id": text_id})
+
+        try:
+            options, state = self._build_chat_options(req, settings)
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(req.message)
+                async for msg in client.receive_response():
+                    if isinstance(msg, AssistantMessage):
+                        for block in msg.content:
+                            if isinstance(block, TextBlock) and block.text:
+                                state["answer_text"] += block.text
+                                yield _ai_sdk_sse(
+                                    {
+                                        "type": "text-delta",
+                                        "id": text_id,
+                                        "delta": block.text,
+                                    },
+                                )
+        except Exception as exc:
+            self.logger.exception(
+                "agent_sdk chat_stream failed session=%s", req.session_id,
+            )
+            yield _ai_sdk_sse({"type": "error", "errorText": str(exc)})
+            yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+            yield _ai_sdk_sse({"type": "finish-step"})
+            yield _ai_sdk_sse({"type": "finish", "finishReason": "error"})
+            yield "data: [DONE]\n\n"
+            return
+
+        yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+        yield _ai_sdk_sse({"type": "finish-step"})
+        yield _ai_sdk_sse(
+            {
+                "type": "finish",
+                "finishReason": "stop",
+                "messageMetadata": {"source_count": 0},
+            },
+        )
+        yield "data: [DONE]\n\n"
