@@ -35,6 +35,7 @@ try:
         ClaudeSDKClient,
         HookMatcher,
         ResultMessage,
+        StreamEvent,
         TextBlock,
         ToolUseBlock,
         create_sdk_mcp_server,
@@ -45,6 +46,7 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
     ClaudeSDKClient = None  # type: ignore[assignment]
     HookMatcher = None  # type: ignore[assignment]
     ResultMessage = None  # type: ignore[assignment]
+    StreamEvent = None  # type: ignore[assignment]
     TextBlock = None  # type: ignore[assignment]
     ToolUseBlock = None  # type: ignore[assignment]
     create_sdk_mcp_server = None  # type: ignore[assignment]
@@ -421,10 +423,31 @@ class AgentSDKBackend:
 
         try:
             options, state = self._build_chat_options(req, settings)
+            streamed = False  # True once we emit via StreamEvent deltas
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(req.message)
                 async for msg in client.receive_response():
-                    if isinstance(msg, AssistantMessage):
+                    # Token-level streaming: StreamEvent carries content_block_delta
+                    if StreamEvent is not None and isinstance(msg, StreamEvent):
+                        event = msg.event
+                        if (
+                            event.get("type") == "content_block_delta"
+                            and event.get("delta", {}).get("type") == "text_delta"
+                        ):
+                            delta_text = event["delta"].get("text", "")
+                            if delta_text:
+                                streamed = True
+                                state["answer_text"] += delta_text
+                                yield _ai_sdk_sse(
+                                    {
+                                        "type": "text-delta",
+                                        "id": text_id,
+                                        "delta": delta_text,
+                                    },
+                                )
+                    # Fallback: if no StreamEvent deltas arrived, use the
+                    # complete AssistantMessage text (non-streaming mode).
+                    elif isinstance(msg, AssistantMessage) and not streamed:
                         for block in msg.content:
                             if isinstance(block, TextBlock) and block.text:
                                 state["answer_text"] += block.text
