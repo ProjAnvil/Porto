@@ -1746,6 +1746,75 @@ function DocumentSettingsForm({
   );
 }
 
+// Claude Agent SDK 选中时，模型下拉仅允许这些 Claude 模型。
+// 与后端 anthropic provider 默认模型对齐。
+const CLAUDE_MODELS = [
+  "claude-sonnet-5",
+  "claude-opus-5",
+  "claude-haiku-4-5",
+  "claude-sonnet-4-6",
+  "claude-opus-4-8",
+] as const;
+
+type EngineBackend = "langchain" | "agent_sdk";
+
+// 引擎卡片选择器：渲染一组互斥的 backend 选项（Langchain / Claude Agent SDK）。
+// 选中卡片用 border + CheckCircle2 标记，匹配 Settings 页既有圆角/边框风格。
+function EngineCardGroup({
+  title,
+  description,
+  value,
+  options,
+  onChange,
+  busy,
+}: {
+  title: string;
+  description: string;
+  value: EngineBackend;
+  options: Array<{ value: EngineBackend; label: string; hint?: string }>;
+  onChange: (value: EngineBackend) => void;
+  busy: boolean;
+}) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-zinc-700">{title}</p>
+      <p className="text-xs text-zinc-400">{description}</p>
+      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+        {options.map((opt) => {
+          const selected = value === opt.value;
+          return (
+            <button
+              type="button"
+              key={opt.value}
+              disabled={busy}
+              aria-pressed={selected}
+              onClick={() => onChange(opt.value)}
+              className={`relative flex flex-col items-start rounded-lg border p-3 text-left transition disabled:cursor-not-allowed ${
+                selected
+                  ? "border-zinc-950 bg-zinc-50 ring-1 ring-zinc-950"
+                  : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50"
+              }`}
+            >
+              {selected ? (
+                <CheckCircle2
+                  size={16}
+                  className="absolute right-2 top-2 text-zinc-950"
+                />
+              ) : null}
+              <span className="text-sm font-medium text-zinc-800">
+                {opt.label}
+              </span>
+              {opt.hint ? (
+                <span className="mt-1 text-xs text-zinc-400">{opt.hint}</span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AgentSettingsForm({
   agentConfig,
   busy,
@@ -1766,6 +1835,35 @@ function AgentSettingsForm({
     setAgentDraft((current) => ({ ...current, [key]: value }));
   };
 
+  // provider 联动：任一 backend 选中 agent_sdk → 锁定 provider=anthropic、
+  // 模型仅限 Claude 系列。切回 langchain 时恢复自由选择。
+  const providerLocked =
+    agentDraft.chatbot_backend === "agent_sdk" ||
+    agentDraft.workflow_backend === "agent_sdk";
+
+  function handleBackendChange(
+    kind: "chatbot" | "workflow",
+    value: EngineBackend,
+  ) {
+    setAgentDraft((current) => {
+      const next: AgentConfig = {
+        ...current,
+        [kind === "chatbot" ? "chatbot_backend" : "workflow_backend"]: value,
+      };
+      const locked =
+        next.chatbot_backend === "agent_sdk" ||
+        next.workflow_backend === "agent_sdk";
+      if (locked) {
+        next.agent_provider = "anthropic";
+        // 当前模型不在 Claude 白名单 → 回退到推荐默认
+        if (!(CLAUDE_MODELS as readonly string[]).includes(next.agent_model)) {
+          next.agent_model = CLAUDE_MODELS[0];
+        }
+      }
+      return next;
+    });
+  }
+
   async function saveAgent() {
     await onSaveAgent(agentDraft);
     onSaved();
@@ -1773,12 +1871,65 @@ function AgentSettingsForm({
 
   return (
     <SettingsCard busy={busy} title="Agent Settings" onSave={saveAgent}>
+      {/* 引擎选择：置于 agent 设置顶部 */}
+      <div className="space-y-4">
+        <EngineCardGroup
+          title="Chatbot 引擎"
+          description="知识库问答所使用的后端"
+          value={agentDraft.chatbot_backend ?? "langchain"}
+          busy={busy}
+          onChange={(v) => handleBackendChange("chatbot", v)}
+          options={[
+            {
+              value: "langchain",
+              label: "Langchain RAG",
+              hint: "基于检索增强生成的问答",
+            },
+            {
+              value: "agent_sdk",
+              label: "Claude Agent SDK",
+              hint: "Anthropic 原生 Agent（仅 Claude）",
+            },
+          ]}
+        />
+        <EngineCardGroup
+          title="Workflow 引擎"
+          description="PRD 拆解工作流所使用的后端"
+          value={agentDraft.workflow_backend ?? "langchain"}
+          busy={busy}
+          onChange={(v) => handleBackendChange("workflow", v)}
+          options={[
+            {
+              value: "langchain",
+              label: "Langchain",
+              hint: "自由选择 provider / 模型",
+            },
+            {
+              value: "agent_sdk",
+              label: "Claude Agent SDK",
+              hint: "Anthropic 原生 Agent（仅 Claude）",
+            },
+          ]}
+        />
+        {providerLocked ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            已启用 Claude Agent SDK：Provider 已锁定为 anthropic，模型仅可选择 Claude
+            系列。
+          </div>
+        ) : null}
+      </div>
+
+      <div className="my-5 h-px bg-zinc-200" />
+
       <div className="grid gap-4 md:grid-cols-2">
         <label className="block">
-          <span className="text-xs text-zinc-500">Provider</span>
+          <span className="text-xs text-zinc-500">
+            Provider{providerLocked ? "（已锁定）" : ""}
+          </span>
           <select
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
             value={agentDraft.agent_provider}
+            disabled={providerLocked}
             onChange={(event) =>
               updateAgent(
                 "agent_provider",
@@ -1791,14 +1942,32 @@ function AgentSettingsForm({
           </select>
         </label>
         <label className="block">
-          <span className="text-xs text-zinc-500">Model</span>
-          <input
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            value={agentDraft.agent_model}
-            onChange={(event) =>
-              updateAgent("agent_model", event.target.value)
-            }
-          />
+          <span className="text-xs text-zinc-500">
+            Model{providerLocked ? "（仅 Claude）" : ""}
+          </span>
+          {providerLocked ? (
+            <select
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={agentDraft.agent_model}
+              onChange={(event) =>
+                updateAgent("agent_model", event.target.value)
+              }
+            >
+              {CLAUDE_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={agentDraft.agent_model}
+              onChange={(event) =>
+                updateAgent("agent_model", event.target.value)
+              }
+            />
+          )}
         </label>
         <label className="block md:col-span-2">
           <span className="text-xs text-zinc-500">Base URL</span>

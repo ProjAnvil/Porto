@@ -60,6 +60,8 @@ def default_rag_settings() -> RagSettingsPayload:
 def default_agent_settings() -> AgentSettingsPayload:
     settings = current_settings()
     return AgentSettingsPayload(
+        chatbot_backend=settings.chatbot_backend,
+        workflow_backend=settings.workflow_backend,
         agent_provider=settings.agent_provider,
         agent_model=settings.agent_model,
         agent_base_url=settings.agent_base_url,

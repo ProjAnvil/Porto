@@ -28,6 +28,8 @@ RAG_SETTING_KEYS = {
 }
 
 AGENT_SETTING_KEYS = {
+    "chatbot_backend",
+    "workflow_backend",
     "agent_provider",
     "agent_model",
     "agent_base_url",

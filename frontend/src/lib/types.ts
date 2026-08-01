@@ -63,6 +63,9 @@ export type RagConfig = {
 };
 
 export type AgentConfig = {
+  // Backend 引擎选择（chatbot / workflow 各自独立）
+  chatbot_backend?: "langchain" | "agent_sdk";
+  workflow_backend?: "langchain" | "agent_sdk";
   // LLM 连接
   agent_provider: "openai" | "anthropic";
   agent_model: string;

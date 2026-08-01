@@ -235,6 +235,8 @@ export const defaultRagConfig: RagConfig = {
 };
 
 export const defaultAgentConfig: AgentConfig = {
+  chatbot_backend: "langchain",
+  workflow_backend: "langchain",
   agent_provider: "openai",
   agent_model: "gpt-4.1-mini",
   agent_base_url: "",

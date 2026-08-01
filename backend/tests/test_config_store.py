@@ -32,6 +32,8 @@ def test_config_store_persists_rag_and_agent_settings(tmp_path):
     )
     store.save_agent_settings(
         AgentSettingsPayload(
+            chatbot_backend="agent_sdk",
+            workflow_backend="langchain",
             agent_provider="anthropic",
             agent_model="claude-3-5-sonnet-latest",
             agent_base_url="https://example.test",
@@ -57,6 +59,9 @@ def test_config_store_persists_rag_and_agent_settings(tmp_path):
     assert reloaded.get_agent_settings().agent_provider == "anthropic"
     assert reloaded.get_agent_settings().agent_temperature == 0.4
     assert reloaded.get_agent_settings().agent_max_tokens == 4096
+    # 引擎选择需持久化并在重载后读回（GET /api/settings 依赖此往返）
+    assert reloaded.get_agent_settings().chatbot_backend == "agent_sdk"
+    assert reloaded.get_agent_settings().workflow_backend == "langchain"
     document = reloaded.get_document_settings()
     assert document.parse_mode == "local"
     assert document.local_parser == "docling"
@@ -79,6 +84,39 @@ def test_effective_settings_default_to_qwen_and_agent_params(monkeypatch, tmp_pa
     assert app_settings.agent.agent_max_tokens == 8000
     assert app_settings.document.parse_mode == "hybrid"
     assert app_settings.document.local_parser == "pypdf"
+
+
+def test_agent_backend_settings_round_trip_via_api(monkeypatch, tmp_path):
+    """引擎选择经 PUT /api/settings 保存后，PUT 响应与独立 GET 都必须回显该字段。
+
+    回归：前端 saveAgentConfig 执行 setAgentConfig(saved.agent)，若响应缺失
+    chatbot_backend/workflow_backend，卡片会立即回退为 langchain。
+    """
+    settings = Settings(
+        kb_dirs=[tmp_path / "kb"],
+        data_dir=tmp_path / ".porto",
+        log_dir=tmp_path / "logs",
+    )
+    monkeypatch.setattr(main, "settings", settings)
+
+    from porto_chatbot.api.routes.settings import save_app_settings
+
+    saved = save_app_settings(
+        AppSettingsPayload(
+            agent=AgentSettingsPayload(
+                chatbot_backend="agent_sdk",
+                workflow_backend="agent_sdk",
+                agent_provider="anthropic",
+                agent_model="claude-sonnet-5",
+            )
+        )
+    )
+    assert saved.agent.chatbot_backend == "agent_sdk"
+    assert saved.agent.workflow_backend == "agent_sdk"
+
+    fetched = main.get_app_settings()
+    assert fetched.agent.chatbot_backend == "agent_sdk"
+    assert fetched.agent.workflow_backend == "agent_sdk"
 
 
 def test_document_settings_api_values_flow_into_runtime(monkeypatch, tmp_path):
