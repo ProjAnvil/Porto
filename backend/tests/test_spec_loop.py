@@ -215,15 +215,17 @@ def test_critique_falls_back_to_generator_when_no_critic(tmp_path):
     assert result.attempts[0].verdict == "PASS"
 
 
-def test_critique_uses_independent_critic_llm(tmp_path):
-    # 主 llm 的 complete_structured 返回 FAIL（若被错用会看到 FAIL）
-    ctx = _make_ctx(tmp_path, cwt_texts=["V0"], critiques=[_crit("FAIL", 0)])
+def test_critique_uses_backend_not_independent_critic_llm(tmp_path):
+    # critique 走 ctx.backend（LangchainBackend → 主 llm.complete_structured），
+    # 不再用独立的 critic_llm——避免跨 provider 混搭。
+    ctx = _make_ctx(tmp_path, cwt_texts=["V0"], critiques=[_crit("PASS", 12, "from-backend")])
+    # 即使配了独立 critic_llm 返回 FAIL，critique 也不受影响
     critic_llm = LLMClient(_settings(tmp_path))
     critic_llm.complete_structured = lambda *a, **k: {
-        "verdict": "PASS", "score": 12, "feedback": "from-critic", "per_dimension": {},
+        "verdict": "FAIL", "score": 0, "feedback": "should-not-be-used", "per_dimension": {},
     }
     ctx.critic_llm = critic_llm
     result = generate_spec_with_loop(ctx, _sub())
-    # critic_llm 给 PASS，loop 首轮即停；attempts 反映 critic 的判定
+    # critique 走 backend（主 llm mock 返回 PASS）→ loop 首轮即停
     assert result.attempts[0].verdict == "PASS"
     assert result.attempts[0].score == 12

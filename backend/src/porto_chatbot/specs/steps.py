@@ -69,21 +69,29 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
 
 
 def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | None:
-    """LLM 依据 rubric 评判 spec。优先用独立 critic 模型，缺省用 generator。
+    """LLM 依据 rubric 评判 spec。
 
+    走 ``ctx.backend.execute_node(structured_schema=...)``——与
+    generate/refine 同一个 backend，不跨 provider 混搭。
     解析失败返回 None（loop 层接受当前版本）。
     """
-    critic = ctx.critic_llm or ctx.llm
-    if not critic.enabled:
+    if ctx.backend is None:
         return None
-    parsed = critic.complete_structured(
-        "你是严格的系统规格评审专家。只评审、不重写。依据如下 6 维 rubric 打分，每维 0-2 分，满分 12：\n"
-        f"{_rubric_text()}\n\n"
-        "判定规则：score≥10 且无重大缺陷 → PASS；7-9 → NEEDS_IMPROVEMENT；≤6 → FAIL。"
-        "feedback 必须针对未满分维度给出具体、可执行的改进方向。",
-        f"子系统：{sub.name}（职责：{sub.responsibility}）\n\n待评审规格：\n{spec}",
-        _critique_schema(),
+    result = asyncio.run(
+        ctx.backend.execute_node(
+            system=(
+                "你是严格的系统规格评审专家。只评审、不重写。依据如下 6 维 rubric 打分，每维 0-2 分，满分 12：\n"
+                f"{_rubric_text()}\n\n"
+                "判定规则：score≥10 且无重大缺陷 → PASS；7-9 → NEEDS_IMPROVEMENT；≤6 → FAIL。"
+                "feedback 必须针对未满分维度给出具体、可执行的改进方向。"
+            ),
+            user=(
+                f"子系统：{sub.name}（职责：{sub.responsibility}）\n\n待评审规格：\n{spec}"
+            ),
+            structured_schema=_critique_schema(),
+        )
     )
+    parsed = result.structured
     if not isinstance(parsed, dict):
         return None
     verdict = parsed.get("verdict", "NEEDS_IMPROVEMENT")

@@ -37,7 +37,7 @@ def test_loop_normal_carries_tool_meta(monkeypatch):
     )
     ctx = MagicMock()
     ctx.llm.enabled = True
-    ctx.critic_llm.enabled = False  # critic 不可用 → 立即接受
+    ctx.backend = None  # critique 走 backend；None → critique_spec 返回 None → 立即接受
     ctx.settings.spec_refine_enabled = True
     ctx.settings.spec_refine_max_iter = 3
     ctx.settings.spec_refine_pass_score = 10
