@@ -1,6 +1,6 @@
 [project]
 name = "porto-chatbot"
-version = "0.5.1"
+version = "0.5.2"
 description = "Agentic RAG and PRD decomposition service for Porto"
 requires-python = ">=3.12"
 dependencies = [
