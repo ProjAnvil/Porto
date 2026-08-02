@@ -83,6 +83,16 @@ def _reset_rag_singletons():
     reset_rag_singletons()
 
 
+@pytest.fixture(autouse=True)
+def _reset_logging_state():
+    """Reset logging configuration before each test for isolation."""
+    from porto_chatbot.logging_utils import reset_logging
+
+    reset_logging()
+    yield
+    reset_logging()
+
+
 @pytest.fixture()
 def sample_settings(tmp_path: Path) -> Settings:
     kb = tmp_path / "kb"
