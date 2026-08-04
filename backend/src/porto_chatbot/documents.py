@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from docx import Document
 from langchain_text_splitters import (
@@ -13,6 +14,7 @@ from langchain_text_splitters import (
 from pypdf import PdfReader
 
 from .logging_utils import get_component_logger
+from .models.enums import DocumentParseMode, LocalParser
 
 if TYPE_CHECKING:
     from .llm import LLMClient
@@ -34,9 +36,23 @@ _MARKDOWN_HEADERS: list[tuple[str, str]] = [
 # 二次切分（把过大的 section / 纯文本文档切成最终 chunk）使用的递归分隔符。
 _PLAIN_SEPARATORS = ["\n\n", "\n", "。", "，", " ", ""]
 
-ContentFormat = Literal["markdown", "text"]
-DocumentFormat = Literal["markdown", "text", "pdf", "docx"]
-DocumentParseMode = Literal["local", "native", "hybrid"]
+class ContentFormat(StrEnum):
+    MARKDOWN = "markdown"
+    TEXT = "text"
+
+
+class DocumentFormat(StrEnum):
+    MARKDOWN = "markdown"
+    TEXT = "text"
+    PDF = "pdf"
+    DOCX = "docx"
+
+
+class ImageKind(StrEnum):
+    EMBEDDED = "embedded"
+    RELATIVE = "relative"
+    REMOTE = "remote"
+    DATA = "data"
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
 
@@ -60,7 +76,7 @@ class DocumentImageRef:
     source: str
     alt: str = ""
     page: int | None = None
-    kind: Literal["embedded", "relative", "remote", "data"] = "embedded"
+    kind: ImageKind = ImageKind.EMBEDDED
 
 
 @dataclass
@@ -98,8 +114,8 @@ def parse_document(
     max_bytes: int | None = None,
     max_pdf_pages: int | None = None,
     llm_client: LLMClient | None = None,
-    mode: DocumentParseMode = "local",
-    local_parser: Literal["pypdf", "docling"] = "pypdf",
+    mode: DocumentParseMode = DocumentParseMode.LOCAL,
+    local_parser: LocalParser = LocalParser.PYPDF,
 ) -> DocumentArtifact:
     """Parse a document locally and optionally enrich a PDF with native model vision.
 
@@ -128,14 +144,14 @@ def parse_document(
     except Exception as exc:
         raise DocumentParseError(f"failed to parse document: {exc}") from exc
 
-    if suffix != ".pdf" or mode == "local":
+    if suffix != ".pdf" or mode == DocumentParseMode.LOCAL:
         return artifact
 
     filename = original_name or path.name
     supported = llm_client is not None and llm_client.document_capabilities.native_pdf
     if not supported:
         message = "configured model does not advertise native PDF understanding"
-        if mode == "native":
+        if mode == DocumentParseMode.NATIVE:
             raise DocumentNativeError(message)
         artifact.warnings.append(message)
         return artifact
@@ -150,7 +166,7 @@ def parse_document(
         if not enriched or not enriched.strip():
             raise RuntimeError("model returned empty document text")
     except Exception as exc:
-        if mode == "native":
+        if mode == DocumentParseMode.NATIVE:
             raise DocumentNativeError(f"native PDF parsing failed: {exc}") from exc
         artifact.warnings.append(f"native PDF parsing failed; used local text fallback: {exc}")
         return artifact
@@ -169,16 +185,16 @@ def _parse_local_document(
     suffix: str,
     *,
     max_pdf_pages: int | None,
-    local_parser: Literal["pypdf", "docling"],
+    local_parser: LocalParser,
 ) -> DocumentArtifact:
     if suffix in {".md", ".markdown", ".txt"}:
         text = path.read_text(encoding="utf-8", errors="ignore")
         if suffix == ".txt":
-            return DocumentArtifact(text=text, format="text", parser="text")
+            return DocumentArtifact(text=text, format=DocumentFormat.TEXT, parser="text")
         image_refs, warnings = _markdown_images(text)
         return DocumentArtifact(
             text=text,
-            format="markdown",
+            format=DocumentFormat.MARKDOWN,
             parser="markdown",
             image_refs=image_refs,
             warnings=warnings,
@@ -210,13 +226,13 @@ def _parse_local_document(
                 logger.warning("PDF image enumeration failed page=%s error=%s", page_number, exc)
         text = "\n".join(texts)
         parser = "pypdf"
-        if local_parser == "docling":
+        if local_parser == LocalParser.DOCLING:
             text = _parse_pdf_with_docling(path)
             parser = "docling"
 
         warnings = []
         if images:
-            if parser == "pypdf":
+            if parser == LocalParser.PYPDF:
                 warnings.append(
                     f"PDF contains {len(images)} embedded image(s); local pypdf parsing cannot "
                     "understand their visual meaning"
@@ -228,7 +244,7 @@ def _parse_local_document(
                 )
         return DocumentArtifact(
             text=text,
-            format="pdf",
+            format=DocumentFormat.PDF,
             parser=parser,
             page_count=page_count,
             image_refs=images,
@@ -245,7 +261,7 @@ def _parse_local_document(
         )
         return DocumentArtifact(
             text="\n".join(p.text for p in doc.paragraphs if p.text.strip()),
-            format="docx",
+            format=DocumentFormat.DOCX,
             parser="python-docx",
             image_refs=images,
             warnings=warnings,
@@ -277,12 +293,12 @@ def _markdown_images(text: str) -> tuple[list[DocumentImageRef], list[str]]:
     for match in _MARKDOWN_IMAGE_RE.finditer(text):
         alt, source = match.groups()
         if source.startswith("data:image/"):
-            kind = "data"
+            kind = ImageKind.DATA
         elif source.startswith(("http://", "https://")):
-            kind = "remote"
+            kind = ImageKind.REMOTE
             has_remote = True
         else:
-            kind = "relative"
+            kind = ImageKind.RELATIVE
             has_relative = True
         images.append(DocumentImageRef(source=source, alt=alt, kind=kind))
     warnings: list[str] = []
@@ -320,7 +336,7 @@ def iter_documents(roots: list[Path]) -> list[tuple[Path, Path]]:
 
 def detect_content_format(path: Path) -> ContentFormat:
     """根据文件后缀推断切分策略：markdown 走标题切分，其余走纯文本递归切分。"""
-    return "markdown" if path.suffix.lower() in MARKDOWN_SUFFIXES else "text"
+    return ContentFormat.MARKDOWN if path.suffix.lower() in MARKDOWN_SUFFIXES else ContentFormat.TEXT
 
 
 def chunk_text(text: str, *, max_chars: int, overlap: int) -> list[str]:
@@ -328,7 +344,7 @@ def chunk_text(text: str, *, max_chars: int, overlap: int) -> list[str]:
     return [
         chunk.text
         for chunk in chunk_document(
-            text, content_format="text", max_chars=max_chars, overlap=overlap
+            text, content_format=ContentFormat.TEXT, max_chars=max_chars, overlap=overlap
         )
     ]
 
@@ -351,7 +367,7 @@ def chunk_document(
         logger.info("chunk document skipped empty input format=%s", content_format)
         return []
 
-    if content_format == "markdown":
+    if content_format == ContentFormat.MARKDOWN:
         chunks = _split_markdown(normalized, max_chars=max_chars, overlap=overlap)
     else:
         chunks = _split_plain(normalized, max_chars=max_chars, overlap=overlap)
