@@ -232,7 +232,7 @@ git commit -m "refactor(settings): replace Literal types with StrEnum"
   - 返回类型签名保持 `str | None`
 - `if finish_reason == "length":` → `if finish_reason == FinishReason.LENGTH:`
 - `if _finish_reason(resp) != "length":` → `if _finish_reason(resp) != FinishReason.LENGTH:`
-- `self.settings.agent_provider == "anthropic"` → `LLMProvider.ANTHROPIC`（4 处：行 62, 78, 408, 426）
+- `self.settings.agent_provider == "anthropic"` → `LLMProvider.ANTHROPIC`（3 处：行 62, 408, 426）
 - `self.settings.agent_provider == "openai"` → `LLMProvider.OPENAI`（3 处：行 78, 406, 424）
 - `role == "system"` → `ChatRole.SYSTEM`；`role == "user"` → `ChatRole.USER`；`role == "assistant"` → `ChatRole.ASSISTANT`（行 380-384）
 - `block.type == "text"` → `ContentType.TEXT`（行 121）
@@ -271,11 +271,12 @@ git commit -m "refactor(llm): add FinishReason/ContentType enums, replace string
 - [ ] **Step 2: 更新 workflow_executor.py**
 
 - 添加 `from ..models.enums import WorkflowRunState, StepStatus, TruncationReason`
-- 所有 `update_status(wid, "running")` → `update_status(wid, WorkflowRunState.RUNNING)`（约 7 处）
-- 所有 `update_status(wid, "failed")` → `WorkflowRunState.FAILED`（约 3 处）
+- 所有 `update_status(wid, "running")` → `update_status(wid, WorkflowRunState.RUNNING)`（3 处：行 175, 207, 411）
+- 所有 `update_status(wid, "failed")` → `WorkflowRunState.FAILED`（4 处：行 149, 199, 218, 400）
 - `update_status(wid, "completed")` → `WorkflowRunState.COMPLETED`
 - `update_status(wid, "awaiting_input")` → `WorkflowRunState.AWAITING_INPUT`
 - `update_status(wid, "interrupted")` → `WorkflowRunState.INTERRUPTED`
+- `:306` `status = "completed" if not snap.next else "awaiting_input"` → `status = WorkflowRunState.COMPLETED if not snap.next else WorkflowRunState.AWAITING_INPUT`
 - `AgentStep(status="completed"/"failed"/"running"/"pending")` → `StepStatus.*`
 
 - [ ] **Step 3: 更新 api/routes/workflow.py**
@@ -349,6 +350,7 @@ git commit -m "refactor(workflow): replace status strings with WorkflowRunState 
 - `method == "vector"` → `RetrievalMethod.VECTOR`
 - `method == "bm25"` → `RetrievalMethod.BM25`
 - `self.settings.embedding_provider == "local"` → `EmbeddingProvider.LOCAL`（2 处：行 360, 373）
+- `:344` `self.settings.retrieval_method in ("bm25", "hybrid")` → `in (RetrievalMethod.BM25, RetrievalMethod.HYBRID)`
 
 - [ ] **Step 5: 更新 retrieval.py**
 
@@ -387,6 +389,8 @@ git commit -m "refactor: replace string literals with StrEnum in intent, health,
 - `content_format == "markdown"` → `ContentFormat.MARKDOWN`（行 354）
 - `local_parser == "docling"` → `LocalParser.DOCLING`（行 213）
 - `parser == "pypdf"` → `LocalParser.PYPDF`（行 219）
+- `:102` `local_parser: Literal["pypdf", "docling"] = "pypdf"` → `local_parser: LocalParser = LocalParser.PYPDF`
+- `:172` `local_parser: Literal["pypdf", "docling"]` → `local_parser: LocalParser`
 - `DocumentArtifact.parser` → 保留 str（动态拼接）
 - `suffix == ".pdf"` 等文件扩展名 → 保留 str
 - `ImageKind` 的 `kind: Literal[...]` → `ImageKind` 枚举类型（行 63）
@@ -527,6 +531,7 @@ git commit -m "refactor(specs): replace verdict strings and truncation reasons w
 - Modify: `backend/src/porto_chatbot/agent_sdk/backend.py`
 - Modify: `backend/src/porto_chatbot/api/routes/chat.py`
 - Modify: `backend/src/porto_chatbot/index_supervisor.py`
+- Modify: `backend/src/porto_chatbot/api/sse.py`
 - Modify: `backend/src/porto_chatbot/tools/registry.py`（如有 string literal）
 
 - [ ] **Step 1: 更新 memory/facts.py**
@@ -552,8 +557,8 @@ git commit -m "refactor(specs): replace verdict strings and truncation reasons w
 
 - [ ] **Step 3: 更新 api/routes/chat.py**
 
-- `from ...models.enums import ChatbotBackend` 或 `from .factory import BackendScope`
-- `:39,60` `scope="chatbot"` → `BackendScope.CHATBOT`（需要导入 BackendScope）
+- `from ...agent.factory import BackendScope`
+- `:39,60` `scope="chatbot"` → `BackendScope.CHATBOT`
 
 - [ ] **Step 4: 更新 index_supervisor.py**
 
@@ -561,18 +566,24 @@ git commit -m "refactor(specs): replace verdict strings and truncation reasons w
 - `status.status == "running"` → `IndexJobState.RUNNING`（行 97）
 - `rag_available()` 返回的 reason 字符串 → 保留 str
 
-- [ ] **Step 5: 检查 tools/registry.py**
+- [ ] **Step 5: 更新 api/sse.py**
+
+- `from ...models.enums import ContentType, ChatRole`（或从 llm.types 导入 ContentType）
+- `:22` `part.get("type") == "text"` → `ContentType.TEXT`
+- `:29` `message.get("role") != "user"` → `ChatRole.USER`
+
+- [ ] **Step 6: 检查 tools/registry.py**
 
 - JSON schema 中的 `"enum": [...]` → 从 StrEnum 动态生成（如有）
 
-- [ ] **Step 6: 运行测试**
+- [ ] **Step 7: 运行测试**
 
 ```bash
-cd backend && python -m pytest tests/memory/ tests/test_chat_dispatch.py tests/test_chat_facts.py tests/api/ tests/test_node_backend_dispatch.py tests/test_agent_sdk_backend.py tests/test_agent_sdk_chat.py -q
+cd backend && python -m pytest tests/memory/ tests/test_chat_dispatch.py tests/api/ tests/test_node_backend_dispatch.py tests/test_agent_sdk_backend.py tests/test_agent_sdk_chat.py -q
 ```
 Expected: 全部 PASS
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/src/porto_chatbot/memory/ backend/src/porto_chatbot/agent_sdk/ backend/src/porto_chatbot/api/routes/chat.py backend/src/porto_chatbot/index_supervisor.py
