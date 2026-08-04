@@ -1,41 +1,48 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
+
+from .enums import (
+    ChatbotBackend,
+    DocumentParseMode,
+    EmbeddingProvider,
+    LLMProvider,
+    LocalParser,
+    RetrievalMethod,
+)
 
 
 class RagSettingsPayload(BaseModel):
-    embedding_provider: Literal["local", "ollama"] | None = None
+    embedding_provider: EmbeddingProvider | None = None
     embedding_model: str | None = None
     embedding_base_url: str | None = None
     chunk_size: int | None = Field(default=None, ge=200, le=8000)
     chunk_overlap: int | None = Field(default=None, ge=0, le=2000)
     top_k: int | None = Field(default=None, ge=1, le=30)
     kb_dirs: list[str] | None = None
-    retrieval_method: Literal["vector", "bm25", "hybrid"] | None = None
+    retrieval_method: RetrievalMethod | None = None
     bm25_top_k: int | None = Field(default=None, ge=1, le=100)
     hybrid_vector_weight: float | None = Field(default=None, ge=0.0, le=1.0)
     rerank_enabled: bool | None = None
     rerank_top_n: int | None = Field(default=None, ge=1, le=50)
-    rerank_provider: Literal["openai", "anthropic"] | None = None
+    rerank_provider: LLMProvider | None = None
     rerank_model: str | None = None
     rerank_choice_batch_size: int | None = Field(default=None, ge=1, le=20)
 
 
 class AgentSettingsPayload(BaseModel):
     # --- Agent 引擎选择 ---
-    chatbot_backend: Literal["langchain", "agent_sdk"] | None = None
-    workflow_backend: Literal["langchain", "agent_sdk"] | None = None
+    chatbot_backend: ChatbotBackend | None = None
+    workflow_backend: ChatbotBackend | None = None
     # LLM 连接
-    agent_provider: Literal["openai", "anthropic"] | None = None
+    agent_provider: LLMProvider | None = None
     agent_model: str | None = None
     agent_base_url: str | None = None
     agent_api_key: str | None = None
     agent_temperature: float | None = Field(default=None, ge=0, le=2)
     agent_max_tokens: int | None = Field(default=None, ge=1, le=128000)
     # Critic（独立评审模型，可选；未配则复用上面的 agent_*）
-    critic_provider: Literal["openai", "anthropic"] | None = None
+    critic_provider: LLMProvider | None = None
     critic_model: str | None = None
     critic_base_url: str | None = None
     critic_api_key: str | None = None
@@ -66,8 +73,8 @@ class AgentSettingsPayload(BaseModel):
 
 
 class DocumentSettingsPayload(BaseModel):
-    parse_mode: Literal["local", "native", "hybrid"] | None = None
-    local_parser: Literal["pypdf", "docling"] | None = None
+    parse_mode: DocumentParseMode | None = None
+    local_parser: LocalParser | None = None
     max_tokens: int | None = Field(default=None, ge=1000, le=128000)
     max_upload_mb: int | None = Field(default=None, ge=1, le=200)
     max_pdf_pages: int | None = Field(default=None, ge=1, le=1000)
