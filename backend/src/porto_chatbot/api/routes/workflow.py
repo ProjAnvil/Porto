@@ -33,6 +33,7 @@ from ...documents import (
 from ...llm import LLMClient
 from ...logging_utils import get_component_logger
 from ...models import WorkflowRequest
+from ...models.enums import DocumentParseMode, WorkflowRunState
 from ...workflow_executor import WorkflowRunning
 from ..deps import (
     apply_rag_settings,
@@ -53,14 +54,14 @@ _EDITABLE_STEPS = {"understand", "identify", "generate"}
 
 class WorkflowCreated(BaseModel):
     workflow_id: str
-    status: str
+    status: WorkflowRunState
 
 
 class WorkflowListItem(BaseModel):
     workflow_id: str
     session_id: str
     project_name: str | None
-    status: str
+    status: WorkflowRunState
     current_step: str | None
     created_at: str
     score: int | None = None
@@ -76,7 +77,7 @@ class WorkflowDetail(BaseModel):
     workflow_id: str
     session_id: str
     project_name: str | None
-    status: str
+    status: WorkflowRunState
     current_step: str | None
     error: str | None
     created_at: str
@@ -94,7 +95,7 @@ class DocumentCapabilitiesView(BaseModel):
     image_input: bool
     native_pdf: bool
     reason: str
-    parse_mode: str
+    parse_mode: DocumentParseMode
 
 
 def _detail(store, workflow_id: str) -> WorkflowDetail:
@@ -143,7 +144,7 @@ def create_workflow(req: WorkflowRequest):
         top_k,
     )
     get_workflow_executor().start_workflow(wid)
-    return WorkflowCreated(workflow_id=wid, status="running")
+    return WorkflowCreated(workflow_id=wid, status=WorkflowRunState.RUNNING)
 
 
 @router.post("/api/porto/workflows/upload", response_model=WorkflowCreated)
@@ -214,7 +215,7 @@ async def upload_workflow(
             artifact.warnings,
         )
     get_workflow_executor().start_workflow(wid)
-    return WorkflowCreated(workflow_id=wid, status="running")
+    return WorkflowCreated(workflow_id=wid, status=WorkflowRunState.RUNNING)
 
 
 @router.get("/api/porto/document-capabilities", response_model=DocumentCapabilitiesView)
@@ -282,11 +283,11 @@ def advance_workflow(workflow_id: str):
     row = store.get(workflow_id)
     if row is None:
         raise HTTPException(404, "workflow not found")
-    if row["status"] == "completed":
+    if row["status"] == WorkflowRunState.COMPLETED:
         raise HTTPException(409, "workflow already completed")
     if not get_workflow_executor().advance(workflow_id):
         raise HTTPException(409, "workflow is currently running") from None
-    return WorkflowCreated(workflow_id=workflow_id, status="running")
+    return WorkflowCreated(workflow_id=workflow_id, status=WorkflowRunState.RUNNING)
 
 
 @router.post(
@@ -309,7 +310,7 @@ def rerun_step(workflow_id: str, step: str):
         get_workflow_executor().rerun_step(workflow_id, step)
     except WorkflowRunning:
         raise HTTPException(409, "workflow is running or turn limit reached") from None
-    return WorkflowCreated(workflow_id=workflow_id, status="running")
+    return WorkflowCreated(workflow_id=workflow_id, status=WorkflowRunState.RUNNING)
 
 
 @router.put("/api/porto/workflows/{workflow_id}/steps/{step}", response_model=WorkflowDetail)

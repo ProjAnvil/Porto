@@ -8,6 +8,7 @@ from typing import Any
 
 from .agent.graph import STEPS
 from .logging_utils import get_component_logger
+from .models.enums import WorkflowRunState
 from .settings import Settings
 
 logger = get_component_logger("workflow_store")
@@ -78,7 +79,7 @@ class WorkflowStore:
                     top_k,
                     json.dumps(rag_snapshot, ensure_ascii=False),
                     json.dumps(agent_snapshot, ensure_ascii=False),
-                    "created",
+                    WorkflowRunState.CREATED,
                     None,
                     None,
                     now,
