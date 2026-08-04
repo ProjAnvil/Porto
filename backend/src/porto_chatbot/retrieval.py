@@ -12,6 +12,7 @@ from .bm25_index import Bm25Index
 from .bm25_index import _tokenize_text as _tokenize_query
 from .logging_utils import get_component_logger
 from .models import SourceChunk
+from .models.enums import LLMProvider
 from .settings import Settings
 
 logger = get_component_logger("retrieval")
@@ -138,7 +139,7 @@ def _build_rerank_llm(settings: Settings):
     if not api_key:
         return None
     try:
-        if provider == "openai":
+        if provider == LLMProvider.OPENAI:
             if settings.agent_base_url:
                 from llama_index.llms.openai_like import OpenAILike
 
@@ -154,7 +155,7 @@ def _build_rerank_llm(settings: Settings):
             from llama_index.llms.openai import OpenAI
 
             return OpenAI(model=model, api_key=api_key, temperature=0.0)
-        if provider == "anthropic":
+        if provider == LLMProvider.ANTHROPIC:
             from llama_index.llms.anthropic import Anthropic
 
             return Anthropic(

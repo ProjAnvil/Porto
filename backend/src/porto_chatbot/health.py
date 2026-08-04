@@ -15,8 +15,12 @@ from .logging_utils import get_component_logger
 from .models import (
     DependencyHealth,
     DependencyName,
+    DependencyStatus,
+    EmbeddingProvider,
     FeatureAvailability,
+    FeatureName,
     HealthSnapshot,
+    LLMProvider,
 )
 from .settings import Settings
 
@@ -76,8 +80,8 @@ class HealthMonitor:
         settings = self._settings_provider()
         deps: list[DependencyHealth] = [
             self._probe_embedding(settings),
-            self._probe_llm(settings, "agent_llm"),
-            self._probe_llm(settings, "critic_llm"),
+            self._probe_llm(settings, DependencyName.AGENT_LLM),
+            self._probe_llm(settings, DependencyName.CRITIC_LLM),
         ]
         features = self._derive_features(deps)
         self._snapshot = HealthSnapshot(
@@ -94,35 +98,35 @@ class HealthMonitor:
 
     # ---------------- 依赖探测 ----------------
     def _probe_embedding(self, settings: Settings) -> DependencyHealth:
-        name: DependencyName = "embedding"
-        if settings.embedding_provider == "local":
+        name = DependencyName.EMBEDDING
+        if settings.embedding_provider == EmbeddingProvider.LOCAL:
             return DependencyHealth(
-                name=name, status="ok", detail="local", checked_at=_now_iso()
+                name=name, status=DependencyStatus.OK, detail="local", checked_at=_now_iso()
             )
         try:
             latency = self._executor.submit(
                 self._ollama_ping, settings.embedding_base_url, settings.embedding_model
             ).result(timeout=settings.health_probe_timeout)
             return DependencyHealth(
-                name=name, status="ok", latency_ms=latency,
+                name=name, status=DependencyStatus.OK, latency_ms=latency,
                 detail=f"{settings.embedding_model}@{settings.embedding_base_url}",
                 checked_at=_now_iso(),
             )
         except FutureTimeout:
             return DependencyHealth(
-                name=name, status="down",
+                name=name, status=DependencyStatus.DOWN,
                 detail=f"timeout >{settings.health_probe_timeout}s",
                 checked_at=_now_iso(),
             )
         except Exception as exc:
-            return DependencyHealth(name=name, status="down", detail=_short(exc), checked_at=_now_iso())
+            return DependencyHealth(name=name, status=DependencyStatus.DOWN, detail=_short(exc), checked_at=_now_iso())
 
     def _probe_llm(self, settings: Settings, name: DependencyName) -> DependencyHealth:
         provider, api_key, base_url, model = self._resolve_llm_config(settings, name)
-        inherits = name == "critic_llm" and not settings.critic_provider
+        inherits = name == DependencyName.CRITIC_LLM and not settings.critic_provider
         if not api_key:
             return DependencyHealth(
-                name=name, status="unknown", detail="no api key", checked_at=_now_iso()
+                name=name, status=DependencyStatus.UNKNOWN, detail="no api key", checked_at=_now_iso()
             )
         try:
             latency = self._executor.submit(
@@ -130,19 +134,19 @@ class HealthMonitor:
             ).result(timeout=settings.health_probe_timeout)
             tag = "inherits agent" if inherits else f"{model}@{provider}"
             return DependencyHealth(
-                name=name, status="ok", latency_ms=latency, detail=tag, checked_at=_now_iso()
+                name=name, status=DependencyStatus.OK, latency_ms=latency, detail=tag, checked_at=_now_iso()
             )
         except FutureTimeout:
             return DependencyHealth(
-                name=name, status="down", detail=f"timeout >{settings.health_probe_timeout}s",
+                name=name, status=DependencyStatus.DOWN, detail=f"timeout >{settings.health_probe_timeout}s",
                 checked_at=_now_iso(),
             )
         except Exception as exc:
-            return DependencyHealth(name=name, status="down", detail=_short(exc), checked_at=_now_iso())
+            return DependencyHealth(name=name, status=DependencyStatus.DOWN, detail=_short(exc), checked_at=_now_iso())
 
     @staticmethod
     def _resolve_llm_config(settings: Settings, name: DependencyName):
-        if name == "agent_llm":
+        if name == DependencyName.AGENT_LLM:
             return (
                 settings.agent_provider, settings.agent_api_key,
                 settings.agent_base_url, settings.agent_model,
@@ -165,14 +169,14 @@ class HealthMonitor:
     @staticmethod
     def _llm_ping(provider: str, api_key: str, base_url: str | None, model: str) -> float:
         t0 = time.perf_counter()
-        if provider == "openai":
+        if provider == LLMProvider.OPENAI:
             kwargs: dict = {"api_key": api_key}
             if base_url:
                 kwargs["base_url"] = base_url
             OpenAI(**kwargs).chat.completions.create(
                 model=model, messages=[{"role": "user", "content": "ping"}], max_tokens=1,
             )
-        elif provider == "anthropic":
+        elif provider == LLMProvider.ANTHROPIC:
             kwargs = {"api_key": api_key}
             if base_url:
                 kwargs["base_url"] = base_url
@@ -186,29 +190,31 @@ class HealthMonitor:
     # ---------------- 功能级推导 ----------------
     def _derive_features(self, deps: list[DependencyHealth]) -> list[FeatureAvailability]:
         by_name = {d.name: d for d in deps}
-        agent_ok = by_name.get("agent_llm").status != "down" if by_name.get("agent_llm") else False
-        embed_ok = by_name.get("embedding").status == "ok" if by_name.get("embedding") else False
+        agent_dep = by_name.get(DependencyName.AGENT_LLM)
+        embed_dep = by_name.get(DependencyName.EMBEDDING)
+        agent_ok = agent_dep.status != DependencyStatus.DOWN if agent_dep else False
+        embed_ok = embed_dep.status == DependencyStatus.OK if embed_dep else False
         rag_avail, rag_reason = self._rag_available()
 
         features: list[FeatureAvailability] = []
         features.append(
             FeatureAvailability(
-                name="chat", available=agent_ok,
+                name=FeatureName.CHAT, available=agent_ok,
                 reason=None if agent_ok else "agent_llm_down",
             )
         )
         if not rag_avail:
-            features.append(FeatureAvailability(name="rag_search", available=False, reason=rag_reason))
+            features.append(FeatureAvailability(name=FeatureName.RAG_SEARCH, available=False, reason=rag_reason))
         elif not embed_ok:
-            features.append(FeatureAvailability(name="rag_search", available=False, reason="embedding_down"))
+            features.append(FeatureAvailability(name=FeatureName.RAG_SEARCH, available=False, reason="embedding_down"))
         else:
-            features.append(FeatureAvailability(name="rag_search", available=True))
+            features.append(FeatureAvailability(name=FeatureName.RAG_SEARCH, available=True))
         if not agent_ok:
-            features.append(FeatureAvailability(name="workflow", available=False, reason="agent_llm_down"))
+            features.append(FeatureAvailability(name=FeatureName.WORKFLOW, available=False, reason="agent_llm_down"))
         elif not rag_avail:
-            features.append(FeatureAvailability(name="workflow", available=False, reason=rag_reason))
+            features.append(FeatureAvailability(name=FeatureName.WORKFLOW, available=False, reason=rag_reason))
         else:
-            features.append(FeatureAvailability(name="workflow", available=True))
+            features.append(FeatureAvailability(name=FeatureName.WORKFLOW, available=True))
         return features
 
 

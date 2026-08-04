@@ -8,6 +8,7 @@ from collections.abc import Sequence
 import ollama
 
 from .logging_utils import get_component_logger
+from .models.enums import EmbeddingProvider
 from .settings import Settings
 
 TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
@@ -50,9 +51,9 @@ class EmbeddingClient:
             self.settings.embedding_model,
             len(texts),
         )
-        if self.settings.embedding_provider == "local":
+        if self.settings.embedding_provider == EmbeddingProvider.LOCAL:
             return [local_embed_text(text, self.settings.embedding_dimensions) for text in texts]
-        if self.settings.embedding_provider == "ollama":
+        if self.settings.embedding_provider == EmbeddingProvider.OLLAMA:
             client = ollama.Client(host=self.settings.embedding_base_url)
             try:
                 response = client.embed(model=self.settings.embedding_model, input=list(texts))

@@ -20,6 +20,7 @@ from .documents import (
 from .embeddings import EmbeddingClient
 from .logging_utils import get_component_logger
 from .models import IndexStats, SourceChunk
+from .models.enums import EmbeddingProvider, RetrievalMethod
 from .retrieval import hybrid_fusion_search, rerank_chunks, vector_search
 from .settings import Settings
 
@@ -199,9 +200,9 @@ class ChromaVectorStore:
                 len(query_embedding),
             )
             return []
-        if method == "vector":
+        if method == RetrievalMethod.VECTOR:
             rows = self._vector_search(collection, query_embedding, resolved_top_k)
-        elif method == "bm25":
+        elif method == RetrievalMethod.BM25:
             rows = self._bm25_search(collection, query, resolved_top_k)
         else:
             rows = self._hybrid_search(collection, query_embedding, query, resolved_top_k)
@@ -341,7 +342,7 @@ class ChromaVectorStore:
             return False
         if not self._is_collection_compatible(collection) or collection.count() == 0:
             return False
-        if self.settings.retrieval_method in ("bm25", "hybrid"):
+        if self.settings.retrieval_method in (RetrievalMethod.BM25, RetrievalMethod.HYBRID):
             bm = Bm25Registry.get(self.settings)
             if bm is None or len(bm) != collection.count():
                 return False
@@ -357,7 +358,7 @@ class ChromaVectorStore:
             # collection 新建、build 进行中（维度尚未写入）。视为兼容，避免并发的
             # search 把正被 build 的 collection 当不兼容删掉，导致 build _add_batch NotFound。
             return True
-        if self.settings.embedding_provider == "local":
+        if self.settings.embedding_provider == EmbeddingProvider.LOCAL:
             return metadata.get("embedding_dimensions") == self.settings.embedding_dimensions
         return True
 
@@ -370,7 +371,7 @@ class ChromaVectorStore:
             "chunk_overlap": self.settings.chunk_overlap,
             "splitter": SPLITTER_VERSION,
         }
-        if self.settings.embedding_provider == "local":
+        if self.settings.embedding_provider == EmbeddingProvider.LOCAL:
             metadata["embedding_dimensions"] = self.settings.embedding_dimensions
         return metadata
 
