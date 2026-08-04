@@ -18,14 +18,35 @@ import os
 import sqlite3
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from ..agent.backends import BackendTools, NodeExecutionResult
 from ..logging_utils import get_component_logger
 from ..models import ChatRequest, ChatResponse
+from ..models.enums import StepStatus
 from ..settings import Settings
 from ..tools.context import AgentToolContext
 from .tools import build_sdk_tools
+
+
+class ClaudeMsgSubtype(StrEnum):
+    """Claude Agent SDK ``ResultMessage.subtype`` / ``SystemMessage.subtype`` 值。"""
+
+    INIT = "init"
+    SUCCESS = "success"
+
+
+class AnthropicEventType(StrEnum):
+    """Anthropic streaming event ``type`` 值（token-level streaming）。"""
+
+    CONTENT_BLOCK_DELTA = "content_block_delta"
+
+
+class AnthropicDeltaType(StrEnum):
+    """Anthropic streaming ``delta.type`` 值。"""
+
+    TEXT_DELTA = "text_delta"
 
 # Defensive SDK imports: the package must stay importable so that
 # ``build_sdk_tools`` can feature-detect availability and so that tests can
@@ -200,7 +221,7 @@ class AgentSDKBackend:
                                 })
                     elif isinstance(msg, ResultMessage):
                         turns = getattr(msg, "num_turns", 0) or 0
-                        if msg.subtype != "success":
+                        if msg.subtype != ClaudeMsgSubtype.SUCCESS:
                             truncated = True
                             reason = msg.subtype
                         # Prefer structured_output (parsed by the SDK when
@@ -382,7 +403,7 @@ class AgentSDKBackend:
                 steps=[
                     {
                         "name": "agent_init",
-                        "status": "failed",
+                        "status": StepStatus.FAILED.value,
                         "summary": "claude_agent_sdk not installed",
                         "data": {},
                     },
@@ -402,7 +423,7 @@ class AgentSDKBackend:
                 steps=[
                     {
                         "name": "rag_check",
-                        "status": "completed",
+                        "status": StepStatus.COMPLETED.value,
                         "summary": f"rag unavailable: {reason}",
                         "data": {"reason": reason},
                     },
@@ -416,7 +437,7 @@ class AgentSDKBackend:
                 async for msg in client.receive_response():
                     # Capture Claude Code session_id from init SystemMessage
                     if SystemMessage is not None and isinstance(msg, SystemMessage):
-                        if msg.subtype == "init":
+                        if msg.subtype == ClaudeMsgSubtype.INIT:
                             self._capture_session(
                                 settings, req.session_id,
                                 msg.data.get("session_id"), expected_sid,
@@ -428,7 +449,7 @@ class AgentSDKBackend:
                             elif isinstance(block, ToolUseBlock):
                                 state.setdefault("tool_steps", []).append({
                                     "name": f"tool:{block.name}",
-                                    "status": "completed",
+                                    "status": StepStatus.COMPLETED.value,
                                     "summary": f"Claude 调用了 {block.name}",
                                     "data": {"arguments": block.input},
                                 })
@@ -444,7 +465,7 @@ class AgentSDKBackend:
                 steps=[
                     {
                         "name": "agent_react",
-                        "status": "failed",
+                        "status": StepStatus.FAILED.value,
                         "summary": str(exc),
                         "data": {},
                     },
@@ -469,13 +490,13 @@ class AgentSDKBackend:
             steps=tool_steps + [
                 {
                     "name": "answer",
-                    "status": "completed",
+                    "status": StepStatus.COMPLETED.value,
                     "summary": "完成回答生成",
                     "data": {},
                 },
             ] + ([{
                 "name": "evaluate_rag",
-                "status": "completed",
+                "status": StepStatus.COMPLETED.value,
                 "summary": f"RAG eval score {evaluation['score']}",
                 "data": evaluation,
             }] if sources else []),
@@ -545,7 +566,7 @@ class AgentSDKBackend:
                 async for msg in client.receive_response():
                     # Capture Claude Code session_id from init SystemMessage
                     if SystemMessage is not None and isinstance(msg, SystemMessage):
-                        if msg.subtype == "init":
+                        if msg.subtype == ClaudeMsgSubtype.INIT:
                             self._capture_session(
                                 settings, req.session_id,
                                 msg.data.get("session_id"), expected_sid,
@@ -554,8 +575,8 @@ class AgentSDKBackend:
                     elif StreamEvent is not None and isinstance(msg, StreamEvent):
                         event = msg.event
                         if (
-                            event.get("type") == "content_block_delta"
-                            and event.get("delta", {}).get("type") == "text_delta"
+                            event.get("type") == AnthropicEventType.CONTENT_BLOCK_DELTA
+                            and event.get("delta", {}).get("type") == AnthropicDeltaType.TEXT_DELTA
                         ):
                             delta_text = event["delta"].get("text", "")
                             if delta_text:
@@ -582,7 +603,7 @@ class AgentSDKBackend:
                             elif isinstance(block, ToolUseBlock):
                                 state.setdefault("tool_steps", []).append({
                                     "name": f"tool:{block.name}",
-                                    "status": "completed",
+                                    "status": StepStatus.COMPLETED.value,
                                     "summary": f"Claude 调用了 {block.name}",
                                     "data": {"arguments": block.input},
                                 })
@@ -610,12 +631,12 @@ class AgentSDKBackend:
                      contexts=[s.text for s in sources])
         ]) if sources else {"score": 0.0, "passed": True, "cases": []}
         inspector_steps = tool_steps + [
-            {"name": "answer", "status": "completed",
+            {"name": "answer", "status": StepStatus.COMPLETED.value,
              "summary": "完成回答生成", "data": {}},
         ]
         if sources:
             inspector_steps.append({
-                "name": "evaluate_rag", "status": "completed",
+                "name": "evaluate_rag", "status": StepStatus.COMPLETED.value,
                 "summary": f"RAG eval score {evaluation['score']}",
                 "data": evaluation,
             })

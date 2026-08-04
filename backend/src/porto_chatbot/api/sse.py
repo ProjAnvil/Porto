@@ -5,7 +5,9 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from ..llm.types import ContentType
 from ..models import ChatRequest
+from ..models.enums import ChatRole
 
 
 def _ai_sdk_sse(part: dict[str, Any]) -> str:
@@ -19,14 +21,14 @@ def _text_chunks(text: str, chunk_size: int = 48) -> list[str]:
 
 
 def _extract_text_from_ai_sdk_part(part: dict[str, Any]) -> str:
-    if part.get("type") == "text":
+    if part.get("type") == ContentType.TEXT:
         return str(part.get("text") or "")
     return ""
 
 
 def _extract_latest_user_message(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages):
-        if message.get("role") != "user":
+        if message.get("role") != ChatRole.USER:
             continue
         content = message.get("content")
         if isinstance(content, str):

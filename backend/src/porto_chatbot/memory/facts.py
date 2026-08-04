@@ -9,20 +9,21 @@ from datetime import UTC, datetime
 from ..embeddings import tokens
 from ..logging_utils import get_component_logger
 from ..models import SessionFact
+from ..models.enums import FactAction, FactCategory, FactStatus
 from ..settings import Settings
 
 _CATEGORY_PRIORITY = {
-    "user_decision": 0,
-    "user_preference": 1,
-    "project_context": 2,
-    "open_question": 3,
+    FactCategory.USER_DECISION: 0,
+    FactCategory.USER_PREFERENCE: 1,
+    FactCategory.PROJECT_CONTEXT: 2,
+    FactCategory.OPEN_QUESTION: 3,
 }
 
 _CATEGORY_HEADERS: dict[str, str] = {
-    "user_decision": "[决策]",
-    "user_preference": "[偏好]",
-    "project_context": "[背景]",
-    "open_question": "[待澄清]",
+    FactCategory.USER_DECISION: "[决策]",
+    FactCategory.USER_PREFERENCE: "[偏好]",
+    FactCategory.PROJECT_CONTEXT: "[背景]",
+    FactCategory.OPEN_QUESTION: "[待澄清]",
 }
 
 
@@ -51,7 +52,7 @@ class SessionFactsStore:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT id, content FROM session_facts "
-                "WHERE session_id=? AND category=? AND status='active'",
+                f"WHERE session_id=? AND category=? AND status='{FactStatus.ACTIVE.value}'",
                 (session_id, category),
             ).fetchall()
             threshold = self.settings.facts_similarity_threshold
@@ -72,7 +73,7 @@ class SessionFactsStore:
             conn.execute(
                 "INSERT INTO session_facts "
                 "(id, session_id, category, content, status, source_msg_id, "
-                " created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
+                f" created_at, updated_at) VALUES (?, ?, ?, ?, '{FactStatus.ACTIVE.value}', ?, ?, ?)",
                 (fact_id, session_id, category, content, source_msg_id, now, now),
             )
             self._enforce_cap(conn, session_id, category)
@@ -87,7 +88,7 @@ class SessionFactsStore:
         cap = self.settings.facts_max_per_category
         count = conn.execute(
             "SELECT COUNT(*) FROM session_facts "
-            "WHERE session_id=? AND category=? AND status='active'",
+            f"WHERE session_id=? AND category=? AND status='{FactStatus.ACTIVE.value}'",
             (session_id, category),
         ).fetchone()[0]
         if count <= cap:
@@ -95,7 +96,7 @@ class SessionFactsStore:
         to_delete = count - cap
         stale = conn.execute(
             "SELECT id FROM session_facts "
-            "WHERE session_id=? AND category=? AND status='active' "
+            f"WHERE session_id=? AND category=? AND status='{FactStatus.ACTIVE.value}' "
             "ORDER BY updated_at ASC LIMIT ?",
             (session_id, category, to_delete),
         ).fetchall()
@@ -109,7 +110,7 @@ class SessionFactsStore:
         """软删:标记 status='retracted'。对已 retracted 的行再 UPDATE 幂等。"""
         with sqlite3.connect(self.settings.memory_db_path) as conn:
             conn.execute(
-                "UPDATE session_facts SET status='retracted' WHERE id=?",
+                f"UPDATE session_facts SET status='{FactStatus.RETRACTED.value}' WHERE id=?",
                 (fact_id,),
             )
         self.logger.info("facts retract id=%s", fact_id)
@@ -131,7 +132,7 @@ class SessionFactsStore:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM session_facts "
-                "WHERE session_id=? AND status='active' ORDER BY updated_at DESC",
+                f"WHERE session_id=? AND status='{FactStatus.ACTIVE.value}' ORDER BY updated_at DESC",
                 (session_id,),
             ).fetchall()
         grouped: dict[str, list[SessionFact]] = {}
@@ -224,10 +225,10 @@ def extract_facts(
     for item in facts:
         category = item.get("category")
         content = (item.get("content") or "").strip()
-        action = item.get("action", "add")
+        action = item.get("action", FactAction.ADD.value)
         if category not in _CATEGORY_PRIORITY or not content:
             continue
-        if action == "retract":
+        if action == FactAction.RETRACT:
             _retract_by_match(store, session_id, category, content)
             written += 1
         else:  # add / amend 等价
@@ -254,7 +255,7 @@ def _retract_by_match(
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, content FROM session_facts "
-            "WHERE session_id=? AND category=? AND status='active'",
+            f"WHERE session_id=? AND category=? AND status='{FactStatus.ACTIVE.value}'",
             (session_id, category),
         ).fetchall()
         best_id, best_score = None, store.settings.facts_similarity_threshold
@@ -264,7 +265,8 @@ def _retract_by_match(
                 best_id, best_score = row["id"], score
         if best_id is not None:
             conn.execute(
-                "UPDATE session_facts SET status='retracted' WHERE id=?", (best_id,),
+                f"UPDATE session_facts SET status='{FactStatus.RETRACTED.value}' WHERE id=?",
+                (best_id,),
             )
             store.logger.info(
                 "facts retract match id=%s session=%s category=%s score=%s",

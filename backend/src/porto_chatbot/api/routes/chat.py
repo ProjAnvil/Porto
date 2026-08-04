@@ -34,9 +34,9 @@ def chat(req: ChatRequest):
     top_k = req.top_k or rag_settings.top_k
     runtime_settings = apply_rag_settings(req.rag, agent=req.agent, top_k=top_k)
 
-    from ...agent.factory import create_backend
+    from ...agent.factory import BackendScope, create_backend
 
-    engine = create_backend(runtime_settings, scope="chatbot")
+    engine = create_backend(runtime_settings, scope=BackendScope.CHATBOT)
     # engine.chat() 是 async coroutine(走 LangchainBackend.chat → langchain_chat 同步实现)。
     # FastAPI 把 sync endpoint 跑在 threadpool,该线程无 event loop,asyncio.run 安全。
     return asyncio.run(engine.chat(req, runtime_settings))
@@ -55,9 +55,9 @@ async def chat_stream(body: dict[str, Any]):
     top_k = req.top_k or rag_settings.top_k
     runtime_settings = apply_rag_settings(req.rag, agent=req.agent, top_k=top_k)
 
-    from ...agent.factory import create_backend
+    from ...agent.factory import BackendScope, create_backend
 
-    engine = create_backend(runtime_settings, scope="chatbot")
+    engine = create_backend(runtime_settings, scope=BackendScope.CHATBOT)
     return StreamingResponse(
         engine.chat_stream(req, runtime_settings),
         media_type="text/event-stream",

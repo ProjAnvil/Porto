@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .locking import RAG_INDEX_LOCK, DbLockStore
 from .logging_utils import get_component_logger
 from .models import IndexJobStatus
+from .models.enums import IndexJobState
 from .settings import Settings
 from .vector_store import ChromaVectorStore
 
@@ -94,7 +95,7 @@ class IndexSupervisor:
     def rag_available(self) -> tuple[bool, str | None]:
         """RAG 检索是否可用：不在 reindex 中且索引就绪。返回 (available, reason)。"""
         status = self._lock_store.get_status()
-        if status.status == "running":
+        if status.status == IndexJobState.RUNNING:
             return False, "reindexing"
         try:
             store = self._store_factory(self._settings_provider())
