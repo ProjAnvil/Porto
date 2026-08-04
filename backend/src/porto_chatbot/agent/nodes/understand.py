@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ...models.enums import TruncationReason
 from ...tools import AgentToolContext
 from ..heuristics import extract_bullets, extract_entities, matched_domains, summary_sentence
 from ..state import PortoAgentState
@@ -43,7 +44,7 @@ def understand_prd(state, *, config):
             "reason": result.reason,
         }
         if result.truncated:
-            if result.reason == "max_tokens_truncated":
+            if result.reason == TruncationReason.MAX_TOKENS_TRUNCATED:
                 understanding = _TRUNCATED_NOTICE_TOKENS
             else:
                 understanding = _TRUNCATED_NOTICE_TOOL.format(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from ...models import Subsystem
+from ...models.enums import SubsystemType
 from ..heuristics import (
     capabilities_for,
     entities_for,
@@ -69,7 +70,9 @@ def _fallback_identify(state: PortoAgentState) -> list[Subsystem]:
         name = f"{domain}-service"
         sources_text = " ".join(s.text for s in state.get("sources", []))
         subsystem_type = (
-            "extend" if domain in sources_text.lower() or name in sources_text.lower() else "new"
+            SubsystemType.EXTEND
+            if domain in sources_text.lower() or name in sources_text.lower()
+            else SubsystemType.NEW
         )
         subsystems.append(
             Subsystem(
@@ -85,7 +88,7 @@ def _fallback_identify(state: PortoAgentState) -> list[Subsystem]:
         subsystems = [
             Subsystem(
                 name="core-service",
-                type="new",
+                type=SubsystemType.NEW,
                 responsibility="承载核心业务流程和领域规则",
                 capabilities=["需求管理", "业务流程编排", "状态追踪"],
                 data_entities=["Requirement", "Workflow"],

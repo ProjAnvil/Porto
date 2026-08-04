@@ -8,7 +8,8 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-from .state import DOMAIN_HINTS
+from ..models.enums import SubsystemType
+from .state import DOMAIN_HINTS, BusinessDomain
 
 
 def infer_project_name(text: str) -> str:
@@ -38,9 +39,9 @@ def extract_entities(text: str) -> list[str]:
     return seen or ["用户", "业务流程", "需求记录"]
 
 
-def matched_domains(text: str) -> dict[str, list[str]]:
+def matched_domains(text: str) -> dict[BusinessDomain, list[str]]:
     lower = text.lower()
-    result: dict[str, list[str]] = {}
+    result: dict[BusinessDomain, list[str]] = {}
     for domain, hints in DOMAIN_HINTS.items():
         found = [h for h in hints if h.lower() in lower]
         if found:
@@ -48,40 +49,40 @@ def matched_domains(text: str) -> dict[str, list[str]]:
     return result
 
 
-def responsibility_for(domain: str) -> str:
+def responsibility_for(domain: BusinessDomain) -> str:
     return {
-        "user": "负责用户身份、账户资料和权限边界",
-        "order": "负责订单生命周期、交易状态和履约协同",
-        "payment": "负责支付、退款、结算和资金通道集成",
-        "notification": "负责消息模板、通知投递和触达记录",
-        "catalog": "负责商品目录、库存快照和 SKU 信息",
-        "risk": "负责风险识别、规则决策和审核流转",
-        "reporting": "负责指标聚合、报表查询和运营分析",
+        BusinessDomain.USER: "负责用户身份、账户资料和权限边界",
+        BusinessDomain.ORDER: "负责订单生命周期、交易状态和履约协同",
+        BusinessDomain.PAYMENT: "负责支付、退款、结算和资金通道集成",
+        BusinessDomain.NOTIFICATION: "负责消息模板、通知投递和触达记录",
+        BusinessDomain.CATALOG: "负责商品目录、库存快照和 SKU 信息",
+        BusinessDomain.RISK: "负责风险识别、规则决策和审核流转",
+        BusinessDomain.REPORTING: "负责指标聚合、报表查询和运营分析",
     }.get(domain, "负责核心业务能力")
 
 
-def capabilities_for(domain: str, matches: list[str]) -> list[str]:
+def capabilities_for(domain: BusinessDomain, matches: list[str]) -> list[str]:
     labels = {
-        "user": ["注册登录", "权限校验", "用户资料管理"],
-        "order": ["创建订单", "订单状态机", "履约跟踪"],
-        "payment": ["支付发起", "退款处理", "结算对账"],
-        "notification": ["模板管理", "多渠道投递", "投递状态追踪"],
-        "catalog": ["商品维护", "库存同步", "类目检索"],
-        "risk": ["规则评估", "风险拦截", "人工审核"],
-        "reporting": ["指标计算", "报表导出", "趋势分析"],
+        BusinessDomain.USER: ["注册登录", "权限校验", "用户资料管理"],
+        BusinessDomain.ORDER: ["创建订单", "订单状态机", "履约跟踪"],
+        BusinessDomain.PAYMENT: ["支付发起", "退款处理", "结算对账"],
+        BusinessDomain.NOTIFICATION: ["模板管理", "多渠道投递", "投递状态追踪"],
+        BusinessDomain.CATALOG: ["商品维护", "库存同步", "类目检索"],
+        BusinessDomain.RISK: ["规则评估", "风险拦截", "人工审核"],
+        BusinessDomain.REPORTING: ["指标计算", "报表导出", "趋势分析"],
     }
     return labels.get(domain, matches[:3] or ["业务处理"])
 
 
-def entities_for(domain: str) -> list[str]:
+def entities_for(domain: BusinessDomain) -> list[str]:
     return {
-        "user": ["User", "Account", "Role"],
-        "order": ["Order", "OrderItem", "OrderStatus"],
-        "payment": ["Payment", "Refund", "Settlement"],
-        "notification": ["Message", "Template", "DeliveryLog"],
-        "catalog": ["Product", "Sku", "Inventory"],
-        "risk": ["RiskRule", "RiskDecision", "ReviewTask"],
-        "reporting": ["Metric", "Report", "Dashboard"],
+        BusinessDomain.USER: ["User", "Account", "Role"],
+        BusinessDomain.ORDER: ["Order", "OrderItem", "OrderStatus"],
+        BusinessDomain.PAYMENT: ["Payment", "Refund", "Settlement"],
+        BusinessDomain.NOTIFICATION: ["Message", "Template", "DeliveryLog"],
+        BusinessDomain.CATALOG: ["Product", "Sku", "Inventory"],
+        BusinessDomain.RISK: ["RiskRule", "RiskDecision", "ReviewTask"],
+        BusinessDomain.REPORTING: ["Metric", "Report", "Dashboard"],
     }.get(domain, ["Aggregate", "Event"])
 
 
@@ -96,7 +97,7 @@ def subsystem_schema() -> dict:
                     "type": "object",
                     "properties": {
                         "name": {"type": "string", "description": "子系统名称，形如 xxx-service"},
-                        "type": {"type": "string", "enum": ["new", "extend", "existing"]},
+                        "type": {"type": "string", "enum": [e.value for e in SubsystemType]},
                         "responsibility": {"type": "string"},
                         "capabilities": {"type": "array", "items": {"type": "string"}},
                         "data_entities": {"type": "array", "items": {"type": "string"}},
@@ -120,7 +121,7 @@ def normalize_sub_dict(d: object) -> dict | None:
     raw_type = d.get("type", "new")
     return {
         "name": name,
-        "type": raw_type if raw_type in ("new", "extend", "existing") else "new",
+        "type": raw_type if raw_type in [e.value for e in SubsystemType] else "new",
         "responsibility": str(d.get("responsibility", "")).strip() or "（LLM 未给出职责）",
         "capabilities": [str(c) for c in (d.get("capabilities") or [])][:12],
         "data_entities": [str(e) for e in (d.get("data_entities") or [])][:12],

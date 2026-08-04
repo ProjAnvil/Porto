@@ -30,6 +30,7 @@ from ..memory import (
     trigger_facts_extraction_sync,
 )
 from ..models import ChatRequest, ChatResponse, EvalCase
+from ..models.enums import ChatIntent
 
 logger = get_component_logger("api")
 
@@ -154,7 +155,7 @@ def langchain_chat(req: ChatRequest, settings) -> ChatResponse:
     )
     llm = LLMClient(settings)
     decision = route_chat_intent(req.message, settings, llm)
-    if decision.intent == "direct":
+    if decision.intent == ChatIntent.DIRECT:
         return _direct_chat_answer(req, settings, decision, llm)
 
     available, reason = get_index_supervisor().rag_available()
@@ -282,7 +283,7 @@ async def langchain_chat_stream(req: ChatRequest, settings) -> AsyncIterator[str
 
     text_id = "answer-1"
     try:
-        if decision.intent == "direct":
+        if decision.intent == ChatIntent.DIRECT:
             response = _direct_chat_answer(req, settings, decision, llm)
             yield _ai_sdk_sse(
                 {"type": "start", "messageMetadata": {"session_id": req.session_id}}

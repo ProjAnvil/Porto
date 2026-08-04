@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 import operator
+from enum import StrEnum
 from typing import Annotated, Any, TypedDict
 
 from ..models import AgentStep, SourceChunk, SpecResult, Subsystem
+
+
+class BusinessDomain(StrEnum):
+    """启发式子系统识别的业务领域分类。"""
+
+    USER = "user"
+    ORDER = "order"
+    PAYMENT = "payment"
+    NOTIFICATION = "notification"
+    CATALOG = "catalog"
+    RISK = "risk"
+    REPORTING = "reporting"
 
 
 def _dict_merge(left: dict, right: dict) -> dict:
@@ -33,11 +46,11 @@ class PortoAgentState(TypedDict, total=False):
 
 
 DOMAIN_HINTS = {
-    "user": ["用户", "账户", "认证", "登录", "权限", "profile", "account", "auth"],
-    "order": ["订单", "下单", "履约", "交易", "order", "checkout"],
-    "payment": ["支付", "收款", "退款", "结算", "payment", "refund", "settlement"],
-    "notification": ["通知", "短信", "邮件", "站内信", "notification", "message"],
-    "catalog": ["商品", "库存", "目录", "sku", "catalog", "inventory"],
-    "risk": ["风控", "风险", "反欺诈", "审核", "risk", "fraud"],
-    "reporting": ["报表", "统计", "分析", "dashboard", "report"],
+    BusinessDomain.USER: ["用户", "账户", "认证", "登录", "权限", "profile", "account", "auth"],
+    BusinessDomain.ORDER: ["订单", "下单", "履约", "交易", "order", "checkout"],
+    BusinessDomain.PAYMENT: ["支付", "收款", "退款", "结算", "payment", "refund", "settlement"],
+    BusinessDomain.NOTIFICATION: ["通知", "短信", "邮件", "站内信", "notification", "message"],
+    BusinessDomain.CATALOG: ["商品", "库存", "目录", "sku", "catalog", "inventory"],
+    BusinessDomain.RISK: ["风控", "风险", "反欺诈", "审核", "risk", "fraud"],
+    BusinessDomain.REPORTING: ["报表", "统计", "分析", "dashboard", "report"],
 }

@@ -13,6 +13,7 @@ from typing import Any
 from ..llm import LLMClient
 from ..logging_utils import get_component_logger
 from ..models import AgentStep
+from ..models.enums import StepStatus
 from ..settings import Settings
 from ..vector_store import LocalVectorStore
 
@@ -36,8 +37,8 @@ class PortoAgent:
         self.vector_store = vector_store or LocalVectorStore(settings)
         self.llm = llm or LLMClient(settings)
         self.critic_llm = self._build_critic_llm()
-        from .factory import create_backend
-        self.backend = create_backend(settings, llm=self.llm, scope="workflow")
+        from .factory import BackendScope, create_backend
+        self.backend = create_backend(settings, llm=self.llm, scope=BackendScope.WORKFLOW)
         self.logger.info("agent ready backend=%s", type(self.backend).__name__)
 
     def _build_critic_llm(self) -> LLMClient:
@@ -72,4 +73,4 @@ class PortoAgent:
         节点把它 spread 进自己的返回值(steps 走 ``operator.add`` reducer 追加)。
         """
         self.logger.info("step completed name=%s summary=%s", name, summary)
-        return {"steps": [AgentStep(name=name, status="completed", summary=summary, data=data)]}
+        return {"steps": [AgentStep(name=name, status=StepStatus.COMPLETED, summary=summary, data=data)]}
