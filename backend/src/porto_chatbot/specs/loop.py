@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..models import SpecAttempt, SpecResult, Subsystem
+from ..models.enums import SpecVerdict
 from .context import SpecContext
 from .steps import critique_spec, generate_initial_spec, refine_spec
 from .template import render_template_spec
@@ -47,7 +48,7 @@ def generate_spec_with_loop(
         if critique is None:
             # critic 不可用 → 接受当前 spec
             attempts.append(
-                SpecAttempt(version=i, verdict="NEEDS_IMPROVEMENT", feedback_digest="critic 不可用")
+                SpecAttempt(version=i, verdict=SpecVerdict.NEEDS_IMPROVEMENT, feedback_digest="critic 不可用")
             )
             break
 
@@ -62,7 +63,7 @@ def generate_spec_with_loop(
         used_chars += len(critique.feedback)
 
         # ① 达标
-        if critique.verdict == "PASS" or critique.score >= settings.spec_refine_pass_score:
+        if critique.verdict == SpecVerdict.PASS or critique.score >= settings.spec_refine_pass_score:
             best, best_score = spec, critique.score
             break
         # ③ 分数不升（震荡/退化）→ 回退 best

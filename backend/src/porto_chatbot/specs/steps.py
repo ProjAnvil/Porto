@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from ..models import Critique, Subsystem
+from ..models.enums import SpecVerdict, TruncationReason
 from ..tools import AgentToolContext
 from .context import SpecContext
 from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
@@ -59,7 +60,7 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
     if result.truncated:
         notice = (
             _TRUNCATED_NOTICE_SPEC_TOKENS
-            if result.reason == "max_tokens_truncated"
+            if result.reason == TruncationReason.MAX_TOKENS_TRUNCATED
             else _TRUNCATED_NOTICE_SPEC_TOOL.format(
                 calls=tool_meta["tool_calls"], limit=max_turns
             )
@@ -94,9 +95,9 @@ def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | Non
     parsed = result.structured
     if not isinstance(parsed, dict):
         return None
-    verdict = parsed.get("verdict", "NEEDS_IMPROVEMENT")
-    if verdict not in ("PASS", "NEEDS_IMPROVEMENT", "FAIL"):
-        verdict = "NEEDS_IMPROVEMENT"
+    verdict = parsed.get("verdict", SpecVerdict.NEEDS_IMPROVEMENT.value)
+    if verdict not in [e.value for e in SpecVerdict]:
+        verdict = SpecVerdict.NEEDS_IMPROVEMENT.value
     try:
         score = int(parsed.get("score", 0))
     except (TypeError, ValueError):
