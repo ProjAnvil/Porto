@@ -8,6 +8,7 @@ helper(``_build_critic_llm`` 构造评判模型,``_step`` 记录步骤完成日�
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from ..llm import LLMClient
@@ -47,6 +48,10 @@ class PortoAgent:
         self.critic_llm = self._build_critic_llm()
         from .factory import BackendScope, create_backend
         self.backend = create_backend(settings, llm=self.llm, scope=BackendScope.WORKFLOW)
+        # M3: Send fan-out 并发限流 —— dispatch_specs 注入各子图实例，init_spec 入口 acquire。
+        # LangGraph 同步执行模型下不会产生真并发（顺序 fan-out），语义上限制同时活跃的
+        # spec 子图实例数；若后续切到 async/pool 执行器则生效为真实信号量。
+        self._spec_sema = threading.Semaphore(settings.spec_refine_concurrency)
         self.logger.info(
             "agent ready backend=%s file_service=%s",
             type(self.backend).__name__,

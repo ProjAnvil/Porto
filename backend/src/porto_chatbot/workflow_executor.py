@@ -38,7 +38,6 @@ _STEP_OUTPUT_KEYS: dict[str, list[str]] = {
     "understand": ["understanding"],
     "identify": ["subsystems"],
     "generate": ["specs", "spec_results"],
-    "evaluate": ["evaluation"],
 }
 
 #: F2: _STEP_OUTPUT_KEYS 的 keys 必须与 agent.graph.STEPS 一致(单一来源,防漂移)。

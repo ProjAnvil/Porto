@@ -63,8 +63,11 @@ class SpecSubgraphState(TypedDict, total=False):
     ctx_settings: Any
     ctx_vector_store: Any
     ctx_critic_llm: Any
+    ctx_sema: Any             # M3: threading.Semaphore,init_spec 入口限流
     # ── 输出（B1：必须用 reducer）──
     spec_results: Annotated[dict, _dict_merge]
+    specs: Annotated[dict, _dict_merge]  # {sub.name: final_text},供 workflow_store / PATCH /specs
+    current_step: str                     # 固定 "generate",供 _sync_status 投影
 
 
 # ----------------------------- helpers ----------------------------- #
@@ -105,13 +108,42 @@ def _budget_chars(settings: Any) -> int:
 # ----------------------------- 节点 ----------------------------- #
 
 
-def init_spec(state: SpecSubgraphState) -> dict:
-    """生成首版 spec。
+def init_spec(state: SpecSubgraphState, *, config=None) -> dict:
+    """生成首版 spec（入口经 ``ctx_sema`` 限流，M3）。
 
     - LLM 未启用 / spec_refine 关闭 → 模板降级（``used_llm=False`` 由 finalize 决定）
     - LLM 启用：``generate_initial_spec``，工具截断 → 标记 ``truncated=True`` 直接 finalize
     - LLM 生成空 → 模板兜底
+
+    **运行时引用来源(Task 9)**:父图经 ``Send`` fan-out 时,Send payload 只含可序列化字段
+    (会被 checkpoint),agent 的 backend/llm/settings/.../sema 经 ``config`` 传递。
+    本节点从 ``config["configurable"]["agent"]`` 取出并填入子图 state。单元测试可直接在
+    state 里放 ``ctx_*`` 字段(不传 config),向后兼容。
+
+    M3 并发限流:``ctx_sema`` 是 agent 构造的 ``threading.Semaphore(spec_refine_concurrency)``。
+    ``with`` 包住 init 主体(含 ``generate_initial_spec`` 的 LLM/工具调用,最耗时阶段),
+    异常时自动释放。LangGraph 同步 fan-out 下为语义限流;async/pool 执行器下生效为真实信号量。
     """
+    # 从 config 注入运行时引用(Send payload 序列化约束);无 config 时(state 已含 ctx_*)跳过
+    agent = (config or {}).get("configurable", {}).get("agent")
+    if agent is not None:
+        state = {
+            **state,
+            "ctx_backend": agent.backend,
+            "ctx_llm": agent.llm,
+            "ctx_settings": agent.settings,
+            "ctx_vector_store": agent.vector_store,
+            "ctx_critic_llm": agent.critic_llm,
+            "ctx_sema": agent._spec_sema,
+        }
+    sema = state.get("ctx_sema")
+    if sema is not None:
+        with sema:
+            return _init_spec_impl(state)
+    return _init_spec_impl(state)
+
+
+def _init_spec_impl(state: SpecSubgraphState) -> dict:
     ctx = _ctx(state)
     sub: Subsystem = state["sub"]
 
@@ -245,7 +277,6 @@ def _should_stop(state: SpecSubgraphState) -> str:
     settings = ctx.settings
     iteration = state.get("iteration", 0)
     attempts = state.get("attempts") or []
-    best_score = state.get("best_score", -1)
     used_chars = state.get("used_chars", 0)
 
     last = attempts[-1] if attempts else None
@@ -285,6 +316,20 @@ def refine(state: SpecSubgraphState) -> dict:
     return {"current_spec": spec, "used_chars": used_chars}
 
 
+def _emit(sub_name: str, spec_result: SpecResult) -> dict:
+    """统一 finalize 输出:``spec_results`` + ``specs``(派生)+ ``current_step``。
+
+    - ``spec_results``:``{sub_name: SpecResult}``,经 ``_dict_merge`` 合并各子图实例(B1)。
+    - ``specs``:``{sub_name: final_text}``,供 workflow_store 持久化 + PATCH /specs + 前端。
+    - ``current_step``:固定 ``"generate"``,供 ``_sync_status`` 投影到 workflows.current_step。
+    """
+    return {
+        "spec_results": {sub_name: spec_result},
+        "specs": {sub_name: spec_result.final},
+        "current_step": "generate",
+    }
+
+
 def finalize(state: SpecSubgraphState) -> dict:
     """选 ``best_spec``，输出 ``spec_results[sub.name] = SpecResult(...)``。
 
@@ -306,7 +351,7 @@ def finalize(state: SpecSubgraphState) -> dict:
             used_llm=True,
             tool_meta=state.get("tool_meta", {}),
         )
-        return {"spec_results": {sub.name: spec_result}}
+        return _emit(sub.name, spec_result)
 
     # ── LLM 未启用 → 模板降级，used_llm=False ──
     if not llm_active:
@@ -318,7 +363,7 @@ def finalize(state: SpecSubgraphState) -> dict:
             used_llm=False,
             tool_meta={},
         )
-        return {"spec_results": {sub.name: spec_result}}
+        return _emit(sub.name, spec_result)
 
     best_spec = state.get("best_spec") or state.get("current_spec", "")
     attempts = state.get("attempts") or []
@@ -350,7 +395,7 @@ def finalize(state: SpecSubgraphState) -> dict:
         used_llm=True,
         tool_meta=state.get("tool_meta", {}),
     )
-    return {"spec_results": {sub.name: spec_result}}
+    return _emit(sub.name, spec_result)
 
 
 # ----------------------------- 子图构建 ----------------------------- #

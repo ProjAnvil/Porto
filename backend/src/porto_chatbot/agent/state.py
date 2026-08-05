@@ -28,6 +28,17 @@ def _dict_merge(left: dict, right: dict) -> dict:
     return {**(left or {}), **(right or {})}
 
 
+def _last_wins(left: Any, right: Any) -> Any:
+    """last-wins reducer:右值非 None 则覆盖,否则保留左值。
+
+    用于 ``current_step`` —— Send fan-out 时多个 spec 子图实例在同一 superstep
+    并发写同一个值(``"generate"``);last_value channel 不接受同 step 多写入
+    (InvalidUpdateError),reducer channel 可以。reducer 语义 = 最后写的赢,与
+    last_value 等价(单写场景 right 覆盖 left,fan-out 场景多写同值)。
+    """
+    return right if right is not None else left
+
+
 class PortoAgentState(TypedDict, total=False):
     workflow_id: str
     project_name: str
@@ -40,7 +51,7 @@ class PortoAgentState(TypedDict, total=False):
     evaluation: dict[str, Any]
     steps: Annotated[list[AgentStep], operator.add]
     top_k: int | None
-    current_step: str
+    current_step: Annotated[str, _last_wins]
     rework_passes: int
     needs_rework: bool
 

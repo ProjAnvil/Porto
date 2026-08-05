@@ -1,65 +1,39 @@
+"""generate 步入口:经 ``Send`` 把每个子系统 fan-out 到 spec 子图。
+
+B2 A 方案:节点名保持 ``"generate"``,spec 子图作为该节点的实现(子图 compile 产物直接
+``add_node``)。``dispatch_specs`` 是 ``identify`` → ``generate`` 的 conditional_edges
+路由函数:返回 ``[Send("generate", {...}) for sub in subsystems]``,LangGraph 对每个
+子系统启动一个子图实例,各实例的 ``spec_results`` / ``specs`` 经 ``_dict_merge`` 合并。
+
+**序列化约束**:Send payload 会被父图 checkpoint 序列化(msgpack),故只含可序列化字段
+(``sub`` / ``prd_file_id`` / ``ctx_state``)。agent 的运行时引用(backend/llm/settings/
+vector_store/critic_llm/_spec_sema)经 ``config["configurable"]["agent"]`` 传递 ——
+父图与子图共享 config,子图 ``init_spec`` 从中取出填入子图 state(子图无独立 checkpointer,
+ctx_* 只活在本次执行期间)。
+"""
+
 from __future__ import annotations
 
-from ...models import SpecResult, Subsystem
-from ...specs import SpecContext, generate_spec_with_loop
+from langgraph.types import Send
 
 
-def generate_specs(state, *, config):
+def dispatch_specs(state, *, config):
+    """``identify`` → ``generate`` 的 Send fan-out 路由。
+
+    返回 ``[Send("generate", {...}) for sub in subsystems]``。Send payload 只含
+    可序列化字段:agent 运行时对象不放入(会被 checkpoint 序列化失败),由子图
+    ``init_spec`` 经 ``config["configurable"]["agent"]`` 取并填入子图 state。
+    """
     agent = config["configurable"]["agent"]
-    agent.logger.info(
-        "step generate_specs start workflow_id=%s subsystems=%s",
-        state["workflow_id"],
-        len(state["subsystems"]),
-    )
     subs = state["subsystems"]
-
-    def _gen(sub: Subsystem) -> SpecResult:
-        # 浅拷贝 state：并行时各子任务 tool 检索写各自的 tool_sources，互不干扰
-        sub_ctx = SpecContext(
-            backend=agent.backend,
-            llm=agent.llm,
-            state={**state},
-            settings=agent.settings,
-            vector_store=agent.vector_store,
-            critic_llm=agent.critic_llm,
-        )
-        return generate_spec_with_loop(sub_ctx, sub)
-
-    results: dict[str, SpecResult] = {}
-    parallel = agent.llm.enabled and agent.settings.spec_refine_enabled and len(subs) > 1
-    if parallel:
-        from concurrent.futures import ThreadPoolExecutor
-
-        max_workers = min(agent.settings.spec_refine_concurrency, len(subs))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_gen, sub): sub for sub in subs}
-            for future, sub in futures.items():
-                results[sub.name] = future.result()
-    else:
-        for sub in subs:
-            results[sub.name] = _gen(sub)
-
-    specs = {name: result.final for name, result in results.items()}
-    used_llm = any(r.used_llm for r in results.values())
-    total_iters = sum(r.iterations for r in results.values())
     agent.logger.info(
-        "step generate_specs finish specs=%s used_llm=%s iterations=%s",
-        len(specs),
-        used_llm,
-        total_iters,
+        "dispatch_specs fan-out workflow_id=%s subsystems=%s",
+        state["workflow_id"],
+        len(subs),
     )
-    return {
-        "specs": specs,
-        "spec_results": results,
-        "current_step": "generate",
-        **agent._step(
-            "generate_specs",
-            f"生成 {len(specs)} 份子系统规格",
-            {
-                "spec_names": list(specs),
-                "used_llm": used_llm,
-                "iterations": total_iters,
-                "attempts": {name: r.model_dump() for name, r in results.items()},
-            },
-        ),
-    }
+    # Send payload 只含可序列化字段。prd_file_id 不单独放入(在 ctx_state 里);
+    # 它是 last_value channel,fan-out 多实例同时写会冲突(InvalidUpdateError)。
+    return [
+        Send("generate", {"sub": sub, "ctx_state": {**state}})
+        for sub in subs
+    ]
