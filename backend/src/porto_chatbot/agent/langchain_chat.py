@@ -34,6 +34,10 @@ from ..models.enums import ChatIntent
 
 logger = get_component_logger("api")
 
+_SOURCE_PREVIEW_CHARS = 180
+_MAX_FALLBACK_SOURCES = 4
+_MAX_SSE_SOURCES = 6
+
 
 def _trim_to_budget(parts: list[str], budget: int) -> list[str]:
     """超字符预算时从后向前截断：保留问题/摘要/会话，裁剪 memories/sources。
@@ -210,8 +214,8 @@ def langchain_chat(req: ChatRequest, settings) -> ChatResponse:
     if not answer:
         if sources:
             bullets = "\n".join(
-                f"- [{i + 1}] {s.path}: {s.text[:180].replace(chr(10), ' ')}"
-                for i, s in enumerate(sources[:4])
+                f"- [{i + 1}] {s.path}: {s.text[:_SOURCE_PREVIEW_CHARS].replace(chr(10), ' ')}"
+                for i, s in enumerate(sources[:_MAX_FALLBACK_SOURCES])
             )
             answer = f"我在知识库中找到以下相关内容：\n{bullets}\n\n基于这些片段，建议优先查看匹配分最高的文档并补充更具体的问题。"
         else:
@@ -389,8 +393,8 @@ async def langchain_chat_stream(req: ChatRequest, settings) -> AsyncIterator[str
             if not answer:
                 if sources:
                     bullets = "\n".join(
-                        f"- [{i + 1}] {s.path}: {s.text[:180].replace(chr(10), ' ')}"
-                        for i, s in enumerate(sources[:4])
+                        f"- [{i + 1}] {s.path}: {s.text[:_SOURCE_PREVIEW_CHARS].replace(chr(10), ' ')}"
+                        for i, s in enumerate(sources[:_MAX_FALLBACK_SOURCES])
                     )
                     answer = f"我在知识库中找到以下相关内容：\n{bullets}\n\n基于这些片段，建议优先查看匹配分最高的文档并补充更具体的问题。"
                 else:
@@ -405,7 +409,7 @@ async def langchain_chat_stream(req: ChatRequest, settings) -> AsyncIterator[str
         evaluation = evaluate_rag_cases(
             [EvalCase(question=req.message, answer=answer, contexts=[s.text for s in sources])]
         )
-        for source in sources[:6]:
+        for source in sources[:_MAX_SSE_SOURCES]:
             yield _ai_sdk_sse(
                 {
                     "type": "source-document",

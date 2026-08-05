@@ -8,6 +8,8 @@ from .context import SpecContext
 from .steps import critique_spec, generate_initial_spec, refine_spec
 from .template import render_template_spec
 
+_FEEDBACK_DIGEST_MAX = 200
+
 # ----------------------------- Evaluator-Optimizer Loop ----------------------------- #
 
 
@@ -57,7 +59,7 @@ def generate_spec_with_loop(
                 version=i,
                 score=critique.score,
                 verdict=critique.verdict,
-                feedback_digest=critique.feedback[:200],
+                feedback_digest=critique.feedback[:_FEEDBACK_DIGEST_MAX],
             )
         )
         used_chars += len(critique.feedback)

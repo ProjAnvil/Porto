@@ -33,6 +33,9 @@ COLLECTION_METADATA_KEYS = {
     "splitter",
 }
 
+_CHUNK_ID_PREVIEW_LEN = 120
+_EMBED_BATCH_SIZE = 64
+
 
 def cosine(a: list[float], b: list[float]) -> float:
     numerator = sum(x * y for x, y in zip(a, b, strict=False))
@@ -116,7 +119,7 @@ class ChromaVectorStore:
             )
             for i, chunk in enumerate(chunks):
                 chunk_id = hashlib.sha1(
-                    f"{display_path}:{i}:{chunk.text[:120]}".encode()
+                    f"{display_path}:{i}:{chunk.text[:_CHUNK_ID_PREVIEW_LEN]}".encode()
                 ).hexdigest()
                 batch_ids.append(chunk_id)
                 batch_texts.append(chunk.text)
@@ -131,7 +134,7 @@ class ChromaVectorStore:
                 batch_metadata.append(metadata)
                 all_chunks.append(ChunkRecord(chunk_id, chunk.text, metadata))
                 chunk_count += 1
-                if len(batch_ids) >= 64:
+                if len(batch_ids) >= _EMBED_BATCH_SIZE:
                     self._add_batch(collection, batch_ids, batch_texts, batch_metadata)
                     self.logger.info("index batch added size=64")
                     batch_ids, batch_texts, batch_metadata = [], [], []

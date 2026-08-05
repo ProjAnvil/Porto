@@ -28,6 +28,8 @@ from .types import (
     ToolLoopResult,
 )
 
+_CONTINUATION_TAIL_CHARS = 200
+
 
 def _finish_reason(response) -> str | None:
     """从 langchain AIMessage.response_metadata 取归一化的 finish_reason。
@@ -329,7 +331,7 @@ class LLMClient:
         # 部分输出进历史(assistant),模型基于完整上下文(含自己已写)续写
         cont = list(convo) + [partial_response]
         for _ in range(max_rounds):
-            tail = full[-200:]
+            tail = full[-_CONTINUATION_TAIL_CHARS:]
             cont = cont + [
                 HumanMessage(content=f"请继续刚才的回答，不要重复内容：\n{tail}")
             ]

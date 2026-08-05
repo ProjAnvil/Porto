@@ -13,6 +13,8 @@ from ..logging_utils import get_component_logger
 from ..models import MemoryRecord, SourceChunk
 from ..settings import Settings
 
+_DEFAULT_MESSAGE_FETCH_LIMIT = 500
+
 
 @dataclass
 class SessionSummary:
@@ -109,7 +111,7 @@ class MemoryStore:
         self.logger.info("memory list session_id=%s limit=%s records=%s", session_id, limit, len(records))
         return records
 
-    def get_messages_ordered(self, session_id: str, limit: int = 500) -> list[MemoryRecord]:
+    def get_messages_ordered(self, session_id: str, limit: int = _DEFAULT_MESSAGE_FETCH_LIMIT) -> list[MemoryRecord]:
         """正序（旧→新），供 compaction 切分旧/近期消息。"""
         with sqlite3.connect(self.settings.memory_db_path) as conn:
             rows = conn.execute(

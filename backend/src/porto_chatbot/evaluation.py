@@ -14,6 +14,10 @@ from .vector_store import cosine
 
 logger = get_component_logger("evaluation")
 
+_MIN_UNDERSTANDING_CHARS = 120
+_RAG_PASS_SCORE = 55
+_SENTENCE_SUPPORT_THRESHOLD = 0.35
+
 
 def evaluate_workflow(
     prd_text: str,
@@ -31,7 +35,7 @@ def evaluate_workflow(
     checks = [
         WorkflowCheck(
             name="understanding_non_empty",
-            passed=len(understanding.strip()) >= 120,
+            passed=len(understanding.strip()) >= _MIN_UNDERSTANDING_CHARS,
             weight=20,
         ),
         WorkflowCheck(
@@ -98,7 +102,7 @@ def evaluate_rag_case(case: EvalCase) -> RagCaseEvaluation:
     result = RagCaseEvaluation(
         question=case.question,
         score=score,
-        passed=score >= 55,
+        passed=score >= _RAG_PASS_SCORE,
         metrics=RagMetrics(
             answer_relevance=round(answer_relevance, 4),
             context_relevance=round(context_relevance, 4),
@@ -115,7 +119,7 @@ def evaluate_rag_cases(cases: list[EvalCase]) -> RagBatchEvaluation:
     logger.info("rag evaluation start cases=%s", len(cases))
     results = [evaluate_rag_case(case) for case in cases]
     avg = round(sum(r.score for r in results) / len(results), 2) if results else 0.0
-    result = RagBatchEvaluation(score=avg, passed=avg >= 55, cases=results)
+    result = RagBatchEvaluation(score=avg, passed=avg >= _RAG_PASS_SCORE, cases=results)
     logger.info("rag evaluation finish score=%s passed=%s", result.score, result.passed)
     return result
 
@@ -137,6 +141,6 @@ def _sentence_support(answer: str, contexts: list[str]) -> float:
     supported = 0
     context = "\n".join(contexts)
     for sentence in sentences:
-        if _lexical_overlap(sentence, context) >= 0.35:
+        if _lexical_overlap(sentence, context) >= _SENTENCE_SUPPORT_THRESHOLD:
             supported += 1
     return supported / len(sentences)

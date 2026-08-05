@@ -11,15 +11,19 @@ from datetime import UTC, datetime
 from ..models.enums import SubsystemType
 from .state import DOMAIN_HINTS, BusinessDomain
 
+_MAX_PROJECT_NAME_CHARS = 40
+_SUMMARY_MAX_CHARS = 180
+_MAX_LIST_ITEMS = 12
+
 
 def infer_project_name(text: str) -> str:
     first = next((line.strip("# ：:") for line in text.splitlines() if line.strip()), "")
-    return first[:40] or f"Porto 项目 {datetime.now(UTC).strftime('%Y%m%d%H%M')}"
+    return first[:_MAX_PROJECT_NAME_CHARS] or f"Porto 项目 {datetime.now(UTC).strftime('%Y%m%d%H%M')}"
 
 
 def summary_sentence(text: str) -> str:
     clean = re.sub(r"\s+", " ", text).strip()
-    return clean[:180] + ("..." if len(clean) > 180 else "")
+    return clean[:_SUMMARY_MAX_CHARS] + ("..." if len(clean) > _SUMMARY_MAX_CHARS else "")
 
 
 def extract_bullets(text: str, keywords: list[str]) -> list[str]:
@@ -123,7 +127,7 @@ def normalize_sub_dict(d: object) -> dict | None:
         "name": name,
         "type": raw_type if raw_type in [e.value for e in SubsystemType] else "new",
         "responsibility": str(d.get("responsibility", "")).strip() or "（LLM 未给出职责）",
-        "capabilities": [str(c) for c in (d.get("capabilities") or [])][:12],
-        "data_entities": [str(e) for e in (d.get("data_entities") or [])][:12],
-        "dependencies": [str(dep) for dep in (d.get("dependencies") or [])][:12],
+        "capabilities": [str(c) for c in (d.get("capabilities") or [])][:_MAX_LIST_ITEMS],
+        "data_entities": [str(e) for e in (d.get("data_entities") or [])][:_MAX_LIST_ITEMS],
+        "dependencies": [str(dep) for dep in (d.get("dependencies") or [])][:_MAX_LIST_ITEMS],
     }

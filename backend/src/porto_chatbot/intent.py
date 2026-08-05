@@ -21,6 +21,10 @@ RAG_HINTS = (
     "架构", "需求", "prd", "workflow", "子系统", "支付", "风控", "订单",
 )
 
+_MAX_INTENT_MESSAGE_CHARS = 500
+_MAX_REASON_CHARS = 80
+_SHORT_MESSAGE_THRESHOLD = 12
+
 
 @dataclass(frozen=True)
 class IntentDecision:
@@ -63,7 +67,7 @@ def _llm_route(message: str, llm: LLMClient) -> IntentDecision | None:
         "- direct：寒暄、闲聊、自我介绍、帮助询问，或明显不需要查询知识库的短消息\n"
         "- rag：需要查询知识库、PRD 分析、子系统设计、架构/需求/支付/风控等领问题\n"
         "只输出 JSON。",
-        f"用户消息: {message[:500]}",
+        f"用户消息: {message[:_MAX_INTENT_MESSAGE_CHARS]}",
         {
             "type": "object",
             "properties": {
@@ -78,7 +82,7 @@ def _llm_route(message: str, llm: LLMClient) -> IntentDecision | None:
     intent = parsed.get("intent")
     if intent not in [e.value for e in ChatIntent]:
         return None
-    return IntentDecision(intent, f"llm:{str(parsed.get('reason', ''))[:80]}")
+    return IntentDecision(intent, f"llm:{str(parsed.get('reason', ''))[:_MAX_REASON_CHARS]}")
 
 
 def _rule_route(message: str) -> IntentDecision:
@@ -90,6 +94,6 @@ def _rule_route(message: str) -> IntentDecision:
         return IntentDecision(ChatIntent.DIRECT, "greeting")
     if DIRECT_RE.match(normalized):
         return IntentDecision(ChatIntent.DIRECT, "smalltalk_or_help")
-    if len(normalized) <= 12 and not any(hint in lower for hint in RAG_HINTS):
+    if len(normalized) <= _SHORT_MESSAGE_THRESHOLD and not any(hint in lower for hint in RAG_HINTS):
         return IntentDecision(ChatIntent.DIRECT, "short_without_domain_signal")
     return IntentDecision(ChatIntent.RAG, "domain_or_knowledge_request")
