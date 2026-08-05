@@ -23,6 +23,9 @@ from ..tools.handlers import (
     _get_subsystem,
     _get_understanding,
     _list_subsystems,
+    _read_file_info,
+    _read_file_pages,
+    _search_file,
     _search_knowledgebase,
 )
 
@@ -125,6 +128,55 @@ def build_sdk_tools(ctx: AgentToolContext, tool_timeout: int = 60) -> list:
     tools.extend(
         [get_prd, get_understanding, list_subs, get_sub, search_kb, get_srcs]
     )
+
+    # ------------------------------------------------------------------ #
+    # File tools (only when file_service present)
+    # ------------------------------------------------------------------ #
+    if ctx.file_service is not None:
+        @tool(
+            "get_file_info",
+            "读取已上传文件的元信息（原始文件名、页数、大小、MIME 类型）。"
+            "file_id 来自用户消息或 state.prd_file_id。",
+            {"file_id": str},
+        )
+        async def file_info(args):  # noqa: ANN001
+            return await _run_tool(
+                _read_file_info, ctx, str(args.get("file_id", "")),
+                timeout=tool_timeout,
+            )
+
+        @tool(
+            "read_file_pages",
+            "读取已上传文件指定页码范围的文本（1-based, inclusive）。"
+            "先调用 get_file_info 获取页数，再按需取页。",
+            {"file_id": str, "start": int, "end": int},
+        )
+        async def read_pages(args):  # noqa: ANN001
+            return await _run_tool(
+                _read_file_pages,
+                ctx,
+                str(args.get("file_id", "")),
+                int(args.get("start", 1) or 1),
+                int(args.get("end", 1) or 1),
+                timeout=tool_timeout,
+            )
+
+        @tool(
+            "search_file",
+            "在已上传文件内做大小写不敏感的子串搜索，返回所有命中页码与上下文片段。"
+            "适合先定位关键内容再 read_file_pages 取完整页。",
+            {"file_id": str, "query": str},
+        )
+        async def search_in_file(args):  # noqa: ANN001
+            return await _run_tool(
+                _search_file,
+                ctx,
+                str(args.get("file_id", "")),
+                str(args.get("query", "")),
+                timeout=tool_timeout,
+            )
+
+        tools.extend([file_info, read_pages, search_in_file])
 
     # ------------------------------------------------------------------ #
     # Chatbot-specific tools (only when memory_store/facts_store present)
