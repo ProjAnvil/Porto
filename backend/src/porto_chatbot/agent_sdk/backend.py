@@ -389,6 +389,14 @@ class AgentSDKBackend:
             mcp_servers={"porto": server},
             allowed_tools=["mcp__porto__*"],
             max_turns=settings.agent_max_tool_turns,
+            # 官方推荐的 locked-down 模式（permission_mode="dontAsk"）：
+            # allowed_tools 中的工具自动批准，其他一切（Bash/Write/Edit 等）
+            # 被自动拒绝而不是等待确认——防止非交互模式下 CLI 卡在权限请求。
+            # https://code.claude.com/docs/en/agent-sdk/permissions
+            permission_mode="dontAsk",
+            # 启用 token-level streaming——SDK 在 Claude 推理期间持续 yield
+            # partial messages，防止 receive_response() 长时间无消息导致挂起。
+            include_partial_messages=True,
             hooks={"Stop": [HookMatcher(matcher="", hooks=[on_stop])]},
         )
         # Session resume: if we have a Claude Code session_id for this Porto
