@@ -13,6 +13,7 @@ the SDK.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -79,6 +80,24 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
 # Process-level cache: Porto session_id → Claude Code CLI session_id.
 # Enables conversation continuity across separate /api/chat/stream requests.
 _claude_session_map: dict[str, str] = {}
+
+
+async def _receive_with_idle_timeout(
+    response_gen: AsyncIterator, timeout: float,
+) -> AsyncIterator:
+    """Wrap an SDK response async iterator with per-message idle timeout.
+
+    If no message arrives within ``timeout`` seconds, raises
+    :class:`asyncio.TimeoutError` — propagated to the caller's try/except
+    for error-response handling. Prevents indefinite hangs when the Claude
+    CLI subprocess stops producing stdout output (known community issue:
+    https://github.com/coleam00/Archon/issues/1030).
+    """
+    while True:
+        try:
+            yield await asyncio.wait_for(response_gen.__anext__(), timeout=timeout)
+        except StopAsyncIteration:
+            return
 
 
 def _get_claude_session(settings: Settings, porto_session_id: str) -> str | None:
@@ -150,7 +169,7 @@ class AgentSDKBackend:
         Returns ``[]`` when ``claude_agent_sdk`` is not installed — callers
         can detect this and fall back to another backend.
         """
-        return build_sdk_tools(ctx)
+        return build_sdk_tools(ctx, tool_timeout=self.settings.agent_tool_timeout)
 
     async def execute_node(
         self,
@@ -319,7 +338,7 @@ class AgentSDKBackend:
             memory_store=memory,
             facts_store=facts_store,
         )
-        sdk_tools = build_sdk_tools(ctx)
+        sdk_tools = build_sdk_tools(ctx, tool_timeout=settings.agent_tool_timeout)
         server = create_sdk_mcp_server(
             name="porto", version="1.0.0", tools=sdk_tools,
         )
@@ -405,7 +424,9 @@ class AgentSDKBackend:
         """
         async with ClaudeSDKClient(options=options) as client:
             await client.query(req.message)
-            async for msg in client.receive_response():
+            async for msg in _receive_with_idle_timeout(
+                client.receive_response(), settings.agent_sdk_idle_timeout,
+            ):
                 # Capture Claude Code session_id from init SystemMessage
                 if SystemMessage is not None and isinstance(msg, SystemMessage):
                     if msg.subtype == ClaudeMsgSubtype.INIT:
@@ -524,11 +545,19 @@ class AgentSDKBackend:
                 req, settings, options, state, ctx, expected_sid,
             )
         except Exception as exc:
-            self.logger.exception(
-                "agent_sdk chat failed session=%s", req.session_id,
-            )
+            if isinstance(exc, TimeoutError):
+                self.logger.warning(
+                    "agent_sdk chat idle timeout session=%s timeout=%ss",
+                    req.session_id, settings.agent_sdk_idle_timeout,
+                )
+                error_msg = "Claude 响应超时（长时间无输出），请重试或切换到 Langchain 引擎。"
+            else:
+                self.logger.exception(
+                    "agent_sdk chat failed session=%s", req.session_id,
+                )
+                error_msg = f"Agent 引擎暂时不可用：{exc}。请在 Settings 切换到 Langchain 引擎。"
             return ChatResponse(
-                answer=f"Agent 引擎暂时不可用：{exc}。请在 Settings 切换到 Langchain 引擎。",
+                answer=error_msg,
                 sources=[],
                 memory=[],
                 evaluation={"score": 0.0, "passed": False, "cases": []},
@@ -572,7 +601,9 @@ class AgentSDKBackend:
         streamed = False  # True once we emit via StreamEvent deltas
         async with ClaudeSDKClient(options=options) as client:
             await client.query(req.message)
-            async for msg in client.receive_response():
+            async for msg in _receive_with_idle_timeout(
+                client.receive_response(), settings.agent_sdk_idle_timeout,
+            ):
                 # Capture Claude Code session_id from init SystemMessage
                 if SystemMessage is not None and isinstance(msg, SystemMessage):
                     if msg.subtype == ClaudeMsgSubtype.INIT:
@@ -764,10 +795,18 @@ class AgentSDKBackend:
             ):
                 yield chunk
         except Exception as exc:
-            self.logger.exception(
-                "agent_sdk chat_stream failed session=%s", req.session_id,
-            )
-            yield _ai_sdk_sse({"type": "error", "errorText": str(exc)})
+            if isinstance(exc, TimeoutError):
+                self.logger.warning(
+                    "agent_sdk chat_stream idle timeout session=%s timeout=%ss",
+                    req.session_id, settings.agent_sdk_idle_timeout,
+                )
+                error_text = "Claude 响应超时（长时间无输出），请重试或切换到 Langchain 引擎。"
+            else:
+                self.logger.exception(
+                    "agent_sdk chat_stream failed session=%s", req.session_id,
+                )
+                error_text = str(exc)
+            yield _ai_sdk_sse({"type": "error", "errorText": error_text})
             yield _ai_sdk_sse({"type": "text-end", "id": text_id})
             yield _ai_sdk_sse({"type": "finish-step"})
             yield _ai_sdk_sse({"type": "finish", "finishReason": "error"})

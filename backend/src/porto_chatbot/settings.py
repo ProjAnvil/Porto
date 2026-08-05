@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # --- LLM 请求超时（秒），抗单次调用挂死 ---
     agent_request_timeout: int = Field(default=120, ge=10)
 
+    # --- Agent SDK 子进程保护（抗 Claude CLI 挂起）---
+    # Claude CLI 子进程无 stdout 输出的超时（秒），防止多轮工具调用后静默挂起
+    agent_sdk_idle_timeout: int = Field(default=120, ge=10)
+    # 单次 MCP 工具调用超时（秒）
+    agent_tool_timeout: int = Field(default=60, ge=5)
+
     # --- PRD 文件解析 ---
     document_parse_mode: DocumentParseMode = DocumentParseMode.HYBRID
     document_local_parser: LocalParser = LocalParser.PYPDF

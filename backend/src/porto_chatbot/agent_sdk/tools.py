@@ -6,8 +6,14 @@ lives in handlers.py — zero duplication. The SDK is imported lazily so this
 module can be imported even when ``claude_agent_sdk`` is not installed; in
 that case ``build_sdk_tools`` returns ``[]`` and the caller handles the
 fallback gracefully.
+
+Every tool runs in a background thread with a configurable timeout
+(default 60s via ``tool_timeout``). This prevents a single slow search
+from blocking the event loop or hanging the agent indefinitely.
 """
 from __future__ import annotations
+
+import asyncio
 
 from ..memory.facts import build_facts_prompt
 from ..tools.context import AgentToolContext
@@ -26,7 +32,24 @@ def _mcp_text(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}]}
 
 
-def build_sdk_tools(ctx: AgentToolContext) -> list:
+async def _run_tool(func, *args, timeout: float = 60) -> dict:
+    """Run a sync tool handler in a thread with timeout.
+
+    Returns ``_mcp_text(result)`` on success, or a timeout message if the
+    handler exceeds ``timeout`` seconds. Using ``asyncio.to_thread`` ensures
+    blocking I/O (vector search, embedding, rerank) never stalls the event
+    loop.
+    """
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(func, *args), timeout=timeout,
+        )
+        return _mcp_text(result)
+    except TimeoutError:
+        return _mcp_text("工具执行超时，请重试。")
+
+
+def build_sdk_tools(ctx: AgentToolContext, tool_timeout: int = 60) -> list:
     """Create ``@tool``-decorated functions bound to ``ctx`` via closure.
 
     - Workflow ctx (``memory_store is None``): registers the 6 core tools
@@ -37,6 +60,8 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
 
     Returns ``[]`` when ``claude_agent_sdk`` is not importable, so callers can
     feature-detect and fall back to another backend without crashing.
+
+    ``tool_timeout`` sets the per-call timeout (seconds) for each tool.
     """
     try:
         from claude_agent_sdk import tool
@@ -50,7 +75,7 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
     # ------------------------------------------------------------------ #
     @tool("get_prd_text", "读取当前 PRD 原文。当需要回顾输入需求时调用。", {})
     async def get_prd(args):  # noqa: ANN001
-        return _mcp_text(_get_prd_text(ctx))
+        return await _run_tool(_get_prd_text, ctx, timeout=tool_timeout)
 
     @tool(
         "get_understanding",
@@ -58,11 +83,11 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
         {},
     )
     async def get_understanding(args):  # noqa: ANN001
-        return _mcp_text(_get_understanding(ctx))
+        return await _run_tool(_get_understanding, ctx, timeout=tool_timeout)
 
     @tool("list_subsystems", "列出已识别的子系统及其职责。", {})
     async def list_subs(args):  # noqa: ANN001
-        return _mcp_text(_list_subsystems(ctx))
+        return await _run_tool(_list_subsystems, ctx, timeout=tool_timeout)
 
     @tool(
         "get_subsystem",
@@ -70,7 +95,9 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
         {"name": str},
     )
     async def get_sub(args):  # noqa: ANN001
-        return _mcp_text(_get_subsystem(ctx, str(args.get("name", ""))))
+        return await _run_tool(
+            _get_subsystem, ctx, str(args.get("name", "")), timeout=tool_timeout,
+        )
 
     @tool(
         "search_knowledgebase",
@@ -79,8 +106,9 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
     )
     async def search_kb(args):  # noqa: ANN001
         top_k = int(args.get("top_k", 6) or 6)
-        return _mcp_text(
-            _search_knowledgebase(ctx, str(args.get("query", "")), top_k)
+        return await _run_tool(
+            _search_knowledgebase, ctx, str(args.get("query", "")), top_k,
+            timeout=tool_timeout,
         )
 
     @tool(
@@ -90,7 +118,9 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
         {"query": str},
     )
     async def get_srcs(args):  # noqa: ANN001
-        return _mcp_text(_get_sources(ctx, str(args.get("query", ""))))
+        return await _run_tool(
+            _get_sources, ctx, str(args.get("query", "")), timeout=tool_timeout,
+        )
 
     tools.extend(
         [get_prd, get_understanding, list_subs, get_sub, search_kb, get_srcs]
@@ -106,10 +136,17 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
             {"query": str, "session_id": str},
         )
         async def search_mem(args):  # noqa: ANN001
-            results = ctx.memory_store.search(
-                str(args.get("query", "")),
-                session_id=str(args.get("session_id", "")) or None,
-            )
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ctx.memory_store.search,
+                        str(args.get("query", "")),
+                        session_id=str(args.get("session_id", "")) or None,
+                    ),
+                    timeout=tool_timeout,
+                )
+            except TimeoutError:
+                return _mcp_text("记忆检索超时，请重试。")
             from ..tools.context import _format_chunks
 
             ctx.state.setdefault("tool_memory", []).extend(results)
@@ -126,7 +163,16 @@ def build_sdk_tools(ctx: AgentToolContext) -> list:
             {"session_id": str},
         )
         async def get_facts(args):  # noqa: ANN001
-            grouped = ctx.facts_store.by_category(str(args.get("session_id", "")))
+            try:
+                grouped = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ctx.facts_store.by_category,
+                        str(args.get("session_id", "")),
+                    ),
+                    timeout=tool_timeout,
+                )
+            except TimeoutError:
+                return _mcp_text("事实检索超时，请重试。")
             text = build_facts_prompt(grouped)
             return _mcp_text(text if text else "当前会话无结构化事实。")
 
