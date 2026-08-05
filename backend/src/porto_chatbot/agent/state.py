@@ -31,7 +31,7 @@ def _dict_merge(left: dict, right: dict) -> dict:
 class PortoAgentState(TypedDict, total=False):
     workflow_id: str
     project_name: str
-    prd_text: str
+    prd_file_id: str
     sources: list[SourceChunk]
     understanding: str
     subsystems: list[Subsystem]
