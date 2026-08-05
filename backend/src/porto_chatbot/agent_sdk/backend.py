@@ -385,6 +385,89 @@ class AgentSDKBackend:
         options = ClaudeAgentOptions(**options_kwargs)
         return options, state, ctx, existing_claude_sid
 
+    async def _consume_chat_messages(
+        self,
+        req: ChatRequest,
+        settings: Settings,
+        options: Any,
+        state: dict[str, Any],
+        ctx: AgentToolContext,
+        expected_sid: str | None,
+    ) -> None:
+        """Drive one ClaudeSDKClient turn for :meth:`chat`.
+
+        Iterates ``receive_response()`` and mutates the shared ``state`` dict:
+        accumulates ``AssistantMessage`` TextBlock content into
+        ``state['answer_text']`` and appends tool-call entries to
+        ``state['tool_steps']``. ``ctx`` is updated in place by the SDK tools.
+        Any exception propagates to :meth:`chat` for error-response handling
+        — keeping the try/except boundary identical to the pre-split code.
+        """
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(req.message)
+            async for msg in client.receive_response():
+                # Capture Claude Code session_id from init SystemMessage
+                if SystemMessage is not None and isinstance(msg, SystemMessage):
+                    if msg.subtype == ClaudeMsgSubtype.INIT:
+                        self._capture_session(
+                            settings, req.session_id,
+                            msg.data.get("session_id"), expected_sid,
+                        )
+                elif isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            state["answer_text"] += block.text
+                        elif isinstance(block, ToolUseBlock):
+                            state.setdefault("tool_steps", []).append({
+                                "name": f"tool:{block.name}",
+                                "status": StepStatus.COMPLETED.value,
+                                "summary": f"Claude 调用了 {block.name}",
+                                "data": {"arguments": block.input},
+                            })
+
+    def _assemble_chat_response(
+        self,
+        req: ChatRequest,
+        state: dict[str, Any],
+        ctx: AgentToolContext,
+    ) -> ChatResponse:
+        """Build the success :class:`ChatResponse` after message consumption.
+
+        Reads ``state['answer_text']`` (with placeholder fallback) and the
+        tool-populated ``ctx.state`` to assemble the final answer, sources,
+        memory, evaluation and step list. Evaluation is computed here (not in
+        the message loop) so a missing answer still gets a placeholder score.
+        """
+        answer_text = state["answer_text"] or "（Agent 未返回内容，请重试或检查配置）"
+        sources = ctx.state.get("tool_sources", [])
+        memories = ctx.state.get("tool_memory", [])
+        tool_steps = state.get("tool_steps", [])
+        from ..evaluation import evaluate_rag_cases
+        from ..models import EvalCase
+        evaluation = evaluate_rag_cases([
+            EvalCase(question=req.message, answer=answer_text,
+                     contexts=[s.text for s in sources])
+        ]).model_dump() if sources else {"score": 0.0, "passed": True, "cases": []}
+        return ChatResponse(
+            answer=answer_text,
+            sources=sources,
+            memory=memories,
+            evaluation=evaluation,
+            steps=tool_steps + [
+                {
+                    "name": "answer",
+                    "status": StepStatus.COMPLETED.value,
+                    "summary": "完成回答生成",
+                    "data": {},
+                },
+            ] + ([{
+                "name": "evaluate_rag",
+                "status": StepStatus.COMPLETED.value,
+                "summary": f"RAG eval score {evaluation['score']}",
+                "data": evaluation,
+            }] if sources else []),
+        )
+
     async def chat(self, req: ChatRequest, settings: Settings) -> ChatResponse:
         """Chatbot-mode entry — Claude Agent SDK ReAct loop.
 
@@ -393,6 +476,11 @@ class AgentSDKBackend:
         hook persists the conversation turn and triggers facts extraction.
         SDK failures degrade to a :class:`ChatResponse` with an error message
         instead of raising (callers get a user-friendly answer, never a 500).
+
+        Structure: SDK-presence guard → RAG-availability guard →
+        ``_consume_chat_messages`` (message loop mutating shared state) →
+        ``_assemble_chat_response``. Exceptions from the message loop are
+        caught here and converted to an error ChatResponse.
         """
         if ClaudeSDKClient is None or ClaudeAgentOptions is None:
             return ChatResponse(
@@ -432,27 +520,9 @@ class AgentSDKBackend:
 
         try:
             options, state, ctx, expected_sid = self._build_chat_options(req, settings)
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(req.message)
-                async for msg in client.receive_response():
-                    # Capture Claude Code session_id from init SystemMessage
-                    if SystemMessage is not None and isinstance(msg, SystemMessage):
-                        if msg.subtype == ClaudeMsgSubtype.INIT:
-                            self._capture_session(
-                                settings, req.session_id,
-                                msg.data.get("session_id"), expected_sid,
-                            )
-                    elif isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, TextBlock):
-                                state["answer_text"] += block.text
-                            elif isinstance(block, ToolUseBlock):
-                                state.setdefault("tool_steps", []).append({
-                                    "name": f"tool:{block.name}",
-                                    "status": StepStatus.COMPLETED.value,
-                                    "summary": f"Claude 调用了 {block.name}",
-                                    "data": {"arguments": block.input},
-                                })
+            await self._consume_chat_messages(
+                req, settings, options, state, ctx, expected_sid,
+            )
         except Exception as exc:
             self.logger.exception(
                 "agent_sdk chat failed session=%s", req.session_id,
@@ -472,151 +542,98 @@ class AgentSDKBackend:
                 ],
             )
 
-        answer_text = state["answer_text"] or "（Agent 未返回内容，请重试或检查配置）"
-        sources = ctx.state.get("tool_sources", [])
-        memories = ctx.state.get("tool_memory", [])
-        tool_steps = state.get("tool_steps", [])
+        return self._assemble_chat_response(req, state, ctx)
+
+    async def _stream_chat_messages(
+        self,
+        req: ChatRequest,
+        settings: Settings,
+        options: Any,
+        state: dict[str, Any],
+        ctx: AgentToolContext,
+        expected_sid: str | None,
+        text_id: str,
+    ) -> AsyncIterator[str]:
+        """Drive the SDK message loop for :meth:`chat_stream`, yielding SSE.
+
+        Emits ``text-delta`` events as ``StreamEvent`` token deltas or
+        ``AssistantMessage`` TextBlocks arrive. The local ``streamed`` flag
+        mirrors the pre-split semantics: once any ``StreamEvent`` delta has
+        been emitted, subsequent ``AssistantMessage`` TextBlocks are skipped
+        (Claude sends the same content either as a stream or as a final
+        assistant message, not both). Tool-use blocks populate
+        ``state['tool_steps']`` for the Inspector panel.
+
+        Exceptions propagate to :meth:`chat_stream`'s try/except for SSE
+        error-termination handling.
+        """
+        from ..api.sse import _ai_sdk_sse
+
+        streamed = False  # True once we emit via StreamEvent deltas
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(req.message)
+            async for msg in client.receive_response():
+                # Capture Claude Code session_id from init SystemMessage
+                if SystemMessage is not None and isinstance(msg, SystemMessage):
+                    if msg.subtype == ClaudeMsgSubtype.INIT:
+                        self._capture_session(
+                            settings, req.session_id,
+                            msg.data.get("session_id"), expected_sid,
+                        )
+                # Token-level streaming: StreamEvent carries content_block_delta
+                elif StreamEvent is not None and isinstance(msg, StreamEvent):
+                    event = msg.event
+                    if (
+                        event.get("type") == AnthropicEventType.CONTENT_BLOCK_DELTA
+                        and event.get("delta", {}).get("type") == AnthropicDeltaType.TEXT_DELTA
+                    ):
+                        delta_text = event["delta"].get("text", "")
+                        if delta_text:
+                            streamed = True
+                            state["answer_text"] += delta_text
+                            yield _ai_sdk_sse(
+                                {
+                                    "type": "text-delta",
+                                    "id": text_id,
+                                    "delta": delta_text,
+                                },
+                            )
+                elif isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock) and block.text and not streamed:
+                            state["answer_text"] += block.text
+                            yield _ai_sdk_sse(
+                                {
+                                    "type": "text-delta",
+                                    "id": text_id,
+                                    "delta": block.text,
+                                },
+                            )
+                        elif isinstance(block, ToolUseBlock):
+                            state.setdefault("tool_steps", []).append({
+                                "name": f"tool:{block.name}",
+                                "status": StepStatus.COMPLETED.value,
+                                "summary": f"Claude 调用了 {block.name}",
+                                "data": {"arguments": block.input},
+                            })
+
+    async def _emit_chat_stream_finalize(
+        self,
+        req: ChatRequest,
+        state: dict[str, Any],
+        ctx: AgentToolContext,
+        text_id: str,
+    ) -> AsyncIterator[str]:
+        """Emit the post-message-loop SSE sequence for a successful stream.
+
+        Yields ``text-end`` → Inspector ``data-porto`` (steps/sources/memory/
+        evaluation) → ``finish-step`` → ``finish`` (stop) → ``[DONE]``.
+        Evaluation is computed here (mirrors :meth:`_assemble_chat_response`)
+        so the Inspector panel gets a score even for tool-sourced answers.
+        """
+        from ..api.sse import _ai_sdk_sse
         from ..evaluation import evaluate_rag_cases
         from ..models import EvalCase
-        evaluation = evaluate_rag_cases([
-            EvalCase(question=req.message, answer=answer_text,
-                     contexts=[s.text for s in sources])
-        ]).model_dump() if sources else {"score": 0.0, "passed": True, "cases": []}
-        return ChatResponse(
-            answer=answer_text,
-            sources=sources,
-            memory=memories,
-            evaluation=evaluation,
-            steps=tool_steps + [
-                {
-                    "name": "answer",
-                    "status": StepStatus.COMPLETED.value,
-                    "summary": "完成回答生成",
-                    "data": {},
-                },
-            ] + ([{
-                "name": "evaluate_rag",
-                "status": StepStatus.COMPLETED.value,
-                "summary": f"RAG eval score {evaluation['score']}",
-                "data": evaluation,
-            }] if sources else []),
-        )
-
-    async def chat_stream(
-        self, req: ChatRequest, settings: Settings
-    ) -> AsyncIterator[str]:
-        """SSE streaming chatbot entry — wraps the SDK message stream.
-
-        Emits ai-sdk SSE events (start → start-step → text-start →
-        text-delta(s) → text-end → finish-step → finish → [DONE]) mirroring
-        :func:`langchain_chat_stream`. RAG-unavailable and SDK-error paths
-        emit a proper SSE error/finish sequence so the frontend stream always
-        terminates cleanly.
-        """
-        from ..api.deps import get_index_supervisor
-        from ..api.sse import _ai_sdk_sse, _text_chunks
-
-        text_id = "answer-1"
-
-        # -- RAG availability check (mirror chat's early return) -------------
-        available, reason = get_index_supervisor().rag_available()
-        if not available:
-            hint = f"知识库当前不可用（{reason}），请稍后重试。"
-            yield _ai_sdk_sse(
-                {"type": "start", "messageMetadata": {"session_id": req.session_id}},
-            )
-            yield _ai_sdk_sse({"type": "start-step"})
-            yield _ai_sdk_sse({"type": "text-start", "id": text_id})
-            for chunk in _text_chunks(hint):
-                yield _ai_sdk_sse(
-                    {"type": "text-delta", "id": text_id, "delta": chunk},
-                )
-            yield _ai_sdk_sse({"type": "text-end", "id": text_id})
-            yield _ai_sdk_sse({"type": "finish-step"})
-            yield _ai_sdk_sse(
-                {
-                    "type": "finish",
-                    "finishReason": "stop",
-                    "messageMetadata": {"source_count": 0},
-                },
-            )
-            yield "data: [DONE]\n\n"
-            return
-
-        if ClaudeSDKClient is None or ClaudeAgentOptions is None:
-            yield _ai_sdk_sse(
-                {"type": "start", "messageMetadata": {"session_id": req.session_id}},
-            )
-            yield _ai_sdk_sse({"type": "error", "errorText": "claude_agent_sdk 未安装"})
-            yield _ai_sdk_sse({"type": "finish", "finishReason": "error"})
-            yield "data: [DONE]\n\n"
-            return
-
-        yield _ai_sdk_sse(
-            {"type": "start", "messageMetadata": {"session_id": req.session_id}},
-        )
-        yield _ai_sdk_sse({"type": "start-step"})
-        yield _ai_sdk_sse({"type": "text-start", "id": text_id})
-
-        try:
-            options, state, ctx, expected_sid = self._build_chat_options(req, settings)
-            streamed = False  # True once we emit via StreamEvent deltas
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(req.message)
-                async for msg in client.receive_response():
-                    # Capture Claude Code session_id from init SystemMessage
-                    if SystemMessage is not None and isinstance(msg, SystemMessage):
-                        if msg.subtype == ClaudeMsgSubtype.INIT:
-                            self._capture_session(
-                                settings, req.session_id,
-                                msg.data.get("session_id"), expected_sid,
-                            )
-                    # Token-level streaming: StreamEvent carries content_block_delta
-                    elif StreamEvent is not None and isinstance(msg, StreamEvent):
-                        event = msg.event
-                        if (
-                            event.get("type") == AnthropicEventType.CONTENT_BLOCK_DELTA
-                            and event.get("delta", {}).get("type") == AnthropicDeltaType.TEXT_DELTA
-                        ):
-                            delta_text = event["delta"].get("text", "")
-                            if delta_text:
-                                streamed = True
-                                state["answer_text"] += delta_text
-                                yield _ai_sdk_sse(
-                                    {
-                                        "type": "text-delta",
-                                        "id": text_id,
-                                        "delta": delta_text,
-                                    },
-                                )
-                    elif isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, TextBlock) and block.text and not streamed:
-                                state["answer_text"] += block.text
-                                yield _ai_sdk_sse(
-                                    {
-                                        "type": "text-delta",
-                                        "id": text_id,
-                                        "delta": block.text,
-                                    },
-                                )
-                            elif isinstance(block, ToolUseBlock):
-                                state.setdefault("tool_steps", []).append({
-                                    "name": f"tool:{block.name}",
-                                    "status": StepStatus.COMPLETED.value,
-                                    "summary": f"Claude 调用了 {block.name}",
-                                    "data": {"arguments": block.input},
-                                })
-        except Exception as exc:
-            self.logger.exception(
-                "agent_sdk chat_stream failed session=%s", req.session_id,
-            )
-            yield _ai_sdk_sse({"type": "error", "errorText": str(exc)})
-            yield _ai_sdk_sse({"type": "text-end", "id": text_id})
-            yield _ai_sdk_sse({"type": "finish-step"})
-            yield _ai_sdk_sse({"type": "finish", "finishReason": "error"})
-            yield "data: [DONE]\n\n"
-            return
 
         yield _ai_sdk_sse({"type": "text-end", "id": text_id})
 
@@ -624,8 +641,6 @@ class AgentSDKBackend:
         sources = ctx.state.get("tool_sources", [])
         memories = ctx.state.get("tool_memory", [])
         tool_steps = state.get("tool_steps", [])
-        from ..evaluation import evaluate_rag_cases
-        from ..models import EvalCase
         evaluation = evaluate_rag_cases([
             EvalCase(question=req.message, answer=state["answer_text"],
                      contexts=[s.text for s in sources])
@@ -664,3 +679,100 @@ class AgentSDKBackend:
             },
         )
         yield "data: [DONE]\n\n"
+
+    async def _stream_chat_unavailable_hint(
+        self, req: ChatRequest, reason: str | None, text_id: str
+    ) -> AsyncIterator[str]:
+        """Emit the RAG-unavailable SSE sequence for :meth:`chat_stream`.
+
+        Yields the full start → text deltas (sliced hint) → finish → [DONE]
+        sequence so the frontend stream terminates cleanly when the index is
+        unavailable. Mirrors the inline block that previously lived in
+        :meth:`chat_stream`.
+        """
+        from ..api.sse import _ai_sdk_sse, _text_chunks
+
+        hint = f"知识库当前不可用（{reason}），请稍后重试。"
+        yield _ai_sdk_sse(
+            {"type": "start", "messageMetadata": {"session_id": req.session_id}},
+        )
+        yield _ai_sdk_sse({"type": "start-step"})
+        yield _ai_sdk_sse({"type": "text-start", "id": text_id})
+        for chunk in _text_chunks(hint):
+            yield _ai_sdk_sse(
+                {"type": "text-delta", "id": text_id, "delta": chunk},
+            )
+        yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+        yield _ai_sdk_sse({"type": "finish-step"})
+        yield _ai_sdk_sse(
+            {
+                "type": "finish",
+                "finishReason": "stop",
+                "messageMetadata": {"source_count": 0},
+            },
+        )
+        yield "data: [DONE]\n\n"
+
+    async def chat_stream(
+        self, req: ChatRequest, settings: Settings
+    ) -> AsyncIterator[str]:
+        """SSE streaming chatbot entry — wraps the SDK message stream.
+
+        Emits ai-sdk SSE events (start → start-step → text-start →
+        text-delta(s) → text-end → finish-step → finish → [DONE]) mirroring
+        :func:`langchain_chat_stream`. RAG-unavailable and SDK-error paths
+        emit a proper SSE error/finish sequence so the frontend stream always
+        terminates cleanly.
+
+        Structure: RAG guard (delegates to ``_stream_chat_unavailable_hint``)
+        → SDK guard (inline error SSE) → emit start sequence →
+        ``_stream_chat_messages`` (token/message loop, yields text-delta) →
+        ``_emit_chat_stream_finalize`` (Inspector + finish). Sub-generator
+        exceptions propagate to the try/except here for SSE error termination.
+        """
+        from ..api.deps import get_index_supervisor
+        from ..api.sse import _ai_sdk_sse
+
+        text_id = "answer-1"
+
+        # -- RAG availability check (mirror chat's early return) -------------
+        available, reason = get_index_supervisor().rag_available()
+        if not available:
+            async for chunk in self._stream_chat_unavailable_hint(req, reason, text_id):
+                yield chunk
+            return
+
+        if ClaudeSDKClient is None or ClaudeAgentOptions is None:
+            yield _ai_sdk_sse(
+                {"type": "start", "messageMetadata": {"session_id": req.session_id}},
+            )
+            yield _ai_sdk_sse({"type": "error", "errorText": "claude_agent_sdk 未安装"})
+            yield _ai_sdk_sse({"type": "finish", "finishReason": "error"})
+            yield "data: [DONE]\n\n"
+            return
+
+        yield _ai_sdk_sse(
+            {"type": "start", "messageMetadata": {"session_id": req.session_id}},
+        )
+        yield _ai_sdk_sse({"type": "start-step"})
+        yield _ai_sdk_sse({"type": "text-start", "id": text_id})
+
+        try:
+            options, state, ctx, expected_sid = self._build_chat_options(req, settings)
+            async for chunk in self._stream_chat_messages(
+                req, settings, options, state, ctx, expected_sid, text_id,
+            ):
+                yield chunk
+        except Exception as exc:
+            self.logger.exception(
+                "agent_sdk chat_stream failed session=%s", req.session_id,
+            )
+            yield _ai_sdk_sse({"type": "error", "errorText": str(exc)})
+            yield _ai_sdk_sse({"type": "text-end", "id": text_id})
+            yield _ai_sdk_sse({"type": "finish-step"})
+            yield _ai_sdk_sse({"type": "finish", "finishReason": "error"})
+            yield "data: [DONE]\n\n"
+            return
+
+        async for chunk in self._emit_chat_stream_finalize(req, state, ctx, text_id):
+            yield chunk
