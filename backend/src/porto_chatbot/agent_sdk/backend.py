@@ -329,7 +329,7 @@ class AgentSDKBackend:
         No intent routing — Claude decides autonomously via the registered
         MCP tools (search_knowledgebase, search_memory, get_session_facts…).
         """
-        from ..api.deps import get_memory, get_store
+        from ..api.deps import get_file_service, get_memory, get_store
         from ..llm import LLMClient
         from ..memory import SessionFactsStore, trigger_facts_extraction_sync
 
@@ -338,11 +338,17 @@ class AgentSDKBackend:
         facts_store = SessionFactsStore(settings)
         store.ensure_index()
 
+        # Task 12: 注入 FileService 单例 → read_file tool 组（get_file_info /
+        # read_file_pages / search_file）在 build_sdk_tools 内自动注册，chatbot
+        # 路径即可经 MCP 调用读取用户上传的附件原文。
+        file_service = get_file_service()
+
         ctx = AgentToolContext(
             state={},
             vector_store=store,
             memory_store=memory,
             facts_store=facts_store,
+            file_service=file_service,
         )
         sdk_tools = build_sdk_tools(ctx, tool_timeout=settings.agent_tool_timeout)
         server = create_sdk_mcp_server(
@@ -428,11 +434,21 @@ class AgentSDKBackend:
             )
             return {}
 
+        # Task 12: 若请求携带 file_ids，在 system prompt 提示 Claude 可经
+        # read_file tool 组读取附件原文——避免模型忽略用户上传的文件。
+        file_hint = ""
+        if req.file_ids:
+            file_hint = (
+                "\n本次对话关联了以下文件，可调用 get_file_info / read_file_pages / "
+                f"search_file 读取：{', '.join(req.file_ids)}"
+            )
+
         options_kwargs: dict[str, Any] = dict(
             system_prompt=(
                 "你是 Porto 知识库问答助手。你可以调用工具检索知识库、对话记忆和结构化事实。"
                 "优先基于工具返回的信息回答；不确定时说明缺口。"
                 f"当前 session_id: {req.session_id}"
+                f"{file_hint}"
             ),
             setting_sources=["project"],
             cwd=str(settings.data_dir),

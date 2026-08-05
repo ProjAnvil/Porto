@@ -332,3 +332,55 @@ def test_stop_hook_swallows_memory_errors(tmp_path):
         result = asyncio.run(hook_cb(MagicMock(), None, MagicMock()))
 
     assert result == {}  # no-op output, exception swallowed
+
+
+# --------------------------------------------------------------------------- #
+# Task 12 — file_service injection + file_ids system-prompt hint
+# --------------------------------------------------------------------------- #
+def test_build_chat_options_injects_file_service(tmp_path):
+    """_build_chat_options wires FileService into AgentToolContext (Task 12)."""
+    backend, s = _make_backend(tmp_path)
+    req = ChatRequest(message="hi", session_id="file-svc-sess")
+
+    with _patch_rag(available=True), \
+         _patch_mcp_server():
+        _options, _state, ctx, _resume_sid = backend._build_chat_options(req, s)
+
+    # FileService singleton must be injected so read_file MCP tools auto-register.
+    assert ctx.file_service is not None
+
+
+def test_build_chat_options_system_prompt_includes_file_ids(tmp_path):
+    """When req.file_ids non-empty, system prompt advertises read_file tools."""
+    backend, s = _make_backend(tmp_path)
+    req = ChatRequest(
+        message="summarize the upload",
+        session_id="file-hint-sess",
+        file_ids=["file-abc", "file-xyz"],
+    )
+
+    with _patch_rag(available=True), \
+         _patch_mcp_server():
+        options, _state, _ctx, _resume_sid = backend._build_chat_options(req, s)
+
+    prompt = options.system_prompt
+    # Both file_ids and the read_file tool names must appear in the hint.
+    assert "file-abc" in prompt
+    assert "file-xyz" in prompt
+    assert "get_file_info" in prompt
+    assert "read_file_pages" in prompt
+    assert "search_file" in prompt
+
+
+def test_build_chat_options_system_prompt_omits_file_hint_when_empty(tmp_path):
+    """When req.file_ids is empty, no file hint is appended to the prompt."""
+    backend, s = _make_backend(tmp_path)
+    req = ChatRequest(message="hi", session_id="no-file-sess")
+
+    with _patch_rag(available=True), \
+         _patch_mcp_server():
+        options, _state, _ctx, _resume_sid = backend._build_chat_options(req, s)
+
+    prompt = options.system_prompt
+    assert "get_file_info" not in prompt
+    assert "read_file_pages" not in prompt
