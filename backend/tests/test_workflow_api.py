@@ -31,8 +31,8 @@ def _wait_index_done(client: TestClient, timeout: float = 30.0) -> dict:
 
 def _wait_status(client: TestClient, wid: str, target: set[str], timeout: float = 15.0) -> dict:
     """轮询 workflow detail 直到 status 进入 target 集合。降级路径下(无 LLM key)
-    workflow 可能很快跑到 completed(理解/识别走 fallback、生成走 template、evaluate
-    给分),故 target 通常含 awaiting_input 与 completed 两个目标。
+    workflow 可能很快跑到 completed(理解/识别走 fallback、生成走 template),
+    故 target 通常含 awaiting_input 与 completed 两个目标。
     """
     end = time.time() + timeout
     last = None
@@ -61,11 +61,12 @@ def test_workflow_checkpoint_flow(monkeypatch, sample_settings, sample_prd):
         wid = body["workflow_id"]
         # 跑到 understand checkpoint(降级路径,无 LLM key,确定性)
         detail = _wait_status(client, wid, {"awaiting_input", "completed"})
-        assert detail["current_step"] in {"understand", "evaluate"}
+        # Task 10:evaluate 节点已删,terminal step 是 generate(而非 evaluate)
+        assert detail["current_step"] in {"understand", "generate"}
         outs = detail["outputs"]
         assert (
             "understanding" in outs.get("understand", {}).get("output", {})
-            or detail["current_step"] == "evaluate"
+            or detail["current_step"] == "generate"
         )
 
 
@@ -146,7 +147,7 @@ def test_advance_past_first_checkpoint_reaches_identify(monkeypatch, sample_sett
 
     修复后:_rebuild_state 把 sources/subsystems/spec_results 从 dict 重建为
     Pydantic 模型,identify 正常消费,workflow 推进到 identify checkpoint
-    (或一路到 completed/evaluate,均无 failed)。
+    (或一路到 completed/generate,均无 failed)。
 
     本测试不 mock graph —— 跑真实 retrieve→understand→identify 节点。
     """
@@ -167,7 +168,7 @@ def test_advance_past_first_checkpoint_reaches_identify(monkeypatch, sample_sett
         first = _wait_status(client, wid, {"awaiting_input", "completed"})
         # 若已 completed(极快路径),则无 checkpoint 间崩溃可言,无需继续
         if first["status"] == "completed":
-            assert first["current_step"] == "evaluate"
+            assert first["current_step"] == "generate"  # Task 10:evaluate 已删
             return
 
         assert first["current_step"] == "understand"
@@ -185,9 +186,9 @@ def test_advance_past_first_checkpoint_reaches_identify(monkeypatch, sample_sett
             f"advance 跨 checkpoint 崩溃: status=failed "
             f"current_step={second.get('current_step')} error={second.get('error')!r}"
         )
-        # 必须跑到至少 identify(降级快路径可能一路到 evaluate/completed)
+        # 必须跑到至少 identify(降级快路径可能一路到 generate/completed)
         reached_step = second["current_step"]
-        steps_order = ["retrieve", "understand", "identify", "generate", "evaluate"]
+        steps_order = ["retrieve", "understand", "identify", "generate"]
         assert steps_order.index(reached_step) >= steps_order.index("identify"), (
             f"advance 应跨过 understand 到达 identify 及以后,实际停在 {reached_step}"
         )
@@ -201,11 +202,10 @@ def test_patch_spec_updates_without_side_effects(monkeypatch, sample_settings):
     monkeypatch.setattr(main, "settings", sample_settings)
     with TestClient(main.app) as client:
         store = get_workflow_store()
-        # 直接造 workflow + generate + evaluate（不经 executor，确定性）
+        # 直接造 workflow + generate（不经 executor，确定性；Task 10:evaluate 已删）
         wid = store.create("s1", "proj", "prd", 6, {}, {})
         store.save_output(wid, "generate", {"specs": {"Auth": "原始"}}, "ai")
-        store.save_output(wid, "evaluate", {"score": 10}, "ai")
-        store.update_status(wid, "completed", current_step="evaluate")
+        store.update_status(wid, "completed", current_step="generate")
 
         resp = client.patch(
             f"/api/porto/workflows/{wid}/specs",
@@ -216,9 +216,7 @@ def test_patch_spec_updates_without_side_effects(monkeypatch, sample_settings):
         assert body["outputs"]["generate"]["output"]["specs"]["Auth"] == "编辑后正文"
         # 副作用均未发生
         assert body["status"] == "completed"
-        assert body["current_step"] == "evaluate"
-        assert "evaluate" in body["outputs"]
-        assert body["outputs"]["evaluate"]["output"]["score"] == 10
+        assert body["current_step"] == "generate"
         assert body["outputs"]["generate"]["produced_by"] == "ai"
 
         # name 不存在 → 400

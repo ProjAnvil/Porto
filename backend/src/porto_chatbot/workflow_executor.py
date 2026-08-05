@@ -187,12 +187,13 @@ class WorkflowExecutor:
         # prd_text,保证 state["prd_file_id"] 始终有可读内容。
         # 节点(retrieve/understand/identify,Task 7)经 file_service.read_pages
         # 读 prd_file_id;text 路径下 prd_file_id 实为原始文本,helper 自动回退。
-        # evaluate 仍直接读 state["prd_text"](Task 10 清理),故暂保留 prd_text 注入。
+        # Task 10:evaluate 节点已删,不再有节点读 state["prd_text"],故 prd_text
+        # 不再注入 graph state(prd_text 仍存 workflow 行,用于 project_name 兜底 +
+        # API 路由回放)。
         prd_file_id = row["prd_file_id"] or row["prd_text"]
         initial = {
             "workflow_id": workflow_id,
             "project_name": row["project_name"] or infer_project_name(row["prd_text"]),
-            "prd_text": row["prd_text"],
             "prd_file_id": prd_file_id,
             "top_k": row["top_k"],
             "steps": [],
@@ -201,7 +202,6 @@ class WorkflowExecutor:
             "subsystems": [],
             "specs": {},
             "spec_results": {},
-            "evaluation": {},
         }
         try:
             self.graph.invoke(initial, config)  # retrieve→understand,停

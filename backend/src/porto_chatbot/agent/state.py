@@ -48,12 +48,9 @@ class PortoAgentState(TypedDict, total=False):
     subsystems: list[Subsystem]
     specs: Annotated[dict[str, str], _dict_merge]
     spec_results: Annotated[dict[str, SpecResult], _dict_merge]
-    evaluation: dict[str, Any]
     steps: Annotated[list[AgentStep], operator.add]
     top_k: int | None
     current_step: Annotated[str, _last_wins]
-    rework_passes: int
-    needs_rework: bool
 
 
 DOMAIN_HINTS = {

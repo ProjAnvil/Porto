@@ -26,6 +26,18 @@ STEPS = ["retrieve", "understand", "identify", "generate"]
 #: 执行到此处停,等待用户继续(等价旧 CHECKPOINTS)。generate 停 → 用户审计 spec。
 INTERRUPT_AFTER = ["understand", "identify", "generate"]
 
+#: rerun_step 用的节点函数注册表(去 evaluate,Task 10 清理)。
+#: 与 build_workflow_graph 的 ``add_node`` 保持一致 —— retrieve/understand/identify
+#: 直调节点函数;generate 在 STEPS 中但不在本表(spec 子图不能绕过父图 dispatch 单独
+#: rerun —— 父图经 Send fan-out 启动子图,rerun 路径无法重建该拓扑)。rerun generate
+#: 会在 ``_NODE_FNS[step]`` KeyError,被 _worker_rerun 捕获标 FAILED。后续若需支持,
+#: 改为 rerun 时按子系统 fan-out 重跑子图。
+_NODE_FNS = {
+    "retrieve": retrieve_node.retrieve_knowledge,
+    "understand": understand_node.understand_prd,
+    "identify": identify_node.identify_subsystems,
+}
+
 
 def build_workflow_graph(checkpointer):
     """编译 workflow StateGraph。

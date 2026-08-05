@@ -237,29 +237,25 @@ def list_workflows(
 ):
     """列表(按 created_at DESC),可按 session_id / status / date 过滤,分页。
 
-    每条附 evaluation score(若有)——list 不展开完整 outputs,避免大 payload。
+    Task 10:evaluate 节点已删,``score`` 字段保留为 None(向后兼容前端 schema),
+    不再查询 outputs(原为 evaluate.output.evaluation.score)。
     """
     store = get_workflow_store()
     rows, total = store.list_workflows(
         session_id=session_id, status=status, date=date, limit=limit, offset=offset
     )
-    items: list[WorkflowListItem] = []
-    for r in rows:
-        score = None
-        outs = store.get_outputs(r["workflow_id"])
-        if "evaluate" in outs:
-            score = (outs["evaluate"]["output"].get("evaluation") or {}).get("score")
-        items.append(
-            WorkflowListItem(
-                workflow_id=r["workflow_id"],
-                session_id=r["session_id"],
-                project_name=r["project_name"],
-                status=r["status"],
-                current_step=r["current_step"],
-                created_at=r["created_at"],
-                score=score,
-            )
+    items: list[WorkflowListItem] = [
+        WorkflowListItem(
+            workflow_id=r["workflow_id"],
+            session_id=r["session_id"],
+            project_name=r["project_name"],
+            status=r["status"],
+            current_step=r["current_step"],
+            created_at=r["created_at"],
+            score=None,
         )
+        for r in rows
+    ]
     return WorkflowListResponse(items=items, total=total, has_more=offset + len(items) < total)
 
 

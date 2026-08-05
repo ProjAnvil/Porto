@@ -139,14 +139,6 @@ def _resolve_ctx(state: SpecSubgraphState, config=None) -> SpecContext:
     return _ctx(state)
 
 
-def _agent_sema(state: SpecSubgraphState, config=None):
-    """取 ``ctx_sema``：config 有 agent 从 agent 取，否则从 state 读（单元测试向后兼容）。"""
-    agent = (config or {}).get("configurable", {}).get("agent")
-    if agent is not None:
-        return getattr(agent, "_spec_sema", None)
-    return state.get("ctx_sema")
-
-
 def init_spec(state: SpecSubgraphState, *, config=None) -> dict:
     """生成首版 spec（入口经 ``ctx_sema`` 限流，M3）。
 
