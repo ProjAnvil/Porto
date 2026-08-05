@@ -397,6 +397,14 @@ class AgentSDKBackend:
             # 启用 token-level streaming——SDK 在 Claude 推理期间持续 yield
             # partial messages，防止 receive_response() 长时间无消息导致挂起。
             include_partial_messages=True,
+            # CLI 子进程层面的超时 watchdog——比 Python asyncio.wait_for 更可靠，
+            # 因为它工作在 CLI 内部，不受 SDK anyio task group 取消限制影响。
+            # https://code.claude.com/docs/en/agent-sdk/python
+            env={
+                "API_TIMEOUT_MS": str(settings.agent_sdk_idle_timeout * 1000),
+                "CLAUDE_CODE_MAX_RETRIES": "2",
+                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": str(settings.agent_sdk_idle_timeout * 1000),
+            },
             hooks={"Stop": [HookMatcher(matcher="", hooks=[on_stop])]},
         )
         # Session resume: if we have a Claude Code session_id for this Porto
