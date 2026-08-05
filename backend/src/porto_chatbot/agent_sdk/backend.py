@@ -17,6 +17,8 @@ import asyncio
 import json
 import os
 import sqlite3
+import time
+from collections import Counter
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -62,7 +64,9 @@ try:
         StreamEvent,
         SystemMessage,
         TextBlock,
+        ToolResultBlock,
         ToolUseBlock,
+        UserMessage,
         create_sdk_mcp_server,
     )
 except ImportError:  # SDK not installed — AgentSDKBackend is unusable
@@ -74,7 +78,9 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
     StreamEvent = None  # type: ignore[assignment]
     SystemMessage = None  # type: ignore[assignment]
     TextBlock = None  # type: ignore[assignment]
+    ToolResultBlock = None  # type: ignore[assignment]
     ToolUseBlock = None  # type: ignore[assignment]
+    UserMessage = None  # type: ignore[assignment]
     create_sdk_mcp_server = None  # type: ignore[assignment]
 
 # Process-level cache: Porto session_id → Claude Code CLI session_id.
@@ -378,6 +384,50 @@ class AgentSDKBackend:
                 )
             return {}  # no-op hook JSON output (SyncHookJSONOutput is all-optional)
 
+        # ── 可观测性：stderr 捕获 + 工具调用监控 + 循环检测 ──
+        # 解除 CLI 子进程黑盒：所有 stderr 输出进入 loguru 日志。
+        def _on_cli_stderr(line: str) -> None:
+            self.logger.debug("[CLI] %s", line.rstrip())
+
+        # 工具调用计时 + 重复调用检测（同一工具 + 相同输入 >2 次 = 循环）
+        _tool_timings: dict[str, float] = {}
+        _tool_dedup: Counter[tuple[str, str]] = Counter()
+
+        async def _on_pre_tool_use(input_data: dict, tool_use_id: str | None, context: dict) -> dict:  # noqa: ANN001
+            tool_name = input_data.get("tool_name", "?")
+            tool_input = input_data.get("tool_input", {})
+            if tool_use_id:
+                _tool_timings[tool_use_id] = time.monotonic()
+            call_key = (tool_name, json.dumps(tool_input, sort_keys=True, default=str)[:200])
+            _tool_dedup[call_key] += 1
+            if _tool_dedup[call_key] > 2:
+                self.logger.warning(
+                    "tool loop detected name=%s count=%s — blocking",
+                    tool_name, _tool_dedup[call_key],
+                )
+                return {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"检测到重复调用（{_tool_dedup[call_key]}次），已阻止循环",
+                }
+            self.logger.info(
+                "tool call start name=%s id=%s args_keys=%s",
+                tool_name, tool_use_id,
+                list(tool_input.keys()) if isinstance(tool_input, dict) else "?",
+            )
+            return {}
+
+        async def _on_post_tool_use(input_data: dict, tool_use_id: str | None, context: dict) -> dict:  # noqa: ANN001
+            tool_name = input_data.get("tool_name", "?")
+            tool_response = input_data.get("tool_response", {})
+            is_err = tool_response.get("is_error", False) if isinstance(tool_response, dict) else False
+            elapsed = time.monotonic() - _tool_timings.pop(tool_use_id, time.monotonic()) if tool_use_id else 0.0
+            self.logger.info(
+                "tool call finish name=%s id=%s elapsed=%.2fs is_error=%s",
+                tool_name, tool_use_id, elapsed, is_err,
+            )
+            return {}
+
         options_kwargs: dict[str, Any] = dict(
             system_prompt=(
                 "你是 Porto 知识库问答助手。你可以调用工具检索知识库、对话记忆和结构化事实。"
@@ -405,7 +455,13 @@ class AgentSDKBackend:
                 "CLAUDE_CODE_MAX_RETRIES": "2",
                 "CLAUDE_STREAM_IDLE_TIMEOUT_MS": str(settings.agent_sdk_idle_timeout * 1000),
             },
-            hooks={"Stop": [HookMatcher(matcher="", hooks=[on_stop])]},
+            # CLI 子进程 stderr → loguru（解除黑盒的关键）
+            stderr=_on_cli_stderr,
+            hooks={
+                "Stop": [HookMatcher(matcher="", hooks=[on_stop])],
+                "PreToolUse": [HookMatcher(hooks=[_on_pre_tool_use])],
+                "PostToolUse": [HookMatcher(hooks=[_on_post_tool_use])],
+            },
         )
         # Session resume: if we have a Claude Code session_id for this Porto
         # session, pass it as `resume` so the CLI restores full conversation
@@ -461,6 +517,23 @@ class AgentSDKBackend:
                                 "summary": f"Claude 调用了 {block.name}",
                                 "data": {"arguments": block.input},
                             })
+                elif UserMessage is not None and isinstance(msg, UserMessage):
+                    for block in getattr(msg, "content", []):
+                        if isinstance(block, ToolResultBlock):
+                            self.logger.debug(
+                                "tool result id=%s is_error=%s",
+                                getattr(block, "tool_use_id", "?"),
+                                getattr(block, "is_error", False),
+                            )
+                elif isinstance(msg, ResultMessage):
+                    self.logger.info(
+                        "agent_sdk result turns=%s cost=$%.4f stop=%s is_error=%s subtype=%s",
+                        getattr(msg, "num_turns", 0),
+                        getattr(msg, "total_cost_usd", 0) or 0,
+                        getattr(msg, "stop_reason", "?"),
+                        getattr(msg, "is_error", False),
+                        getattr(msg, "subtype", "?"),
+                    )
 
     def _assemble_chat_response(
         self,
@@ -663,6 +736,23 @@ class AgentSDKBackend:
                                 "summary": f"Claude 调用了 {block.name}",
                                 "data": {"arguments": block.input},
                             })
+                elif UserMessage is not None and isinstance(msg, UserMessage):
+                    for block in getattr(msg, "content", []):
+                        if isinstance(block, ToolResultBlock):
+                            self.logger.debug(
+                                "tool result id=%s is_error=%s",
+                                getattr(block, "tool_use_id", "?"),
+                                getattr(block, "is_error", False),
+                            )
+                elif isinstance(msg, ResultMessage):
+                    self.logger.info(
+                        "agent_sdk result turns=%s cost=$%.4f stop=%s is_error=%s subtype=%s",
+                        getattr(msg, "num_turns", 0),
+                        getattr(msg, "total_cost_usd", 0) or 0,
+                        getattr(msg, "stop_reason", "?"),
+                        getattr(msg, "is_error", False),
+                        getattr(msg, "subtype", "?"),
+                    )
 
     async def _emit_chat_stream_finalize(
         self,
