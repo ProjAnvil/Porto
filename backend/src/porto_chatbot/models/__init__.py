@@ -39,6 +39,13 @@ from .enums import (
     TruncationReason,
     WorkflowRunState,
 )
+from .evaluation import (
+    RagBatchEvaluation,
+    RagCaseEvaluation,
+    RagMetrics,
+    WorkflowCheck,
+    WorkflowEvaluation,
+)
 from .payload import (
     AgentSettingsPayload,
     AppSettingsPayload,
@@ -85,6 +92,12 @@ __all__ = [
     "Critique",
     "SpecAttempt",
     "SpecResult",
+    # ── Evaluation models ──
+    "WorkflowCheck",
+    "WorkflowEvaluation",
+    "RagMetrics",
+    "RagCaseEvaluation",
+    "RagBatchEvaluation",
     # ── Enums (20) ──
     "ChatbotBackend",
     "ChatIntent",
