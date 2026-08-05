@@ -8,7 +8,7 @@ from porto_chatbot.settings import Settings
 def test_settings_defaults():
     s = Settings()
     assert s.agent_request_timeout == 120
-    assert s.spec_refine_concurrency == 3
+    assert s.spec_refine_concurrency == 4
     assert not hasattr(s, "spec_refine_parallel")
 
 
