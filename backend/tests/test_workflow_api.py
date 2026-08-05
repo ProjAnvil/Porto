@@ -7,11 +7,9 @@
 
 from __future__ import annotations
 
-import io
 import time
 
 from fastapi.testclient import TestClient
-from pypdf import PdfWriter
 
 from porto_chatbot import main
 
@@ -265,7 +263,13 @@ def test_document_capabilities_and_upload_validation(monkeypatch, sample_setting
         assert too_large.status_code == 413
 
 
-def test_upload_maps_parse_and_strict_native_errors(monkeypatch, sample_settings):
+def test_upload_maps_parse_errors(monkeypatch, sample_settings):
+    """Task 6:upload 路由把文档交给 FileService.store 落盘 + LOCAL 解析 + 分页。
+
+    parse_document 失败 → DocumentParseError → 路由映射 400(native strict 422
+    路径已随 FileService 统一 LOCAL 解析移除;phase 2 的方向是按需 read_file,
+    上传时不再做 native PDF 一次性富化)。
+    """
     monkeypatch.setattr(main, "settings", sample_settings)
     with TestClient(main.app) as client:
         broken = client.post(
@@ -273,17 +277,6 @@ def test_upload_maps_parse_and_strict_native_errors(monkeypatch, sample_settings
             files={"file": ("prd.pdf", b"not-a-pdf", "application/pdf")},
         )
         assert broken.status_code == 400
-
-        sample_settings.document_parse_mode = "native"
-        pdf = io.BytesIO()
-        writer = PdfWriter()
-        writer.add_blank_page(width=100, height=100)
-        writer.write(pdf)
-        strict = client.post(
-            "/api/porto/workflows/upload",
-            files={"file": ("prd.pdf", pdf.getvalue(), "application/pdf")},
-        )
-        assert strict.status_code == 422
 
 
 # ----------------------------------------------------------- Task 8: rerun 步骤

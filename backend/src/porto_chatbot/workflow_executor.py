@@ -176,10 +176,16 @@ class WorkflowExecutor:
         self.store.update_status(workflow_id, WorkflowRunState.RUNNING)
         agent = self._build_agent(row)
         config = self._config(workflow_id, agent)
+        # Task 6:upload 路径写 prd_file_id(text 路径 / 旧行则 NULL)→ fallback 到
+        # prd_text,保证节点(Task 7 之前)读 state["prd_file_id"] 仍有可读内容。
+        # 同时保留 prd_text 注入,旧节点(understand/retrieve/evaluate/identify)
+        # 仍直接读 state["prd_text"] —— Task 7 改造节点后才移除。
+        prd_file_id = row["prd_file_id"] or row["prd_text"]
         initial = {
             "workflow_id": workflow_id,
             "project_name": row["project_name"] or infer_project_name(row["prd_text"]),
             "prd_text": row["prd_text"],
+            "prd_file_id": prd_file_id,
             "top_k": row["top_k"],
             "steps": [],
             "sources": [],

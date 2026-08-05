@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -28,8 +27,8 @@ from ...documents import (
     DocumentLimitError,
     DocumentNativeError,
     DocumentParseError,
-    parse_document,
 )
+from ...files.service import FileService
 from ...llm import LLMClient
 from ...logging_utils import get_component_logger
 from ...models import WorkflowRequest
@@ -154,13 +153,20 @@ async def upload_workflow(
     session_id: Annotated[str | None, Form()] = "default",
     top_k: Annotated[int | None, Form()] = None,
 ):
-    """上传文档 → 抽取文本 → 创建 + 启动 workflow。"""
+    """上传文档 → 经 FileService 存储 → 创建 + 启动 workflow。
+
+    Task 6:文档不再在路由层 parse,而是交给 FileService.store 落盘 + 解析 +
+    分页。workflow 行只存 ``prd_file_id`` 引用,``prd_text`` 写空串占位
+    (Task 7 之前节点仍读 state["prd_text"],该路径暂不可用 —— 见 Task 7)。
+    """
     runtime_settings = apply_rag_settings()
     suffix = Path(file.filename or "").suffix.lower()
     if not suffix:
         raise HTTPException(400, "uploaded file must have an extension")
     if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(415, f"unsupported document type: {suffix}")
+    # 大小检查保留在路由层:FileService.store 内部 read 无上限,需先 short-circuit
+    # 避免把超大文件全部读进内存。
     max_bytes = runtime_settings.document_max_upload_mb * 1024 * 1024
     payload = await file.read(max_bytes + 1)
     if len(payload) > max_bytes:
@@ -168,52 +174,44 @@ async def upload_workflow(
             413,
             f"document exceeds {runtime_settings.document_max_upload_mb} MB upload limit",
         )
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(payload)
-        tmp_path = Path(tmp.name)
+    await file.seek(0)
+
+    sid = session_id or "default"
+    file_svc = FileService(runtime_settings)
     try:
-        artifact = parse_document(
-            tmp_path,
-            original_name=file.filename,
-            max_bytes=max_bytes,
-            max_pdf_pages=runtime_settings.document_max_pdf_pages,
-            llm_client=LLMClient(runtime_settings),
-            mode=runtime_settings.document_parse_mode,
-            local_parser=runtime_settings.document_local_parser,
-        )
+        meta = file_svc.store(file, owner_id=sid)
     except DocumentLimitError as exc:
         raise HTTPException(413, str(exc)) from exc
     except DocumentNativeError as exc:
         raise HTTPException(422, str(exc)) from exc
     except DocumentParseError as exc:
         raise HTTPException(400, str(exc)) from exc
-    finally:
-        tmp_path.unlink(missing_ok=True)
-    text = artifact.text
-    if not text.strip():
+    if meta.page_count == 0:
         raise HTTPException(
             400,
             "document has no extractable text; configure a PDF-capable vision model for scanned files",
         )
+
     rag = effective_rag_settings().model_dump(exclude_none=True)
     agent = effective_agent_settings().model_dump(exclude_none=True)
     resolved_top_k = top_k or effective_rag_settings().top_k
     store = get_workflow_store()
-    sid = session_id or "default"
-    wid = store.create(sid, project_name, text.strip(), resolved_top_k, rag, agent)
+    wid = store.create(
+        sid,
+        project_name,
+        "",  # prd_text 空串占位:实际内容经 FileService.read_pages(prd_file_id) 访问
+        resolved_top_k,
+        rag,
+        agent,
+        prd_file_id=meta.file_id,
+    )
     logger.info(
-        "workflow upload start filename=%s workflow_id=%s text_chars=%s",
+        "workflow upload start filename=%s workflow_id=%s file_id=%s pages=%s",
         file.filename,
         wid,
-        len(text),
+        meta.file_id,
+        meta.page_count,
     )
-    if artifact.warnings:
-        logger.warning(
-            "workflow upload parse warnings filename=%s parser=%s warnings=%s",
-            file.filename,
-            artifact.parser,
-            artifact.warnings,
-        )
     get_workflow_executor().start_workflow(wid)
     return WorkflowCreated(workflow_id=wid, status=WorkflowRunState.RUNNING)
 
