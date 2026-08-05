@@ -16,15 +16,16 @@ def evaluate(state, *, config):
     spec_results = state.get("spec_results") or {}
     rubric_scores = [r.attempts[-1].score for r in spec_results.values() if r.attempts]
     if rubric_scores:
-        evaluation["spec_rubric_avg"] = round(sum(rubric_scores) / len(rubric_scores), 2)
-        evaluation["spec_rubric_min"] = min(rubric_scores)
+        evaluation.spec_rubric_avg = round(sum(rubric_scores) / len(rubric_scores), 2)
+        evaluation.spec_rubric_min = min(rubric_scores)
 
     # 条件回边决策
     passes = int(state.get("rework_passes", 0))
+    rubric_min = evaluation.spec_rubric_min
+    if rubric_min is None:
+        rubric_min = agent.settings.spec_refine_pass_score
     below_bar = (
-        not evaluation.get("passed", True)
-        or evaluation.get("spec_rubric_min", agent.settings.spec_refine_pass_score)
-        < agent.settings.spec_refine_pass_score
+        not evaluation.passed or rubric_min < agent.settings.spec_refine_pass_score
     )
     needs_rework = (
         agent.settings.workflow_rework_enabled
@@ -33,15 +34,15 @@ def evaluate(state, *, config):
     )
     agent.logger.info(
         "step evaluate finish score=%s rubric_avg=%s needs_rework=%s passes=%s",
-        evaluation.get("score"),
-        evaluation.get("spec_rubric_avg"),
+        evaluation.score,
+        evaluation.spec_rubric_avg,
         needs_rework,
         passes,
     )
     return {
-        "evaluation": evaluation,
+        "evaluation": evaluation.model_dump(),
         "rework_passes": passes + 1 if needs_rework else passes,
         "needs_rework": needs_rework,
         "current_step": "evaluate",
-        **agent._step("evaluate", f"评估得分 {evaluation['score']}", evaluation),
+        **agent._step("evaluate", f"评估得分 {evaluation.score}", evaluation.model_dump()),
     }

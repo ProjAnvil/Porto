@@ -229,7 +229,7 @@ def langchain_chat(req: ChatRequest, settings) -> ChatResponse:
                 contexts=[source.text for source in sources],
             )
         ]
-    )
+    ).model_dump()
     logger.info(
         "chat finish session_id=%s sources=%s memories=%s score=%s answer_chars=%s",
         req.session_id,
@@ -408,7 +408,7 @@ async def langchain_chat_stream(req: ChatRequest, settings) -> AsyncIterator[str
             memory.add(session_id=req.session_id, role="assistant", content=answer)
         evaluation = evaluate_rag_cases(
             [EvalCase(question=req.message, answer=answer, contexts=[s.text for s in sources])]
-        )
+        ).model_dump()
         for source in sources[:_MAX_SSE_SOURCES]:
             yield _ai_sdk_sse(
                 {

@@ -14,4 +14,4 @@ router = APIRouter()
 @router.post("/api/eval/rag")
 def evaluate_rag(req: EvalRequest):
     logger.info("eval rag cases=%s", len(req.cases))
-    return evaluate_rag_cases(req.cases)
+    return evaluate_rag_cases(req.cases).model_dump()

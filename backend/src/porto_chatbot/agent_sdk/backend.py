@@ -481,7 +481,7 @@ class AgentSDKBackend:
         evaluation = evaluate_rag_cases([
             EvalCase(question=req.message, answer=answer_text,
                      contexts=[s.text for s in sources])
-        ]) if sources else {"score": 0.0, "passed": True, "cases": []}
+        ]).model_dump() if sources else {"score": 0.0, "passed": True, "cases": []}
         return ChatResponse(
             answer=answer_text,
             sources=sources,
@@ -629,7 +629,7 @@ class AgentSDKBackend:
         evaluation = evaluate_rag_cases([
             EvalCase(question=req.message, answer=state["answer_text"],
                      contexts=[s.text for s in sources])
-        ]) if sources else {"score": 0.0, "passed": True, "cases": []}
+        ]).model_dump() if sources else {"score": 0.0, "passed": True, "cases": []}
         inspector_steps = tool_steps + [
             {"name": "answer", "status": StepStatus.COMPLETED.value,
              "summary": "完成回答生成", "data": {}},
