@@ -58,7 +58,7 @@ def test_compaction_with_llm_summarizes_and_caches(sample_settings, monkeypatch,
     assert len(recent) == 2
     cached = store.get_summary("s1")
     assert cached is not None
-    assert cached["summary"] == "历史摘要文本"
+    assert cached.summary == "历史摘要文本"
 
 
 def test_compaction_cache_hit_skips_llm(sample_settings, monkeypatch, tmp_path):

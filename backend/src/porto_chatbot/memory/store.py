@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,6 +12,15 @@ from ..embeddings import EmbeddingClient
 from ..logging_utils import get_component_logger
 from ..models import MemoryRecord, SourceChunk
 from ..settings import Settings
+
+
+@dataclass
+class SessionSummary:
+    """缓存的会话历史摘要（compaction 命中缓存时复用）。"""
+
+    summary: str
+    last_message_id: str
+    created_at: str
 
 
 class MemoryStore:
@@ -220,8 +230,8 @@ class MemoryStore:
         self.logger.info("memory search finish results=%s", len(rows))
         return rows
 
-    def get_summary(self, session_id: str) -> dict | None:
-        """读取缓存的会话历史摘要。返回 {summary, last_message_id, created_at}。"""
+    def get_summary(self, session_id: str) -> SessionSummary | None:
+        """读取缓存的会话历史摘要。返回 SessionSummary 或 None。"""
         with sqlite3.connect(self.settings.memory_db_path) as conn:
             row = conn.execute(
                 "SELECT summary, last_message_id, created_at FROM session_summaries WHERE session_id = ?",
@@ -229,7 +239,7 @@ class MemoryStore:
             ).fetchone()
         if not row:
             return None
-        return {"summary": row[0], "last_message_id": row[1], "created_at": row[2]}
+        return SessionSummary(summary=row[0], last_message_id=row[1], created_at=row[2])
 
     def save_summary(self, session_id: str, summary: str, last_message_id: str) -> None:
         with sqlite3.connect(self.settings.memory_db_path) as conn:
