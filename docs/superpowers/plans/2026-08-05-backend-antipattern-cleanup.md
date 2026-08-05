@@ -49,12 +49,12 @@
   - `r["score"]` → `r.score`
   - `result` dict → `RagBatchEvaluation(...)`
 
-- [ ] **Step 4: 测试**
+- [ ] **Step 4: 测试 + 测试适配**
 
 ```bash
-cd backend && .venv/bin/python -m pytest tests/test_evaluation.py -q
+cd backend && .venv/bin/python -m pytest tests/test_evaluation.py tests/test_memory_eval.py -q
 ```
-如果 test_evaluation.py 中有 `result["score"]` 等 dict 访问，需改为 `result.score`。
+`test_evaluation.py` 和 `test_memory_eval.py` 中的 dict 访问（`result["score"]`、`result.cases[0]["metrics"]["groundedness"]` 等）需改为属性访问（`result.score`、`result.cases[0].metrics.groundedness`）。
 
 - [ ] **Step 5: Commit**
 
@@ -189,27 +189,48 @@ git commit -m "refactor: extract magic numbers into named constants"
 - Modify: `backend/src/porto_chatbot/workflow_executor.py`
 - Modify: `backend/src/porto_chatbot/api/routes/eval.py`（如有）
 
-- [ ] **Step 1: 添加 .model_dump() 调用**
+- [ ] **Step 1: 在 evaluate_rag_cases / evaluate_workflow 调用点立即 .model_dump()**
 
-在所有将 evaluation model 赋值给 `dict[str, Any]` 字段的位置添加 `.model_dump()`：
+**核心策略**：在所有调用 `evaluate_rag_cases(...)` 或 `evaluate_workflow(...)` 的位置，紧跟 `.model_dump()` 将 model 立即转为 dict。这样下游所有 `evaluation['score']`、SSE 嵌入点、ChatResponse 赋值都不需要改——evaluation 变量从一开始就是 dict。
 
-- `agent/langchain_chat.py`: 搜索 `evaluate_rag_cases(` 调用点，在结果赋值给 `ChatResponse(evaluation=...)` 时加 `.model_dump()`
-- `agent_sdk/backend.py`: 同上，搜索 `evaluate_rag_cases(` 调用点
-- `workflow_executor.py`: 搜索 `evaluate_workflow(` 调用点
-- `api/routes/eval.py`: 搜索 evaluation 赋值点
+具体调用点（用 grep `evaluate_rag_cases\|evaluate_workflow` 定位）：
+- `agent/langchain_chat.py`: `evaluate_rag_cases(...)` → `evaluate_rag_cases(...).model_dump()`
+- `agent_sdk/backend.py`: 同上（注意三元表达式 `evaluate_rag_cases([...]) if sources else {...}` → model 分支加 `.model_dump()`）
+- `workflow_executor.py`: `evaluate_workflow(...)` → `evaluate_workflow(...).model_dump()`（如投影路径中有调用）
+- `api/routes/eval.py`: `return evaluate_rag_cases(...)` → `return evaluate_rag_cases(...).model_dump()`（保持 API JSON 一致）
 
-- [ ] **Step 2: 适配 agent/nodes/evaluate.py**
+- [ ] **Step 2: 适配 agent/nodes/evaluate.py（关键！None 陷阱）**
 
-evaluate 节点收到的 evaluation 可能是 dict（经 LangGraph state 序列化）或 model。用安全方式处理：
-- `evaluation["spec_rubric_avg"] = ...` → 如果是 dict 则 `evaluation["spec_rubric_avg"] = ...`（保持），如果是 model 则 `evaluation.spec_rubric_avg = ...`
-- 最安全方式：在 evaluate 节点中，如果 evaluation 是 model，用属性赋值；如果是 dict，用 key 赋值。或者统一用 `dict.__setitem__` 方式（因为 Pydantic model 不支持 `[]` 赋值）
+evaluate 节点直接调用 `evaluate_workflow()` 获取 `WorkflowEvaluation` model。需要：
+1. `evaluation = evaluate_workflow(...)` 保持返回 model（不 .model_dump()，因为节点需要用结构化属性）
+2. **所有 dict 操作改为属性操作**：
+   - `evaluation["spec_rubric_avg"] = round(...)` → `evaluation = evaluation.model_copy(update={"spec_rubric_avg": round(...)})`（Pydantic v2 不可变更新）
+   - `evaluation["spec_rubric_min"] = min(...)` → 同上
+   - `evaluation.get("passed", True)` → `evaluation.passed`
+   - `evaluation.get("score")` → `evaluation.score`
+   - `evaluation.get("spec_rubric_avg")` → `evaluation.spec_rubric_avg`
+   - `evaluation['score']` → `evaluation.score`
+3. **None 陷阱处理**：`evaluation.get("spec_rubric_min", default)` 在 dict 时代 key 不存在返回 default；model 时代字段始终存在（默认 None）。必须显式检查：
+   ```python
+   rubric_min = evaluation.spec_rubric_min
+   if rubric_min is None:
+       rubric_min = agent.settings.spec_refine_pass_score
+   below_bar = (not evaluation.passed) or (rubric_min < agent.settings.spec_refine_pass_score)
+   ```
+4. 节点返回 `{"evaluation": evaluation.model_dump()}`（转 dict 进入 LangGraph state，避免 checkpoint serde 问题）
 
-**建议处理**：检查 evaluate 节点中 evaluation 变量的来源（是直接从 `evaluate_workflow()` 返回值传入的 model，还是经 LangGraph state 序列化后的 dict）。如果是 model，改为属性访问。如果是 dict，保持。
+- [ ] **Step 3: checkpoint serde 注册（可选但推荐）**
 
-- [ ] **Step 3: 测试**
+`api/deps.py` 的 `_build_checkpoint_serde` 中 `allowed_msgpack_modules` 添加 WorkflowEvaluation。但如果 Step 2 已在节点返回前 `.model_dump()`，则 checkpoint 中存储的是 dict，不需要注册。
+
+- [ ] **Step 4: 适配 test_agent.py**
+
+`tests/test_agent.py` 中 `result["evaluation"]["spec_rubric_avg"]` 等 dict 访问，改为 `result["evaluation"]["spec_rubric_avg"]`（保持 dict 访问——因为 evaluate 节点返回前已 `.model_dump()`，state 中是 dict）。
+
+- [ ] **Step 5: 测试**
 
 ```bash
-cd backend && .venv/bin/python -m pytest tests/test_agent_graph.py tests/test_chat_dispatch.py tests/test_agent_sdk_chat.py tests/test_workflow_api.py tests/test_workflow_executor.py tests/api/ -q
+cd backend && .venv/bin/python -m pytest tests/test_agent.py tests/test_agent_graph.py tests/test_chat_dispatch.py tests/test_agent_sdk_chat.py tests/test_workflow_api.py tests/test_workflow_executor.py tests/api/ -q
 ```
 
 - [ ] **Step 4: Commit**
