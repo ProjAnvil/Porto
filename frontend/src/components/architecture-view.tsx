@@ -61,15 +61,13 @@ const PROMPT_ASSEMBLY = `flowchart LR
     TRIM --> OUT`;
 
 // ── 图 5：LangGraph 状态机（Workflow loop）──
-// 来源：§4
+// 来源：§4（Send fan-out + spec 子图，无 evaluate）
 const LANGGRAPH = `stateDiagram-v2
-    [*] --> retrieve: PRD 文本
+    [*] --> retrieve: prd_file_id (pointer)
     retrieve --> understand: + sources
     understand --> identify: + understanding
-    identify --> generate: + subsystems
-    generate --> evaluate: + specs, spec_results
-    evaluate --> identify: needs_rework=true 且 rework_passes < max
-    evaluate --> [*]: 达标 / 超上限`;
+    identify --> generate: Send fan-out (并发=spec_refine_concurrency)
+    generate --> [*]: 各 spec 独立交付（无 evaluate）`;
 
 // ── 图 6：Tool calling loop（Workflow loop）──
 // 来源：§3
@@ -90,6 +88,21 @@ const TOOL_LOOP = `sequenceDiagram
             TL-->>Node: 最终答案 退出循环
         end
     end`;
+
+// ── 图 7：FileService（Memory Pointer 模式）──
+// 来源：design §3-§4，统一文件访问层
+const FILE_SERVICE = `flowchart TB
+    UP[用户上传文件] --> ST[FileService.store<br/>owner_id]
+    ST --> DISK[(落盘<br/>data_dir/files/file_id/<br/>原文 + pages_json)]
+    ST --> META[(SQLite 元数据<br/>page_count / size / mime)]
+    DISK --> SPLIT{场景}
+    SPLIT -->|workflow| WF["state.prd_file_id<br/>(pointer, 不存全文)"]
+    SPLIT -->|chatbot| CB[文件关联 session<br/>owner_id = session_id]
+    WF --> NODES[retrieve / understand / identify<br/>节点按需读取]
+    CB --> AGENT[Agent SDK Claude<br/>自主调 read_file tool]
+    NODES --> READ[FileService<br/>read_pages / search / get_info]
+    AGENT --> READ
+    READ -.读取.-> DISK`;
 
 function DiagramSection({
   title,
@@ -118,9 +131,10 @@ export function ArchitectureView() {
       <div className="mb-6 rounded-lg border border-sky-200 bg-sky-50 p-4">
         <p className="text-sm font-medium text-sky-900">系统定位</p>
         <p className="mt-1 text-xs leading-5 text-sky-700">
-          Porto 是固定 workflow 骨架 + 节点内 agentic 的混合架构。路径预先编排好
-          （retrieve → understand → identify → generate → evaluate），每个节点内部
-          LLM 用 tool-calling loop 自主取数、用 evaluator-optimizer loop 自我精修。
+          Porto 是固定 workflow 骨架 + 节点内 agentic 的混合架构。主路径预先编排好
+          （retrieve → understand → identify → generate），identify 末以 Send fan-out
+          并发启动 spec 子图；每个节点内部 LLM 用 tool-calling loop 自主取数，子图内
+          用 evaluator-optimizer loop 自我精修并独立交付。
         </p>
       </div>
 
@@ -150,11 +164,19 @@ export function ArchitectureView() {
         chart={PROMPT_ASSEMBLY}
       />
 
+      {/* 文件服务（Memory Pointer）*/}
+      <h2 className="mb-4 text-base font-semibold">文件服务（Memory Pointer）</h2>
+      <DiagramSection
+        title="FileService：统一文件访问层"
+        description="store 落盘 + 预提取 pages_json，元数据入 SQLite。state 只存 prd_file_id（pointer，不存全文），workflow 节点与 chatbot agent 共用同一 FileService.read_pages/search/get_info 按需读取。"
+        chart={FILE_SERVICE}
+      />
+
       {/* Workflow loop */}
       <h2 className="mb-4 text-base font-semibold">Workflow Loop</h2>
       <DiagramSection
         title="LangGraph 状态机"
-        description="5 个节点串成状态图，state 在节点间流转。evaluate 算出 needs_rework 时条件回边到 identify，rework_passes 计数器防无限回边。"
+        description="主路径 retrieve→understand→identify→generate，state 只带 prd_file_id pointer 不存全文。identify 末以 Send fan-out（并发=spec_refine_concurrency，Semaphore 限流）启动 spec 子图，各 spec 在子图内部 critique→refine 自我精修后独立交付。"
         chart={LANGGRAPH}
       />
       <DiagramSection
