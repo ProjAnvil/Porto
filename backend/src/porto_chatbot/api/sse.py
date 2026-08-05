@@ -55,4 +55,6 @@ def _chat_request_from_stream_body(body: dict[str, Any]) -> ChatRequest:
         top_k=body.get("top_k"),
         rag=body.get("rag"),
         agent=body.get("agent"),
+        # Task 11: 转发聊天附件 file_ids(ai sdk stream body 顶层字段)。
+        file_ids=list(body.get("file_ids") or []),
     )

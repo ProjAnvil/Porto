@@ -22,6 +22,9 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
     rag: RagSettingsPayload | None = None
     agent: AgentSettingsPayload | None = None
+    # Task 11: 聊天附件 — 上传后由 /api/chat/files 返回的 file_id 列表,
+    # agent_sdk chat 注入 (Task 12) 后节点经 read_file tool 访问原文。
+    file_ids: list[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
