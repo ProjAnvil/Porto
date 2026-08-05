@@ -108,6 +108,45 @@ def _budget_chars(settings: Any) -> int:
 # ----------------------------- 节点 ----------------------------- #
 
 
+def _resolve_ctx(state: SpecSubgraphState, config=None) -> SpecContext:
+    """构造 ``SpecContext``：优先从 ``config`` 取 agent（父图场景），否则从 ``state`` 读 ctx_*（单元测试）。
+
+    Task 9 C1 修复的核心约束：
+
+    - **Send payload 只含可序列化字段** ``{sub, ctx_state}``：父图 checkpointer 会序列化
+      pending sends，LLMClient/Backend/Semaphore 等运行时对象不可被 msgpack 序列化。
+    - **子图节点的 return 也会被父图 checkpointer 序列化**（pending writes）：所以 ctx_*
+      也不能出现在子图节点 return 中。
+
+    因此 ``ctx_*`` 既不在 Send payload 也不在子图节点 return 里 —— 每个子图节点/router
+    调用本函数从 ``config["configurable"]["agent"]`` 临时取 agent 构造 ``SpecContext``，
+    仅活在本次调用期间，不入子图累积 state。
+
+    单元测试（``build_spec_subgraph().invoke(state)`` 不传 config、无 checkpointer）
+    走 fallback：从 ``state`` 读 ctx_* 字段（``init_spec`` 在无 config 时会回传 ctx_*
+    供后续节点读，子图无 checkpointer 不会触发序列化崩溃）。
+    """
+    agent = (config or {}).get("configurable", {}).get("agent")
+    if agent is not None:
+        return SpecContext(
+            backend=agent.backend,
+            llm=agent.llm,
+            state=state.get("ctx_state") or {},
+            settings=agent.settings,
+            vector_store=agent.vector_store,
+            critic_llm=agent.critic_llm,
+        )
+    return _ctx(state)
+
+
+def _agent_sema(state: SpecSubgraphState, config=None):
+    """取 ``ctx_sema``：config 有 agent 从 agent 取，否则从 state 读（单元测试向后兼容）。"""
+    agent = (config or {}).get("configurable", {}).get("agent")
+    if agent is not None:
+        return getattr(agent, "_spec_sema", None)
+    return state.get("ctx_sema")
+
+
 def init_spec(state: SpecSubgraphState, *, config=None) -> dict:
     """生成首版 spec（入口经 ``ctx_sema`` 限流，M3）。
 
@@ -117,30 +156,51 @@ def init_spec(state: SpecSubgraphState, *, config=None) -> dict:
 
     **运行时引用来源(Task 9)**:父图经 ``Send`` fan-out 时,Send payload 只含可序列化字段
     (会被 checkpoint),agent 的 backend/llm/settings/.../sema 经 ``config`` 传递。
-    本节点从 ``config["configurable"]["agent"]`` 取出并填入子图 state。单元测试可直接在
-    state 里放 ``ctx_*`` 字段(不传 config),向后兼容。
+    本节点从 ``config["configurable"]["agent"]`` 取出并填入本地 state 供本次调用使用。
 
     M3 并发限流:``ctx_sema`` 是 agent 构造的 ``threading.Semaphore(spec_refine_concurrency)``。
     ``with`` 包住 init 主体(含 ``generate_initial_spec`` 的 LLM/工具调用,最耗时阶段),
     异常时自动释放。LangGraph 同步 fan-out 下为语义限流;async/pool 执行器下生效为真实信号量。
+
+    **C1 修复(Task 9 review)**:ctx_* 不能出现在子图节点 return 中(父图 checkpointer
+    会序列化 pending writes → msgpack 崩溃)。所以本节点在父图场景(config 有 agent)不回传
+    ctx_*,后续 critique/refine/finalize 通过 ``_resolve_ctx`` 从 config 取 agent。
+    单元测试场景(无 config、无 checkpointer)下回传 ctx_* 让后续节点从 state 读(向后兼容)。
     """
-    # 从 config 注入运行时引用(Send payload 序列化约束);无 config 时(state 已含 ctx_*)跳过
     agent = (config or {}).get("configurable", {}).get("agent")
     if agent is not None:
-        state = {
+        # 父图场景:从 config 注入 ctx_* 到本地 state 供 _init_spec_impl 使用,return 不回传
+        local_state = {
             **state,
             "ctx_backend": agent.backend,
             "ctx_llm": agent.llm,
             "ctx_settings": agent.settings,
             "ctx_vector_store": agent.vector_store,
             "ctx_critic_llm": agent.critic_llm,
-            "ctx_sema": agent._spec_sema,
+            "ctx_sema": getattr(agent, "_spec_sema", None),
         }
+        sema = agent._spec_sema if hasattr(agent, "_spec_sema") else None
+        if sema is not None:
+            with sema:
+                return _init_spec_impl(local_state)
+        return _init_spec_impl(local_state)
+
+    # 单元测试场景:state 已含 ctx_*,return 回传 ctx_* 让后续节点(同无 config)从 state 读
     sema = state.get("ctx_sema")
     if sema is not None:
         with sema:
-            return _init_spec_impl(state)
-    return _init_spec_impl(state)
+            result = _init_spec_impl(state)
+    else:
+        result = _init_spec_impl(state)
+    result.update({
+        "ctx_backend": state.get("ctx_backend"),
+        "ctx_llm": state.get("ctx_llm"),
+        "ctx_settings": state.get("ctx_settings"),
+        "ctx_vector_store": state.get("ctx_vector_store"),
+        "ctx_critic_llm": state.get("ctx_critic_llm"),
+        "ctx_sema": state.get("ctx_sema"),
+    })
+    return result
 
 
 def _init_spec_impl(state: SpecSubgraphState) -> dict:
@@ -189,15 +249,18 @@ def _init_spec_impl(state: SpecSubgraphState) -> dict:
     }
 
 
-def critique(state: SpecSubgraphState) -> dict:
+def critique(state: SpecSubgraphState, *, config=None) -> dict:
     """评判 ``current_spec``，更新 ``attempts`` / ``best_*`` / ``feedback`` / ``iteration``。
 
     工具截断 / LLM 未启用 → 空返回（_should_stop 会直接路由 finalize）。
+
+    C1 修复:``ctx`` 从 ``_resolve_ctx(state, config)`` 取 —— 父图场景从 config 取 agent
+    (ctx_* 不入子图 state),单元测试场景从 state 读 ctx_*。
     """
     # 工具截断 → 交给 finalize，不再 critique
     if state.get("truncated"):
         return {}
-    ctx = _ctx(state)
+    ctx = _resolve_ctx(state, config)
     if not _llm_active(ctx):
         return {}
 
@@ -254,7 +317,7 @@ def critique(state: SpecSubgraphState) -> dict:
     }
 
 
-def _should_stop(state: SpecSubgraphState) -> str:
+def _should_stop(state: SpecSubgraphState, *, config=None) -> str:
     """四重终止条件路由。
 
     等价 ``loop.py`` 循环内的 break 条件（任一命中 → ``finalize``，否则 ``refine``）：
@@ -265,12 +328,15 @@ def _should_stop(state: SpecSubgraphState) -> str:
     ④ ``used_chars>budget*4``（预算上限）
 
     工具截断 / LLM 未启用 / critic 不可用 → 也走 ``finalize``。
+
+    C1 修复:``ctx`` 从 ``_resolve_ctx(state, config)`` 取 —— LangGraph 的
+    ``add_conditional_edges`` router 经 ``coerce_to_runnable`` 包装,会自动注入 config。
     """
     # 工具截断 → 直接 finalize
     if state.get("truncated"):
         return "finalize"
 
-    ctx = _ctx(state)
+    ctx = _resolve_ctx(state, config)
     if not _llm_active(ctx):
         return "finalize"
 
@@ -303,9 +369,9 @@ def _should_stop(state: SpecSubgraphState) -> str:
     return "refine"
 
 
-def refine(state: SpecSubgraphState) -> dict:
+def refine(state: SpecSubgraphState, *, config=None) -> dict:
     """根据 ``feedback`` 修订 ``current_spec``，累加 ``used_chars``。"""
-    ctx = _ctx(state)
+    ctx = _resolve_ctx(state, config)
     sub: Subsystem = state["sub"]
     spec = state["current_spec"]
     feedback = state.get("feedback", "")
@@ -330,13 +396,13 @@ def _emit(sub_name: str, spec_result: SpecResult) -> dict:
     }
 
 
-def finalize(state: SpecSubgraphState) -> dict:
+def finalize(state: SpecSubgraphState, *, config=None) -> dict:
     """选 ``best_spec``，输出 ``spec_results[sub.name] = SpecResult(...)``。
 
     ``truncated`` 字段语义与 ``loop.py`` 一致：仅 max_iter / budget 命中为 ``True``；
     工具截断（``tool_meta["truncated"]``）、达标、退化、critic 不可用均为 ``False``。
     """
-    ctx = _ctx(state)
+    ctx = _resolve_ctx(state, config)
     settings = ctx.settings
     sub: Subsystem = state["sub"]
     llm_active = _llm_active(ctx)

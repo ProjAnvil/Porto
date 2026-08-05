@@ -223,3 +223,94 @@ def test_send_fanout_merges_spec_results_e2e(tmp_path, monkeypatch):
     # specs 派生(供 workflow_store / PATCH /specs)+ current_step
     assert set(values["specs"]) == {"auth", "billing"}
     assert values["current_step"] == "generate"
+
+
+def test_send_fanout_llm_enabled_e2e(tmp_path, monkeypatch):
+    """I1(C1 修复验证):mock LLM enabled 路径的 Send fan-out 端到端。
+
+    C1 bug:``init_spec`` 从 ``config["configurable"]["agent"]`` 注入 ctx_* 到本地 state,
+    但 return 不含 ctx_* → critique/refine/finalize 看到的 state 里 ``ctx_llm=None`` →
+    ``_llm_active`` 返回 False → critique 直接返回 ``{}`` → 四重终止循环被完全跳过 →
+    spec 退化到首轮(``used_llm=False``、``iterations=0``、``attempts=[]``)。
+
+    本测试 mock ``LLMClient`` 的 ``complete_with_tools``/``complete_structured``/``complete``
+    三个入口(供 generate_initial_spec / critique_spec / refine_spec 走真 LangchainBackend),
+    让 LLM enabled 路径真实跑起来。断言 ``SpecResult.used_llm is True``、
+    ``iterations >= 1``、``attempts`` 非空 —— 只有 C1 修复(回传 ctx_*)后才会成立。
+    """
+    import porto_chatbot.agent.graph as graph_mod
+    from porto_chatbot.agent.backends import LangchainBackend
+    from porto_chatbot.llm.types import ToolLoopResult
+
+    settings = Settings(
+        kb_dirs=[tmp_path / "kb"],
+        data_dir=tmp_path / "data",
+        log_dir=tmp_path / "logs",
+        agent_provider="openai",
+        agent_model="gpt-4o",
+    )
+    settings.agent_api_key = "sk-mock"  # → llm.enabled = True(_build_client 非 None)
+    settings.spec_refine_enabled = True  # _llm_active 双开关之一
+    settings.spec_refine_max_iter = 3
+    settings.spec_refine_pass_score = 10  # mock score=5 不达标 → 跑 refine 循环
+
+    llm = LLMClient(settings)
+
+    # Mock 三个 LLM 入口,绕过真 LLM/网络
+    llm.complete_with_tools = lambda system, user, tools, *, messages=None, max_turns=None: ToolLoopResult(
+        text=f"# Mock initial spec\n\n{user}",
+        tool_calls=[],
+        turns=1,
+        truncated=False,
+        reason=None,
+    )
+    llm.complete_structured = lambda system, user, schema_hint, *, messages=None: {
+        "verdict": "needs_improvement",
+        "score": 5,  # < pass_score(10) 且 <= 历史 best → 第二轮触发退化终止
+        "feedback": "需要补充 API 错误码与数据模型字段",
+        "per_dimension": {},
+    }
+    llm.complete = lambda system, user, *, messages=None: "# Mock refined spec\n\n改进后的规格"
+
+    ag = MagicMock()
+    ag.settings = settings
+    ag.llm = llm
+    ag.backend = LangchainBackend(llm)  # 真 backend,mock 在 LLMClient 一层
+    ag.vector_store = None
+    ag.critic_llm = llm
+    ag._spec_sema = threading.Semaphore(4)
+    ag.logger.info = lambda *a, **k: None
+    ag.file_service = None
+
+    subs = [
+        Subsystem(name="auth", responsibility="认证", capabilities=["登录"], data_entities=["User"]),
+    ]
+
+    monkeypatch.setattr(
+        graph_mod.retrieve_node, "retrieve_knowledge", lambda s, *, config: {"current_step": "retrieve", "sources": []}
+    )
+    monkeypatch.setattr(
+        graph_mod.understand_node, "understand_prd", lambda s, *, config: {"current_step": "understand", "understanding": "理解"}
+    )
+    monkeypatch.setattr(
+        graph_mod.identify_node,
+        "identify_subsystems",
+        lambda s, *, config: {"current_step": "identify", "subsystems": subs},
+    )
+    # generate 用真 build_spec_subgraph() —— 不 patch
+
+    graph = build_workflow_graph(_tmp_saver(tmp_path))
+    cfg = {"configurable": {"thread_id": "w1", "agent": ag}}
+    graph.invoke({"workflow_id": "w1", "project_name": "p", "prd_file_id": "f1"}, cfg)
+    list(graph.stream(None, cfg))  # → identify(interrupt)
+    list(graph.stream(None, cfg))  # → generate fan-out → interrupt,spec_results 填充
+
+    values = graph.get_state(cfg).values
+    assert "auth" in values["spec_results"]
+    sr = values["spec_results"]["auth"]
+    assert isinstance(sr, SpecResult)
+    # C1 核心:LLM enabled 路径下,spec 真的跑了 critique/refine 循环(未退化到首轮)
+    assert sr.used_llm is True
+    assert sr.iterations >= 1
+    assert sr.attempts  # 非空
+    assert values["current_step"] == "generate"
