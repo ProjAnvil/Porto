@@ -57,6 +57,7 @@ from .payload import (
     RagSettingsPayload,
     WorkflowRequest,
 )
+from .file import FileHit, FileMeta, FileInfo
 from .spec import Critique, SpecAttempt, SpecResult
 from .workflow import AgentStep, Subsystem, WorkflowResponse
 
@@ -98,6 +99,10 @@ __all__ = [
     "RagMetrics",
     "RagCaseEvaluation",
     "RagBatchEvaluation",
+    # ── File models ──
+    "FileMeta",
+    "FileInfo",
+    "FileHit",
     # ── Enums (20) ──
     "ChatbotBackend",
     "ChatIntent",
