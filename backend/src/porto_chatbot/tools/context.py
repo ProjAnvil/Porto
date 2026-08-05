@@ -44,3 +44,4 @@ class AgentToolContext:
     vector_store: LocalVectorStore | None = None
     memory_store: Any = None  # chatbot 专属（MemoryStore），workflow 为 None
     facts_store: Any = None  # chatbot 专属（SessionFactsStore），workflow 为 None
+    file_service: Any = None  # FileService（files/service.py），未注入时为 None

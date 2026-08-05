@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from .common import SourceChunk
+from .enums import StepStatus, SubsystemType
 
 
 class AgentStep(BaseModel):
     name: str
-    status: Literal["pending", "running", "completed", "failed"] = "pending"
+    status: StepStatus = StepStatus.PENDING
     summary: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
 
 
 class Subsystem(BaseModel):
     name: str
-    type: Literal["new", "extend", "existing"] = "new"
+    type: SubsystemType = SubsystemType.NEW
     responsibility: str
     capabilities: list[str] = Field(default_factory=list)
     data_entities: list[str] = Field(default_factory=list)

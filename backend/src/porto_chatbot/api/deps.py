@@ -13,6 +13,7 @@ from ..models import AgentSettingsPayload, DocumentSettingsPayload, RagSettingsP
 from ..vector_store import LocalVectorStore
 
 if TYPE_CHECKING:
+    from ..files.service import FileService
     from ..workflow_executor import WorkflowExecutor
     from ..workflow_store import WorkflowStore
 
@@ -215,6 +216,22 @@ def get_workflow_store() -> WorkflowStore:
     return store
 
 
+def get_file_service() -> FileService:
+    """按 data_dir 缓存的 FileService 单例(懒加载,挂入现有 entry dict)。
+
+    复用 ``_ensure_rag_singletons`` 的 data_dir-keyed entry,与 WorkflowStore 等
+    其他 rag 单例共享生命周期;同一测试的 data_dir 内只构造一次。
+    """
+    from ..files.service import FileService
+
+    entry = _ensure_rag_singletons()
+    svc = entry.get("file_service")
+    if svc is None:
+        svc = FileService(current_settings())
+        entry["file_service"] = svc
+    return svc
+
+
 def _build_checkpoint_serde():
     """F1: 构造注册了 porto_chatbot.models.* 的 langgraph serde。
 
@@ -227,6 +244,7 @@ def _build_checkpoint_serde():
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
     from ..models.common import SourceChunk
+    from ..models.enums import SubsystemType
     from ..models.spec import SpecAttempt, SpecResult
     from ..models.workflow import AgentStep, Subsystem
 
@@ -237,6 +255,7 @@ def _build_checkpoint_serde():
             SourceChunk,
             SpecAttempt,
             SpecResult,
+            SubsystemType,
         ]
     )
 
@@ -295,12 +314,12 @@ def reset_rag_singletons() -> None:
     for entry in _rag_singletons.values():
         try:
             entry["supervisor"].stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("supervisor stop failed: %s", exc)
         try:
             entry["health"].stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("health stop failed: %s", exc)
         try:
             # Conditional close: if a workflow worker (and its langgraph-internal
             # ThreadPoolExecutor) is still mid-invoke on this conn, closing would
@@ -315,8 +334,8 @@ def reset_rag_singletons() -> None:
             if ex is not None and ex.is_any_running():
                 continue  # worker still running; leak conn to avoid SIGSEGV
             entry["_checkpoint_conn"].close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("checkpoint conn close failed: %s", exc)
     _rag_singletons = {}
 
 

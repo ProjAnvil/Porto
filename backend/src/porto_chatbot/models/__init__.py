@@ -10,13 +10,41 @@ from .chat import (
 )
 from .common import (
     DependencyHealth,
-    DependencyName,
     FeatureAvailability,
     HealthSnapshot,
     IndexJobStatus,
     IndexStats,
     IndexStatsView,
     SourceChunk,
+)
+from .enums import (
+    ChatbotBackend,
+    ChatIntent,
+    ChatRole,
+    DependencyName,
+    DependencyStatus,
+    DocumentParseMode,
+    EmbeddingProvider,
+    FactAction,
+    FactCategory,
+    FactStatus,
+    FeatureName,
+    IndexJobState,
+    LLMProvider,
+    LocalParser,
+    RetrievalMethod,
+    SpecVerdict,
+    StepStatus,
+    SubsystemType,
+    TruncationReason,
+    WorkflowRunState,
+)
+from .evaluation import (
+    RagBatchEvaluation,
+    RagCaseEvaluation,
+    RagMetrics,
+    WorkflowCheck,
+    WorkflowEvaluation,
 )
 from .payload import (
     AgentSettingsPayload,
@@ -29,7 +57,8 @@ from .payload import (
     RagSettingsPayload,
     WorkflowRequest,
 )
-from .spec import Critique, SpecAttempt, SpecResult, Verdict
+from .file import FileHit, FileMeta, FileInfo
+from .spec import Critique, SpecAttempt, SpecResult
 from .workflow import AgentStep, Subsystem, WorkflowResponse
 
 __all__ = [
@@ -39,7 +68,9 @@ __all__ = [
     "IndexStatsView",
     "DependencyHealth",
     "DependencyName",
+    "DependencyStatus",
     "FeatureAvailability",
+    "FeatureName",
     "HealthSnapshot",
     "RagSettingsPayload",
     "AgentSettingsPayload",
@@ -59,8 +90,35 @@ __all__ = [
     "Subsystem",
     "WorkflowResponse",
     "AgentStep",
-    "Verdict",
     "Critique",
     "SpecAttempt",
     "SpecResult",
+    # ── Evaluation models ──
+    "WorkflowCheck",
+    "WorkflowEvaluation",
+    "RagMetrics",
+    "RagCaseEvaluation",
+    "RagBatchEvaluation",
+    # ── File models ──
+    "FileMeta",
+    "FileInfo",
+    "FileHit",
+    # ── Enums (20) ──
+    "ChatbotBackend",
+    "ChatIntent",
+    "ChatRole",
+    "DocumentParseMode",
+    "EmbeddingProvider",
+    "FactAction",
+    "FactCategory",
+    "FactStatus",
+    "IndexJobState",
+    "LLMProvider",
+    "LocalParser",
+    "RetrievalMethod",
+    "SpecVerdict",
+    "StepStatus",
+    "SubsystemType",
+    "TruncationReason",
+    "WorkflowRunState",
 ]

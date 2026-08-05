@@ -8,11 +8,13 @@ helper(``_build_critic_llm`` 构造评判模型,``_step`` 记录步骤完成日�
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from ..llm import LLMClient
 from ..logging_utils import get_component_logger
 from ..models import AgentStep
+from ..models.enums import StepStatus
 from ..settings import Settings
 from ..vector_store import LocalVectorStore
 
@@ -30,15 +32,31 @@ class PortoAgent:
         settings: Settings,
         vector_store: LocalVectorStore | None = None,
         llm: LLMClient | None = None,
+        *,
+        file_service: Any = None,
     ):
+        """``file_service`` 由 workflow_executor._build_agent 注入(FileService 实例)。
+
+        默认 None:节点经 ``getattr(agent, "file_service", None)`` 取到 None 时
+        回退到 ``prd_file_id``/``prd_text`` 内联文本路径(供单元测试 / text 路由使用)。
+        """
         self.settings = settings
         self.logger = get_component_logger("agent", settings)
         self.vector_store = vector_store or LocalVectorStore(settings)
         self.llm = llm or LLMClient(settings)
+        self.file_service = file_service
         self.critic_llm = self._build_critic_llm()
-        from .factory import create_backend
-        self.backend = create_backend(settings, llm=self.llm, scope="workflow")
-        self.logger.info("agent ready backend=%s", type(self.backend).__name__)
+        from .factory import BackendScope, create_backend
+        self.backend = create_backend(settings, llm=self.llm, scope=BackendScope.WORKFLOW)
+        # M3: Send fan-out 并发限流 —— dispatch_specs 注入各子图实例，init_spec 入口 acquire。
+        # LangGraph 同步执行模型下不会产生真并发（顺序 fan-out），语义上限制同时活跃的
+        # spec 子图实例数；若后续切到 async/pool 执行器则生效为真实信号量。
+        self._spec_sema = threading.Semaphore(settings.spec_refine_concurrency)
+        self.logger.info(
+            "agent ready backend=%s file_service=%s",
+            type(self.backend).__name__,
+            type(file_service).__name__ if file_service else "(none)",
+        )
 
     def _build_critic_llm(self) -> LLMClient:
         """构造 spec loop 的评判模型。未配 critic_* 时回退到 generator(``self.llm``)。
@@ -72,4 +90,4 @@ class PortoAgent:
         节点把它 spread 进自己的返回值(steps 走 ``operator.add`` reducer 追加)。
         """
         self.logger.info("step completed name=%s summary=%s", name, summary)
-        return {"steps": [AgentStep(name=name, status="completed", summary=summary, data=data)]}
+        return {"steps": [AgentStep(name=name, status=StepStatus.COMPLETED, summary=summary, data=data)]}

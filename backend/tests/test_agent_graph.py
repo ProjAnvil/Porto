@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import operator
 import sqlite3
+import threading
 from typing import get_type_hints
 from unittest.mock import MagicMock
 
@@ -10,6 +11,9 @@ from porto_chatbot.agent.graph import INTERRUPT_AFTER, STEPS, build_workflow_gra
 from porto_chatbot.agent.nodes import retrieve as retrieve_node
 from porto_chatbot.agent.nodes import understand as understand_node
 from porto_chatbot.agent.state import PortoAgentState, _dict_merge
+from porto_chatbot.llm import LLMClient
+from porto_chatbot.models import SpecResult, Subsystem
+from porto_chatbot.settings import Settings
 
 
 def test_dict_merge_reducer():
@@ -69,13 +73,21 @@ def _tmp_saver(tmp_path):
 
 
 def test_constants_match_design():
-    assert STEPS == ["retrieve", "understand", "identify", "generate", "evaluate"]
+    assert STEPS == ["retrieve", "understand", "identify", "generate"]
     assert INTERRUPT_AFTER == ["understand", "identify", "generate"]
 
 
 def test_graph_interrupt_points_with_standin_nodes(tmp_path, monkeypatch):
-    """用 stand-in 节点替换真节点,验证拓扑 + interrupt_after 位置(不依赖 LLM/检索)。"""
+    """用 stand-in 节点替换真节点,验证拓扑 + interrupt_after 位置(不依赖 LLM/检索)。
+
+    新拓扑:``identify --(dispatch_specs Send)--> generate(子图 fan-out) --> END``。
+    generate 节点是 stand-in 子图(monkey-patch build_spec_subgraph);dispatch_specs
+    用真的,验证 ``identify → generate`` 的 Send fan-out + interrupt 位置。
+    """
+    from langgraph.graph import END, START, StateGraph
+
     import porto_chatbot.agent.graph as graph_mod
+    from porto_chatbot.specs.subgraph import SpecSubgraphState
 
     order: list[str] = []
 
@@ -85,30 +97,220 @@ def test_graph_interrupt_points_with_standin_nodes(tmp_path, monkeypatch):
             return {"current_step": name}
         return fn
 
-    # 临时把 _NODE_FNS 指向 stand-in(只测拓扑,不跑真节点)
-    saved = dict(graph_mod._NODE_FNS)
-    for n in STEPS:
-        graph_mod._NODE_FNS[n] = mk(n)
-    try:
-        graph = build_workflow_graph(_tmp_saver(tmp_path))
-    finally:
-        graph_mod._NODE_FNS.clear()
-        graph_mod._NODE_FNS.update(saved)
+    def identify_fn(state, *, config):
+        order.append("identify")
+        return {
+            "current_step": "identify",
+            "subsystems": [
+                Subsystem(name="s1", responsibility="r1", capabilities=[], data_entities=[]),
+                Subsystem(name="s2", responsibility="r2", capabilities=[], data_entities=[]),
+            ],
+        }
 
-    cfg = {"configurable": {"thread_id": "w1", "agent": None}}
-    graph.invoke({}, cfg)
+    def gen_node(state):
+        # stand-in 子图节点:每个 Send 实例记一次 "generate"
+        order.append("generate")
+        sub_name = state["sub"].name
+        return {
+            "specs": {sub_name: "spec-text"},
+            "spec_results": {sub_name: "stand-in"},
+            "current_step": "generate",
+        }
+
+    def standin_subgraph():
+        g = StateGraph(SpecSubgraphState)
+        g.add_node("gen", gen_node)
+        g.add_edge(START, "gen")
+        g.add_edge("gen", END)
+        return g.compile()
+
+    monkeypatch.setattr(graph_mod.retrieve_node, "retrieve_knowledge", mk("retrieve"))
+    monkeypatch.setattr(graph_mod.understand_node, "understand_prd", mk("understand"))
+    monkeypatch.setattr(graph_mod.identify_node, "identify_subsystems", identify_fn)
+    monkeypatch.setattr(graph_mod, "build_spec_subgraph", standin_subgraph)
+
+    graph = build_workflow_graph(_tmp_saver(tmp_path))
+
+    ag = MagicMock()
+    ag.backend = ag.vector_store = ag.critic_llm = None
+    ag.llm = MagicMock(enabled=False)
+    ag.settings = MagicMock()
+    ag._spec_sema = None
+    ag.logger.info = lambda *a, **k: None
+
+    cfg = {"configurable": {"thread_id": "w1", "agent": ag}}
+    graph.invoke({"workflow_id": "w1"}, cfg)
     assert order == ["retrieve", "understand"]          # 停在 understand 后
     assert list(graph.get_state(cfg).next) == ["identify"]
 
     order.clear()
     list(graph.stream(None, cfg))
     assert order == ["identify"]                         # 推一格到 identify
-    assert list(graph.get_state(cfg).next) == ["generate"]
+    # identify 的 conditional 返回 2 个 Send → next 有 2 个 generate 实例
+    assert list(graph.get_state(cfg).next) == ["generate", "generate"]
 
     order.clear()
-    list(graph.stream(None, cfg))                        # generate 后停
-    assert order == ["generate"]
-    order.clear()
-    list(graph.stream(None, cfg))                        # evaluate → END
-    assert order == ["evaluate"]
-    assert list(graph.get_state(cfg).next) == []
+    list(graph.stream(None, cfg))                        # generate fan-out(2 sub)→ interrupt
+    assert order == ["generate", "generate"]             # 2 个子系统各一个 Send 实例
+    assert list(graph.get_state(cfg).next) == []         # generate→END,interrupt 后 next 空
+
+
+# ----------------------------- Task 9 I1: Send fan-out 端到端 ----------------------------- #
+
+
+def test_send_fanout_merges_spec_results_e2e(tmp_path, monkeypatch):
+    """I1:真 workflow graph Send fan-out → spec_results 有各子系统 key。
+
+    锁定审计 B1:父图 ``_dict_merge`` reducer 合并各子图实例的 ``spec_results``,
+    多子系统产物不被 LangGraph 静默丢弃。mock retrieve/understand/identify 为 stand-in
+    (identify 产出 2 个 Subsystem),generate 用**真子图**(模板降级路径,无 LLM 调用),
+    跑到 END 断言两个 key 都在 + specs 派生 + current_step。
+    """
+    import porto_chatbot.agent.graph as graph_mod
+
+    settings = Settings(
+        kb_dirs=[tmp_path / "kb"],
+        data_dir=tmp_path / "data",
+        log_dir=tmp_path / "logs",
+        agent_provider="openai",
+        agent_model="m",
+    )
+    settings.agent_api_key = None  # llm.enabled=False → 子图模板降级,不碰真 LLM
+    settings.spec_refine_enabled = False
+    llm = LLMClient(settings)
+
+    ag = MagicMock()
+    ag.settings = settings
+    ag.llm = llm
+    ag.backend = None
+    ag.vector_store = None
+    ag.critic_llm = llm
+    ag._spec_sema = threading.Semaphore(4)
+    ag.logger.info = lambda *a, **k: None
+    ag.file_service = None
+
+    subs = [
+        Subsystem(name="auth", responsibility="认证", capabilities=["登录"], data_entities=["User"]),
+        Subsystem(name="billing", responsibility="账单", capabilities=["出账"], data_entities=["Bill"]),
+    ]
+
+    monkeypatch.setattr(
+        graph_mod.retrieve_node, "retrieve_knowledge", lambda s, *, config: {"current_step": "retrieve", "sources": []}
+    )
+    monkeypatch.setattr(
+        graph_mod.understand_node, "understand_prd", lambda s, *, config: {"current_step": "understand", "understanding": "理解"}
+    )
+    monkeypatch.setattr(
+        graph_mod.identify_node,
+        "identify_subsystems",
+        lambda s, *, config: {"current_step": "identify", "subsystems": subs},
+    )
+    # generate 用真 build_spec_subgraph() —— 不 patch
+
+    graph = build_workflow_graph(_tmp_saver(tmp_path))
+    cfg = {"configurable": {"thread_id": "w1", "agent": ag}}
+    graph.invoke({"workflow_id": "w1", "project_name": "p", "prd_file_id": "f1"}, cfg)
+    list(graph.stream(None, cfg))  # → identify(interrupt)
+    list(graph.stream(None, cfg))  # → generate fan-out(2 实例)→ interrupt,spec_results 填充
+
+    values = graph.get_state(cfg).values
+    # B1 核心:两个子系统的 spec_results 都在(reducer 合并生效)
+    assert set(values["spec_results"]) == {"auth", "billing"}
+    for sr in values["spec_results"].values():
+        assert isinstance(sr, SpecResult)
+        assert sr.used_llm is False  # 模板降级
+        assert sr.final  # 非空
+    # specs 派生(供 workflow_store / PATCH /specs)+ current_step
+    assert set(values["specs"]) == {"auth", "billing"}
+    assert values["current_step"] == "generate"
+
+
+def test_send_fanout_llm_enabled_e2e(tmp_path, monkeypatch):
+    """I1(C1 修复验证):mock LLM enabled 路径的 Send fan-out 端到端。
+
+    C1 bug:``init_spec`` 从 ``config["configurable"]["agent"]`` 注入 ctx_* 到本地 state,
+    但 return 不含 ctx_* → critique/refine/finalize 看到的 state 里 ``ctx_llm=None`` →
+    ``_llm_active`` 返回 False → critique 直接返回 ``{}`` → 四重终止循环被完全跳过 →
+    spec 退化到首轮(``used_llm=False``、``iterations=0``、``attempts=[]``)。
+
+    本测试 mock ``LLMClient`` 的 ``complete_with_tools``/``complete_structured``/``complete``
+    三个入口(供 generate_initial_spec / critique_spec / refine_spec 走真 LangchainBackend),
+    让 LLM enabled 路径真实跑起来。断言 ``SpecResult.used_llm is True``、
+    ``iterations >= 1``、``attempts`` 非空 —— 只有 C1 修复(回传 ctx_*)后才会成立。
+    """
+    import porto_chatbot.agent.graph as graph_mod
+    from porto_chatbot.agent.backends import LangchainBackend
+    from porto_chatbot.llm.types import ToolLoopResult
+
+    settings = Settings(
+        kb_dirs=[tmp_path / "kb"],
+        data_dir=tmp_path / "data",
+        log_dir=tmp_path / "logs",
+        agent_provider="openai",
+        agent_model="gpt-4o",
+    )
+    settings.agent_api_key = "sk-mock"  # → llm.enabled = True(_build_client 非 None)
+    settings.spec_refine_enabled = True  # _llm_active 双开关之一
+    settings.spec_refine_max_iter = 3
+    settings.spec_refine_pass_score = 10  # mock score=5 不达标 → 跑 refine 循环
+
+    llm = LLMClient(settings)
+
+    # Mock 三个 LLM 入口,绕过真 LLM/网络
+    llm.complete_with_tools = lambda system, user, tools, *, messages=None, max_turns=None: ToolLoopResult(
+        text=f"# Mock initial spec\n\n{user}",
+        tool_calls=[],
+        turns=1,
+        truncated=False,
+        reason=None,
+    )
+    llm.complete_structured = lambda system, user, schema_hint, *, messages=None: {
+        "verdict": "needs_improvement",
+        "score": 5,  # < pass_score(10) 且 <= 历史 best → 第二轮触发退化终止
+        "feedback": "需要补充 API 错误码与数据模型字段",
+        "per_dimension": {},
+    }
+    llm.complete = lambda system, user, *, messages=None: "# Mock refined spec\n\n改进后的规格"
+
+    ag = MagicMock()
+    ag.settings = settings
+    ag.llm = llm
+    ag.backend = LangchainBackend(llm)  # 真 backend,mock 在 LLMClient 一层
+    ag.vector_store = None
+    ag.critic_llm = llm
+    ag._spec_sema = threading.Semaphore(4)
+    ag.logger.info = lambda *a, **k: None
+    ag.file_service = None
+
+    subs = [
+        Subsystem(name="auth", responsibility="认证", capabilities=["登录"], data_entities=["User"]),
+    ]
+
+    monkeypatch.setattr(
+        graph_mod.retrieve_node, "retrieve_knowledge", lambda s, *, config: {"current_step": "retrieve", "sources": []}
+    )
+    monkeypatch.setattr(
+        graph_mod.understand_node, "understand_prd", lambda s, *, config: {"current_step": "understand", "understanding": "理解"}
+    )
+    monkeypatch.setattr(
+        graph_mod.identify_node,
+        "identify_subsystems",
+        lambda s, *, config: {"current_step": "identify", "subsystems": subs},
+    )
+    # generate 用真 build_spec_subgraph() —— 不 patch
+
+    graph = build_workflow_graph(_tmp_saver(tmp_path))
+    cfg = {"configurable": {"thread_id": "w1", "agent": ag}}
+    graph.invoke({"workflow_id": "w1", "project_name": "p", "prd_file_id": "f1"}, cfg)
+    list(graph.stream(None, cfg))  # → identify(interrupt)
+    list(graph.stream(None, cfg))  # → generate fan-out → interrupt,spec_results 填充
+
+    values = graph.get_state(cfg).values
+    assert "auth" in values["spec_results"]
+    sr = values["spec_results"]["auth"]
+    assert isinstance(sr, SpecResult)
+    # C1 核心:LLM enabled 路径下,spec 真的跑了 critique/refine 循环(未退化到首轮)
+    assert sr.used_llm is True
+    assert sr.iterations >= 1
+    assert sr.attempts  # 非空
+    assert values["current_step"] == "generate"

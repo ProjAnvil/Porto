@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .models.enums import (
+    ChatbotBackend,
+    DocumentParseMode,
+    EmbeddingProvider,
+    LLMProvider,
+    LocalParser,
+    RetrievalMethod,
+)
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
@@ -23,10 +31,10 @@ class Settings(BaseSettings):
     # 捆绑部署：前端静态导出（next build:static）产物目录，若存在则由后端同源托管
     static_dir: Path = BACKEND_DIR / "static"
     embedding_dimensions: int = 384
-    embedding_provider: Literal["local", "ollama"] = "local"
+    embedding_provider: EmbeddingProvider = EmbeddingProvider.LOCAL
     embedding_model: str = "qwen3-embedding:0.6b"
     embedding_base_url: str = "http://127.0.0.1:11434"
-    vector_backend: Literal["chroma"] = "chroma"
+    vector_backend: str = "chroma"
     vector_collection: str = "porto_kb"
     memory_collection: str = "porto_memory"
     memory_compact_threshold: int = Field(default=20, ge=4)
@@ -36,7 +44,7 @@ class Settings(BaseSettings):
     facts_max_per_category: int = Field(default=20, ge=1, le=100)
     facts_similarity_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     facts_recent_context_turns: int = Field(default=6, ge=1, le=20)
-    facts_provider: Literal["openai", "anthropic"] | None = None
+    facts_provider: LLMProvider | None = None
     facts_model: str | None = None
     context_char_budget: int = Field(default=16000, ge=1000)
     max_chunk_chars: int = 1400
@@ -44,11 +52,11 @@ class Settings(BaseSettings):
     top_k: int = 6
 
     # --- Agent 引擎选择 ---
-    chatbot_backend: Literal["langchain", "agent_sdk"] = "langchain"
-    workflow_backend: Literal["langchain", "agent_sdk"] = "langchain"
+    chatbot_backend: ChatbotBackend = ChatbotBackend.LANGCHAIN
+    workflow_backend: ChatbotBackend = ChatbotBackend.LANGCHAIN
 
-    agent_provider: Literal["openai", "anthropic"] = Field(
-        default="openai",
+    agent_provider: LLMProvider = Field(
+        default=LLMProvider.OPENAI,
         validation_alias="LANGCHAIN_AGENT_PROVIDER",
     )
     agent_api_key: str | None = Field(default=None, validation_alias="LANGCHAIN_API_KEY")
@@ -61,7 +69,7 @@ class Settings(BaseSettings):
     agent_max_tokens: int = Field(default=8000, validation_alias="LANGCHAIN_MAX_TOKENS")
 
     # --- Critic（spec loop 评判模型，缺省回退到 agent_*）---
-    critic_provider: Literal["openai", "anthropic"] | None = None
+    critic_provider: LLMProvider | None = None
     critic_api_key: str | None = None
     critic_base_url: str | None = None
     critic_model: str | None = None
@@ -71,7 +79,7 @@ class Settings(BaseSettings):
     # --- Spec refine loop（Phase 2）---
     spec_refine_enabled: bool = True
     spec_refine_max_iter: int = Field(default=3, ge=0, le=10)
-    spec_refine_concurrency: int = Field(default=3, ge=1, le=10)
+    spec_refine_concurrency: int = Field(default=4, ge=1, le=10)
     spec_refine_pass_score: int = Field(default=10, ge=0, le=12)
     spec_refine_budget_tokens: int = Field(default=40000, ge=1000)
 
@@ -96,9 +104,15 @@ class Settings(BaseSettings):
     # --- LLM 请求超时（秒），抗单次调用挂死 ---
     agent_request_timeout: int = Field(default=120, ge=10)
 
+    # --- Agent SDK 子进程保护（抗 Claude CLI 挂起）---
+    # Claude CLI 子进程无 stdout 输出的超时（秒），防止多轮工具调用后静默挂起
+    agent_sdk_idle_timeout: int = Field(default=120, ge=10)
+    # 单次 MCP 工具调用超时（秒）
+    agent_tool_timeout: int = Field(default=60, ge=5)
+
     # --- PRD 文件解析 ---
-    document_parse_mode: Literal["local", "native", "hybrid"] = "hybrid"
-    document_local_parser: Literal["pypdf", "docling"] = "pypdf"
+    document_parse_mode: DocumentParseMode = DocumentParseMode.HYBRID
+    document_local_parser: LocalParser = LocalParser.PYPDF
     document_max_tokens: int = Field(default=16000, ge=1000, le=128000)
     document_max_upload_mb: int = Field(default=20, ge=1, le=200)
     document_max_pdf_pages: int = Field(default=200, ge=1, le=1000)
@@ -108,7 +122,7 @@ class Settings(BaseSettings):
     health_probe_timeout: int = Field(default=5, ge=1)
 
     # --- 检索算法（vector / bm25 / hybrid）---
-    retrieval_method: Literal["vector", "bm25", "hybrid"] = "hybrid"
+    retrieval_method: RetrievalMethod = RetrievalMethod.HYBRID
     bm25_top_k: int = Field(default=20, ge=1)
     # hybrid 融合时向量检索的权重（llama-index QueryFusionRetriever RRF），BM25 权重 = 1 - 该值
     hybrid_vector_weight: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -117,7 +131,7 @@ class Settings(BaseSettings):
     rerank_enabled: bool = False
     rerank_top_n: int = Field(default=5, ge=1, le=50)
     # 缺省复用 agent_provider / agent_model / agent_api_key / agent_base_url
-    rerank_provider: Literal["openai", "anthropic"] | None = None
+    rerank_provider: LLMProvider | None = None
     rerank_model: str | None = None
     rerank_choice_batch_size: int = Field(default=5, ge=1, le=20)
 
@@ -155,6 +169,14 @@ class Settings(BaseSettings):
     @property
     def settings_db_path(self) -> Path:
         return self.data_dir / "settings.sqlite3"
+
+    @property
+    def files_db_path(self) -> Path:
+        return self.data_dir / "files.sqlite3"
+
+    @property
+    def files_dir(self) -> Path:
+        return self.data_dir / "files"
 
 
 settings = Settings()

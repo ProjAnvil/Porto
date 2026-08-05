@@ -31,6 +31,7 @@ import {
   Settings,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownView } from "./markdown-view";
@@ -51,6 +52,7 @@ import {
   saveAppSettings,
   saveStepOutput,
   updateWorkflowSpec,
+  uploadChatFile,
 } from "@/lib/api";
 import type {
   AgentConfig,
@@ -83,6 +85,16 @@ type Mode = "chat" | "workflow";
 type View = "workbench" | "settings";
 type SettingsSection = "rag" | "agent" | "document" | "knowledge" | "architecture";
 
+type ChatAttachmentStatus = "uploading" | "done" | "error";
+type ChatAttachment = {
+  id: string;
+  file: File;
+  status: ChatAttachmentStatus;
+  fileId?: string;
+  pageCount?: number;
+  error?: string;
+};
+
 const emptyInspector: InspectorState = {
   steps: [],
   sources: [],
@@ -98,7 +110,6 @@ const WORKFLOW_STEPS: WorkflowStepName[] = [
   "understand",
   "identify",
   "generate",
-  "evaluate",
 ];
 
 const CHECKPOINT_STEPS: WorkflowStepName[] = [
@@ -112,7 +123,6 @@ const STEP_LABELS: Record<WorkflowStepName, string> = {
   understand: "理解",
   identify: "子系统",
   generate: "规格",
-  evaluate: "评估",
 };
 
 function scoreClass(score?: number) {
@@ -797,22 +807,89 @@ function ChatSession({
   onStart: () => void;
   onFinish: () => void;
 }) {
+  // 附件 state 提升到此处：Composer 选择文件 → 立即上传 → 拿到 file_id 后
+  // 写入 attachments；transport body 函数发送时读取 ref.current 拼到请求体。
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  // transport body 是 Resolvable<object>，可为函数；用 ref 让 body 函数每次发送
+  // 都读取最新 file_ids，而无需重建 transport / runtime。
+  const attachmentFileIdsRef = useRef<string[]>([]);
+
+  // ref 与 state 同步：让 transport body 函数能拿到当前已上传成功的 file_id 列表。
+  useEffect(() => {
+    attachmentFileIdsRef.current = attachments
+      .filter((a) => a.status === "done" && a.fileId)
+      .map((a) => a.fileId as string);
+  }, [attachments]);
+
+  const uploadAttachments = useCallback(
+    async (files: FileList | File[]) => {
+      const incoming = Array.from(files);
+      const newItems: ChatAttachment[] = incoming.map((file, idx) => ({
+        id: `${file.name}-${file.size}-${Date.now()}-${idx}`,
+        file,
+        status: "uploading" as ChatAttachmentStatus,
+      }));
+      setAttachments((prev) => [...prev, ...newItems]);
+      await Promise.all(
+        newItems.map(async (item) => {
+          try {
+            const res = await uploadChatFile(item.file, sessionId);
+            setAttachments((prev) =>
+              prev.map((a) =>
+                a.id === item.id
+                  ? {
+                      ...a,
+                      status: "done" as ChatAttachmentStatus,
+                      fileId: res.file_id,
+                      pageCount: res.page_count,
+                    }
+                  : a,
+              ),
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "上传失败";
+            setAttachments((prev) =>
+              prev.map((a) =>
+                a.id === item.id
+                  ? { ...a, status: "error" as ChatAttachmentStatus, error: msg }
+                  : a,
+              ),
+            );
+            onErrorCb(`附件 ${item.file.name} 上传失败：${msg}`);
+          }
+        }),
+      );
+    },
+    [onErrorCb, sessionId],
+  );
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const clearAttachments = useCallback(() => setAttachments([]), []);
+
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
         api: "/api/chat/stream",
-        body: {
+        // body 为函数：每次发送消息时都会读取最新的 attachmentFileIdsRef。
+        body: () => ({
           session_id: sessionId,
           rag: ragConfig,
           agent: agentConfig,
           top_k: ragConfig.top_k,
-        },
+          file_ids: attachmentFileIdsRef.current,
+        }),
         fetch(input, init) {
           onStart();
+          // 此时 init.body 已是 JSON 字符串（ai-sdk 在调用 fetch 前序列化），
+          // 可以安全清空附件 UI；避免发送后已选文件仍显示在输入框上方。
+          clearAttachments();
           return globalThis.fetch(input, init);
         },
       }),
-    [agentConfig, onStart, ragConfig, sessionId],
+    [agentConfig, clearAttachments, onStart, ragConfig, sessionId],
   );
   const runtime = useChatRuntime({
     transport,
@@ -828,7 +905,13 @@ function ChatSession({
   });
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadView error={error} disabled={disabled} />
+      <ThreadView
+        error={error}
+        disabled={disabled}
+        attachments={attachments}
+        onUploadAttachments={uploadAttachments}
+        onRemoveAttachment={removeAttachment}
+      />
     </AssistantRuntimeProvider>
   );
 }
@@ -960,7 +1043,19 @@ function Sidebar({
   );
 }
 
-function ThreadView({ error, disabled }: { error: string; disabled: boolean }) {
+function ThreadView({
+  error,
+  disabled,
+  attachments,
+  onUploadAttachments,
+  onRemoveAttachment,
+}: {
+  error: string;
+  disabled: boolean;
+  attachments: ChatAttachment[];
+  onUploadAttachments: (files: FileList | File[]) => Promise<void>;
+  onRemoveAttachment: (id: string) => void;
+}) {
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
@@ -979,7 +1074,12 @@ function ThreadView({ error, disabled }: { error: string; disabled: boolean }) {
             {error}
           </div>
         ) : null}
-        <Composer disabled={disabled} />
+        <Composer
+          disabled={disabled}
+          attachments={attachments}
+          onUploadAttachments={onUploadAttachments}
+          onRemoveAttachment={onRemoveAttachment}
+        />
       </div>
     </ThreadPrimitive.Root>
   );
@@ -1068,21 +1168,110 @@ function ToolPart({ toolName, args, result }: Record<string, unknown>) {
   );
 }
 
-function Composer({ disabled }: { disabled: boolean }) {
+function Composer({
+  disabled,
+  attachments,
+  onUploadAttachments,
+  onRemoveAttachment,
+}: {
+  disabled: boolean;
+  attachments: ChatAttachment[];
+  onUploadAttachments: (files: FileList | File[]) => Promise<void>;
+  onRemoveAttachment: (id: string) => void;
+}) {
+  // disabled 时同时禁止上传（与输入框行为一致）。
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // I-2: 附件上传中时禁用 Send,避免 file_id 尚未拿到就发送导致附件丢失。
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const sendDisabled = disabled || uploading;
+
+  const handlePick = () => {
+    if (disabled) return;
+    fileInputRef.current?.click();
+  };
+
   return (
-    <ComposerPrimitive.Root className="mx-auto flex max-w-4xl items-end gap-2">
-      <ComposerPrimitive.Input
-        className="min-h-12 flex-1 resize-none rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm outline-none focus:border-zinc-400 disabled:opacity-50"
-        placeholder="询问 ~/.scv/analysis 知识库..."
-        rows={1}
-        disabled={disabled}
-      />
-      <ComposerPrimitive.Send
-        className="flex size-12 items-center justify-center rounded-xl bg-zinc-950 text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
-        disabled={disabled}
-      >
-        <Send size={17} />
-      </ComposerPrimitive.Send>
+    <ComposerPrimitive.Root className="mx-auto flex max-w-4xl flex-col gap-2">
+      {attachments.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {attachments.map((a) => (
+            <span
+              key={a.id}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs text-zinc-700"
+              title={
+                a.status === "done" && a.pageCount != null
+                  ? `${a.pageCount} 页`
+                  : a.status === "error"
+                    ? a.error
+                    : undefined
+              }
+            >
+              <span className="max-w-[12rem] truncate">{a.file.name}</span>
+              {a.status === "uploading" ? (
+                <Loader2 size={12} className="animate-spin text-zinc-400" />
+              ) : a.status === "error" ? (
+                <span className="text-rose-600" title={a.error}>
+                  !
+                </span>
+              ) : (
+                <span className="text-zinc-400">{a.pageCount}p</span>
+              )}
+              <button
+                type="button"
+                aria-label={`移除附件 ${a.file.name}`}
+                className="text-zinc-400 hover:text-zinc-700"
+                onClick={() => onRemoveAttachment(a.id)}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex items-end gap-2">
+        <input
+          ref={fileInputRef}
+          className="hidden"
+          type="file"
+          multiple
+          accept=".pdf,.docx,.md,.txt"
+          onChange={(event) => {
+            const files = event.target.files;
+            if (files && files.length > 0) {
+              void onUploadAttachments(files);
+            }
+            // 重置 value 让用户能再次选择同一文件（否则 change 事件不会触发）。
+            event.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={handlePick}
+          disabled={disabled}
+          className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-600 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+          title="上传附件（PDF / Word / Markdown / Text）"
+          aria-label="上传附件"
+        >
+          <Upload size={17} />
+        </button>
+        <ComposerPrimitive.Input
+          className="min-h-12 flex-1 resize-none rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm outline-none focus:border-zinc-400 disabled:opacity-50"
+          placeholder="询问 ~/.scv/analysis 知识库..."
+          rows={1}
+          disabled={disabled}
+        />
+        <ComposerPrimitive.Send
+          className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-zinc-950 text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={sendDisabled}
+          title={uploading ? "附件上传中…" : undefined}
+        >
+          {uploading ? (
+            <Loader2 size={17} className="animate-spin" />
+          ) : (
+            <Send size={17} />
+          )}
+        </ComposerPrimitive.Send>
+      </div>
     </ComposerPrimitive.Root>
   );
 }
@@ -2556,24 +2745,29 @@ function StepRerunToolbar({
       {truncatedSteps.map((step) => {
         const isRerunning = rerunning === step;
         const label = STEP_LABELS[step];
-        const title = atCap
-          ? `已达 turn 硬上限(${TOOL_TURN_HARD_CAP}),请检查 prompt 或手动编辑产出`
-          : `${curMax}→${newMax} turn · 上限 ${TOOL_TURN_HARD_CAP}`;
+        // T10-A: generate 步是 spec 子图(Send fan-out),不在 _NODE_FNS 中,
+        // rerun 会 KeyError → FAILED。按钮禁用,仅保留截断指示 chip。
+        const isGenerate = step === "generate";
+        const title = isGenerate
+          ? "规格生成步为子图 fan-out,暂不支持整步重跑。请手动编辑产出或重新创建工作流。"
+          : atCap
+            ? `已达 turn 硬上限(${TOOL_TURN_HARD_CAP}),请检查 prompt 或手动编辑产出`
+            : `${curMax}→${newMax} turn · 上限 ${TOOL_TURN_HARD_CAP}`;
         const buttonClass = isRerunning
           ? "cursor-not-allowed bg-gray-400 text-white"
-          : atCap
+          : atCap || isGenerate
             ? "cursor-not-allowed bg-gray-100 text-gray-500"
             : "bg-blue-600 text-white hover:bg-blue-700";
         return (
           <span className="flex items-center gap-2" key={step}>
-            {step === "generate" && allSpecNames.length > 0 ? (
+            {isGenerate && allSpecNames.length > 0 ? (
               <span className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-red-700">
                 {truncSpecCount}/{allSpecNames.length} 子系统超限
               </span>
             ) : null}
             <button
               className={`flex items-center gap-1 rounded-md border border-transparent px-2.5 py-1 text-xs font-medium ${buttonClass}`}
-              disabled={isRerunning || atCap}
+              disabled={isRerunning || atCap || isGenerate}
               onClick={() => void handleRerun(step)}
               title={title}
               type="button"
@@ -2583,6 +2777,8 @@ function StepRerunToolbar({
                   <Loader2 size={12} className="animate-spin" />
                   重跑中…
                 </>
+              ) : isGenerate ? (
+                `重跑${label} · 不支持`
               ) : atCap ? (
                 `重跑${label} · 已达上限`
               ) : (
@@ -3069,11 +3265,6 @@ function CompletedView({
     | Record<string, string>
     | undefined;
   const specResults = readSpecResults(detail);
-  const evaluateOutput = detail.outputs.evaluate?.output;
-  const score =
-    evaluateOutput && typeof evaluateOutput === "object" && "score" in evaluateOutput
-      ? Number((evaluateOutput as Record<string, unknown>).score)
-      : null;
   const [tab, setTab] = useState<"understand" | "subsystems" | "specs">(
     "understand",
   );
@@ -3085,11 +3276,6 @@ function CompletedView({
           <CheckCircle2 size={15} className="text-emerald-500" />
           拆解完成
         </h3>
-        {score != null ? (
-          <span className={`rounded-full px-2 py-1 text-xs ${scoreClass(score)}`}>
-            score {score}
-          </span>
-        ) : null}
       </div>
       <div className="flex gap-1 border-b border-zinc-200 px-2 py-1">
         {(

@@ -25,6 +25,7 @@ from .agent.graph import STEPS
 from .agent.heuristics import infer_project_name
 from .llm import LLMClient
 from .logging_utils import get_component_logger
+from .models.enums import WorkflowRunState
 from .settings import Settings
 from .vector_store import LocalVectorStore
 from .workflow_store import WorkflowStore
@@ -37,7 +38,6 @@ _STEP_OUTPUT_KEYS: dict[str, list[str]] = {
     "understand": ["understanding"],
     "identify": ["subsystems"],
     "generate": ["specs", "spec_results"],
-    "evaluate": ["evaluation"],
 }
 
 #: F2: _STEP_OUTPUT_KEYS 的 keys 必须与 agent.graph.STEPS 一致(单一来源,防漂移)。
@@ -146,19 +146,27 @@ class WorkflowExecutor:
         except Exception:
             logger.exception("workflow worker crashed workflow_id=%s", workflow_id)
             try:
-                self.store.update_status(workflow_id, "failed", error="worker crashed")
-            except Exception:
-                pass
+                self.store.update_status(workflow_id, WorkflowRunState.FAILED, error="worker crashed")
+            except Exception as exc:
+                logger.warning("update_status FAILED failed: %s", exc)
         finally:
             guard.release()
 
     def _build_agent(self, row: dict[str, Any]) -> PortoAgent:
         from .api.deps import runtime_settings_from_snapshot
+        from .files import FileService
 
         rag_snap = json.loads(row["rag_snapshot"])
         agent_snap = json.loads(row["agent_snapshot"])
         runtime = runtime_settings_from_snapshot(rag_snap, agent_snap, row["top_k"])
-        return PortoAgent(runtime, LocalVectorStore(runtime), LLMClient(runtime))
+        # Task 7:注入 FileService —— 节点经 ``agent.file_service`` 分页读 PRD
+        # (upload 路径);text 路径下 ``prd_file_id`` 实为原始文本,helper 自动回退。
+        return PortoAgent(
+            runtime,
+            LocalVectorStore(runtime),
+            LLMClient(runtime),
+            file_service=FileService(runtime),
+        )
 
     @staticmethod
     def _config(workflow_id: str, agent: Any = None) -> dict:
@@ -172,13 +180,21 @@ class WorkflowExecutor:
         if row is None:
             logger.warning("workflow not found workflow_id=%s", workflow_id)
             return
-        self.store.update_status(workflow_id, "running")
+        self.store.update_status(workflow_id, WorkflowRunState.RUNNING)
         agent = self._build_agent(row)
         config = self._config(workflow_id, agent)
+        # Task 6/7:upload 路径写 prd_file_id(text 路径 / 旧行则 NULL)→ fallback 到
+        # prd_text,保证 state["prd_file_id"] 始终有可读内容。
+        # 节点(retrieve/understand/identify,Task 7)经 file_service.read_pages
+        # 读 prd_file_id;text 路径下 prd_file_id 实为原始文本,helper 自动回退。
+        # Task 10:evaluate 节点已删,不再有节点读 state["prd_text"],故 prd_text
+        # 不再注入 graph state(prd_text 仍存 workflow 行,用于 project_name 兜底 +
+        # API 路由回放)。
+        prd_file_id = row["prd_file_id"] or row["prd_text"]
         initial = {
             "workflow_id": workflow_id,
             "project_name": row["project_name"] or infer_project_name(row["prd_text"]),
-            "prd_text": row["prd_text"],
+            "prd_file_id": prd_file_id,
             "top_k": row["top_k"],
             "steps": [],
             "sources": [],
@@ -186,7 +202,6 @@ class WorkflowExecutor:
             "subsystems": [],
             "specs": {},
             "spec_results": {},
-            "evaluation": {},
         }
         try:
             self.graph.invoke(initial, config)  # retrieve→understand,停
@@ -196,7 +211,7 @@ class WorkflowExecutor:
             self._sync_status(workflow_id, config)
         except Exception as exc:
             logger.exception("workflow start failed workflow_id=%s", workflow_id)
-            self.store.update_status(workflow_id, "failed", error=str(exc))
+            self.store.update_status(workflow_id, WorkflowRunState.FAILED, error=str(exc))
             return
 
     def _run_advance(self, workflow_id: str) -> None:
@@ -204,7 +219,7 @@ class WorkflowExecutor:
         if row is None:
             logger.warning("workflow not found workflow_id=%s", workflow_id)
             return
-        self.store.update_status(workflow_id, "running")
+        self.store.update_status(workflow_id, WorkflowRunState.RUNNING)
         agent = self._build_agent(row)
         config = self._config(workflow_id, agent)
         try:
@@ -215,7 +230,7 @@ class WorkflowExecutor:
             self._sync_status(workflow_id, config)
         except Exception as exc:
             logger.exception("workflow advance failed workflow_id=%s", workflow_id)
-            self.store.update_status(workflow_id, "failed", error=str(exc))
+            self.store.update_status(workflow_id, WorkflowRunState.FAILED, error=str(exc))
             return
 
     def _completed_steps(self, config: dict) -> list[str]:
@@ -303,7 +318,7 @@ class WorkflowExecutor:
 
     def _sync_status(self, workflow_id: str, config: dict) -> None:
         snap = self.graph.get_state(config)
-        status = "completed" if not snap.next else "awaiting_input"
+        status = WorkflowRunState.COMPLETED if not snap.next else WorkflowRunState.AWAITING_INPUT
         self.store.update_status(workflow_id, status, current_step=snap.values.get("current_step"))
 
     # ----------------------------------------------------- PUT / PATCH / recovery
@@ -397,9 +412,9 @@ class WorkflowExecutor:
         except Exception:
             logger.exception("workflow rerun crashed workflow_id=%s", workflow_id)
             try:
-                self.store.update_status(workflow_id, "failed", error="rerun crashed")
-            except Exception:
-                pass
+                self.store.update_status(workflow_id, WorkflowRunState.FAILED, error="rerun crashed")
+            except Exception as exc:
+                logger.warning("update_status FAILED failed: %s", exc)
         finally:
             guard.release()
 
@@ -408,7 +423,7 @@ class WorkflowExecutor:
 
         new_max = self._next_max_turns(workflow_id)
         self._apply_new_max(workflow_id, new_max)
-        self.store.update_status(workflow_id, "running")
+        self.store.update_status(workflow_id, WorkflowRunState.RUNNING)
         agent = self._build_agent(self.store.get(workflow_id))  # 含 new_max 的 snapshot
         config = self._config(workflow_id, agent)
         state = self.graph.get_state(config).values
@@ -436,7 +451,7 @@ class WorkflowExecutor:
         # 先快照要处理的 workflow —— 循环中 update_status 会改 status,边查边改会导致
         # running→awaiting_input 的行在第二轮 awaiting_input 扫描中被重复处理。
         targets: list[tuple[str, str]] = []  # (workflow_id, 原始 status)
-        for status in ("running", "awaiting_input"):
+        for status in (WorkflowRunState.RUNNING, WorkflowRunState.AWAITING_INPUT):
             rows, _ = self.store.list_workflows(status=status)
             targets.extend((r["workflow_id"], status) for r in rows)
         count = 0
@@ -449,18 +464,18 @@ class WorkflowExecutor:
                 logger.warning("recover get_state failed workflow_id=%s", wid, exc_info=True)
                 snap = None
             has_checkpoint = bool(snap and snap.values)
-            if status == "awaiting_input" and has_checkpoint and snap.next:
+            if status == WorkflowRunState.AWAITING_INPUT and has_checkpoint and snap.next:
                 continue  # 正常 L2 暂停态,不动
             if snap and snap.next:
                 self.store.update_status(
-                    wid, "awaiting_input", current_step=snap.values.get("current_step")
+                    wid, WorkflowRunState.AWAITING_INPUT, current_step=snap.values.get("current_step")
                 )
             elif snap and snap.values:
                 # 有 checkpoint 且已到 END → completed(worker 崩在 sync_status 之前)
                 self.store.update_status(
-                    wid, "completed", current_step=snap.values.get("current_step")
+                    wid, WorkflowRunState.COMPLETED, current_step=snap.values.get("current_step")
                 )
             else:
                 # 无 checkpoint → interrupted,current_step=None 保留既有
-                self.store.update_status(wid, "interrupted")
+                self.store.update_status(wid, WorkflowRunState.INTERRUPTED)
         return count

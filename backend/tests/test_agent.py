@@ -1,85 +1,21 @@
-"""PortoAgent 容器 + evaluate 节点 单元测试。
+"""PortoAgent 容器单元测试。
 
 Task 9 之后 PortoAgent 瘦身为纯容器(构造/_build_critic_llm/_step),
 graph/run/_persist/_route_after_evaluate/各 node 委托方法已删除:
 - 端到端编排(run)由 langgraph StateGraph + WorkflowExecutor 覆盖
   (见 test_workflow_executor.py)。
 - 节点级委托(retrieve_knowledge/understand_prd/...)已删除,直接调 nodes。
-- 回边决策(_route_after_evaluate)内联进 evaluate 节点(见下)。
+
+Task 10:evaluate 节点已删(从 graph 移除于 Task 9,文件清理于 Task 10),
+原 evaluate 节点的 rubric 聚合 + 条件回边决策测试一并删除。
 
 本文件覆盖:
-1. evaluate 节点的 rubric 聚合 + 条件回边决策(经 evaluate_node.evaluate 直调)。
-2. critic_llm 容器行为(base_url/api_key 回退、独立 client、未配置回退 generator)。
+1. critic_llm 容器行为(base_url/api_key 回退、独立 client、未配置回退 generator)。
 """
 
 from __future__ import annotations
 
 from porto_chatbot.agent import PortoAgent
-from porto_chatbot.agent.nodes import evaluate as evaluate_node
-from porto_chatbot.models import SpecAttempt, SpecResult, Subsystem
-
-# ----------------------------- evaluate 节点:rubric 聚合 + 回边决策 ----------------------------- #
-
-
-def _eval_state(spec_results: dict | None = None) -> dict:
-    return {
-        "workflow_id": "w",
-        "prd_text": "p",
-        "understanding": "业务理解报告" + "X" * 130,
-        "subsystems": [Subsystem(name="a-service", responsibility="负责 A", capabilities=["能力1"])],
-        "specs": {"a-service": "包含 API 需求 与 数据模型需求 章节的规格"},
-        "spec_results": spec_results or {},
-        "steps": [],
-    }
-
-
-def _spec_result(score: int, verdict: str = "NEEDS_IMPROVEMENT") -> SpecResult:
-    return SpecResult(
-        final="spec",
-        attempts=[SpecAttempt(version=1, score=score, verdict=verdict)],
-        used_llm=True,
-    )
-
-
-def test_evaluate_aggregates_spec_rubric_scores(sample_settings):
-    agent = PortoAgent(sample_settings)
-    state = _eval_state({"a-service": _spec_result(7), "b-service": _spec_result(11)})
-    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
-    assert result["evaluation"]["spec_rubric_avg"] == 9.0
-    assert result["evaluation"]["spec_rubric_min"] == 7
-
-
-def test_evaluate_marks_rework_on_low_rubric(sample_settings):
-    agent = PortoAgent(sample_settings)
-    state = _eval_state({"a-service": _spec_result(5)})
-    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
-    assert result["needs_rework"] is True
-    assert result["rework_passes"] == 1
-
-
-def test_evaluate_no_rework_on_high_rubric(sample_settings):
-    agent = PortoAgent(sample_settings)
-    state = _eval_state({"a-service": _spec_result(11, "PASS")})
-    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
-    assert result["needs_rework"] is False
-    assert result["rework_passes"] == 0
-
-
-def test_evaluate_respects_max_passes_zero(sample_settings):
-    sample_settings.workflow_rework_max_passes = 0
-    agent = PortoAgent(sample_settings)
-    state = _eval_state({"a-service": _spec_result(5)})
-    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
-    assert result["needs_rework"] is False  # passes(0) < 0 为假
-
-
-def test_evaluate_no_rework_when_disabled(sample_settings):
-    sample_settings.workflow_rework_enabled = False
-    agent = PortoAgent(sample_settings)
-    state = _eval_state({"a-service": _spec_result(5)})
-    result = evaluate_node.evaluate(state, config={"configurable": {"agent": agent}})
-    assert result["needs_rework"] is False
-
 
 # ----------------------------- critic 模型 base_url/api_key 回退 ----------------------------- #
 

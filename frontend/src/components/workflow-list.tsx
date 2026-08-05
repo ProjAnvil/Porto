@@ -12,7 +12,6 @@ const STEP_LABELS: Record<string, string> = {
   understand: "理解",
   identify: "子系统",
   generate: "规格",
-  evaluate: "评估",
 };
 
 export function WorkflowList({

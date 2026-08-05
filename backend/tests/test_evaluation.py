@@ -17,5 +17,5 @@ def test_evaluation_scores_complete_workflow(sample_prd):
 
     result = evaluate_workflow(sample_prd, "x" * 140, subsystems, specs)
 
-    assert result["score"] == 100
-    assert result["passed"] is True
+    assert result.score == 100
+    assert result.passed is True

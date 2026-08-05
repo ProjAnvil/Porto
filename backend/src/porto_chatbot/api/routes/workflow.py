@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -28,11 +27,12 @@ from ...documents import (
     DocumentLimitError,
     DocumentNativeError,
     DocumentParseError,
-    parse_document,
 )
+from ...files.service import FileService
 from ...llm import LLMClient
 from ...logging_utils import get_component_logger
 from ...models import WorkflowRequest
+from ...models.enums import DocumentParseMode, WorkflowRunState
 from ...workflow_executor import WorkflowRunning
 from ..deps import (
     apply_rag_settings,
@@ -53,14 +53,14 @@ _EDITABLE_STEPS = {"understand", "identify", "generate"}
 
 class WorkflowCreated(BaseModel):
     workflow_id: str
-    status: str
+    status: WorkflowRunState
 
 
 class WorkflowListItem(BaseModel):
     workflow_id: str
     session_id: str
     project_name: str | None
-    status: str
+    status: WorkflowRunState
     current_step: str | None
     created_at: str
     score: int | None = None
@@ -76,7 +76,7 @@ class WorkflowDetail(BaseModel):
     workflow_id: str
     session_id: str
     project_name: str | None
-    status: str
+    status: WorkflowRunState
     current_step: str | None
     error: str | None
     created_at: str
@@ -94,7 +94,7 @@ class DocumentCapabilitiesView(BaseModel):
     image_input: bool
     native_pdf: bool
     reason: str
-    parse_mode: str
+    parse_mode: DocumentParseMode
 
 
 def _detail(store, workflow_id: str) -> WorkflowDetail:
@@ -143,7 +143,7 @@ def create_workflow(req: WorkflowRequest):
         top_k,
     )
     get_workflow_executor().start_workflow(wid)
-    return WorkflowCreated(workflow_id=wid, status="running")
+    return WorkflowCreated(workflow_id=wid, status=WorkflowRunState.RUNNING)
 
 
 @router.post("/api/porto/workflows/upload", response_model=WorkflowCreated)
@@ -153,13 +153,20 @@ async def upload_workflow(
     session_id: Annotated[str | None, Form()] = "default",
     top_k: Annotated[int | None, Form()] = None,
 ):
-    """上传文档 → 抽取文本 → 创建 + 启动 workflow。"""
+    """上传文档 → 经 FileService 存储 → 创建 + 启动 workflow。
+
+    Task 6:文档不再在路由层 parse,而是交给 FileService.store 落盘 + 解析 +
+    分页。workflow 行只存 ``prd_file_id`` 引用,``prd_text`` 写空串占位
+    (Task 7 之前节点仍读 state["prd_text"],该路径暂不可用 —— 见 Task 7)。
+    """
     runtime_settings = apply_rag_settings()
     suffix = Path(file.filename or "").suffix.lower()
     if not suffix:
         raise HTTPException(400, "uploaded file must have an extension")
     if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(415, f"unsupported document type: {suffix}")
+    # 大小检查保留在路由层:FileService.store 内部 read 无上限,需先 short-circuit
+    # 避免把超大文件全部读进内存。
     max_bytes = runtime_settings.document_max_upload_mb * 1024 * 1024
     payload = await file.read(max_bytes + 1)
     if len(payload) > max_bytes:
@@ -167,54 +174,46 @@ async def upload_workflow(
             413,
             f"document exceeds {runtime_settings.document_max_upload_mb} MB upload limit",
         )
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(payload)
-        tmp_path = Path(tmp.name)
+    await file.seek(0)
+
+    sid = session_id or "default"
+    file_svc = FileService(runtime_settings)
     try:
-        artifact = parse_document(
-            tmp_path,
-            original_name=file.filename,
-            max_bytes=max_bytes,
-            max_pdf_pages=runtime_settings.document_max_pdf_pages,
-            llm_client=LLMClient(runtime_settings),
-            mode=runtime_settings.document_parse_mode,
-            local_parser=runtime_settings.document_local_parser,
-        )
+        meta = file_svc.store(file, owner_id=sid)
     except DocumentLimitError as exc:
         raise HTTPException(413, str(exc)) from exc
     except DocumentNativeError as exc:
         raise HTTPException(422, str(exc)) from exc
     except DocumentParseError as exc:
         raise HTTPException(400, str(exc)) from exc
-    finally:
-        tmp_path.unlink(missing_ok=True)
-    text = artifact.text
-    if not text.strip():
+    if meta.page_count == 0:
         raise HTTPException(
             400,
             "document has no extractable text; configure a PDF-capable vision model for scanned files",
         )
+
     rag = effective_rag_settings().model_dump(exclude_none=True)
     agent = effective_agent_settings().model_dump(exclude_none=True)
     resolved_top_k = top_k or effective_rag_settings().top_k
     store = get_workflow_store()
-    sid = session_id or "default"
-    wid = store.create(sid, project_name, text.strip(), resolved_top_k, rag, agent)
+    wid = store.create(
+        sid,
+        project_name,
+        "",  # prd_text 空串占位:实际内容经 FileService.read_pages(prd_file_id) 访问
+        resolved_top_k,
+        rag,
+        agent,
+        prd_file_id=meta.file_id,
+    )
     logger.info(
-        "workflow upload start filename=%s workflow_id=%s text_chars=%s",
+        "workflow upload start filename=%s workflow_id=%s file_id=%s pages=%s",
         file.filename,
         wid,
-        len(text),
+        meta.file_id,
+        meta.page_count,
     )
-    if artifact.warnings:
-        logger.warning(
-            "workflow upload parse warnings filename=%s parser=%s warnings=%s",
-            file.filename,
-            artifact.parser,
-            artifact.warnings,
-        )
     get_workflow_executor().start_workflow(wid)
-    return WorkflowCreated(workflow_id=wid, status="running")
+    return WorkflowCreated(workflow_id=wid, status=WorkflowRunState.RUNNING)
 
 
 @router.get("/api/porto/document-capabilities", response_model=DocumentCapabilitiesView)
@@ -238,29 +237,25 @@ def list_workflows(
 ):
     """列表(按 created_at DESC),可按 session_id / status / date 过滤,分页。
 
-    每条附 evaluation score(若有)——list 不展开完整 outputs,避免大 payload。
+    Task 10:evaluate 节点已删,``score`` 字段保留为 None(向后兼容前端 schema),
+    不再查询 outputs(原为 evaluate.output.evaluation.score)。
     """
     store = get_workflow_store()
     rows, total = store.list_workflows(
         session_id=session_id, status=status, date=date, limit=limit, offset=offset
     )
-    items: list[WorkflowListItem] = []
-    for r in rows:
-        score = None
-        outs = store.get_outputs(r["workflow_id"])
-        if "evaluate" in outs:
-            score = (outs["evaluate"]["output"].get("evaluation") or {}).get("score")
-        items.append(
-            WorkflowListItem(
-                workflow_id=r["workflow_id"],
-                session_id=r["session_id"],
-                project_name=r["project_name"],
-                status=r["status"],
-                current_step=r["current_step"],
-                created_at=r["created_at"],
-                score=score,
-            )
+    items: list[WorkflowListItem] = [
+        WorkflowListItem(
+            workflow_id=r["workflow_id"],
+            session_id=r["session_id"],
+            project_name=r["project_name"],
+            status=r["status"],
+            current_step=r["current_step"],
+            created_at=r["created_at"],
+            score=None,
         )
+        for r in rows
+    ]
     return WorkflowListResponse(items=items, total=total, has_more=offset + len(items) < total)
 
 
@@ -282,11 +277,11 @@ def advance_workflow(workflow_id: str):
     row = store.get(workflow_id)
     if row is None:
         raise HTTPException(404, "workflow not found")
-    if row["status"] == "completed":
+    if row["status"] == WorkflowRunState.COMPLETED:
         raise HTTPException(409, "workflow already completed")
     if not get_workflow_executor().advance(workflow_id):
         raise HTTPException(409, "workflow is currently running") from None
-    return WorkflowCreated(workflow_id=workflow_id, status="running")
+    return WorkflowCreated(workflow_id=workflow_id, status=WorkflowRunState.RUNNING)
 
 
 @router.post(
@@ -309,7 +304,7 @@ def rerun_step(workflow_id: str, step: str):
         get_workflow_executor().rerun_step(workflow_id, step)
     except WorkflowRunning:
         raise HTTPException(409, "workflow is running or turn limit reached") from None
-    return WorkflowCreated(workflow_id=workflow_id, status="running")
+    return WorkflowCreated(workflow_id=workflow_id, status=WorkflowRunState.RUNNING)
 
 
 @router.put("/api/porto/workflows/{workflow_id}/steps/{step}", response_model=WorkflowDetail)

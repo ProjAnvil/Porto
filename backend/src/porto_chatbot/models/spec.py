@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
-# ----------------------------- Spec refine loop（Phase 2）----------------------------- #
+from .enums import SpecVerdict
 
-Verdict = Literal["PASS", "NEEDS_IMPROVEMENT", "FAIL"]
+# ----------------------------- Spec refine loop（Phase 2）----------------------------- #
 
 
 class Critique(BaseModel):
     """critic 对单个 spec 版本的评判结果。"""
 
-    verdict: Verdict
+    verdict: SpecVerdict
     score: int = Field(ge=0, le=12)
     feedback: str = ""
     per_dimension: dict[str, int] = Field(default_factory=dict)
@@ -23,7 +21,7 @@ class SpecAttempt(BaseModel):
 
     version: int
     score: int = 0
-    verdict: Verdict = "NEEDS_IMPROVEMENT"
+    verdict: SpecVerdict = SpecVerdict.NEEDS_IMPROVEMENT
     feedback_digest: str = ""
 
 

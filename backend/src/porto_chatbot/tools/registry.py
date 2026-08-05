@@ -9,13 +9,16 @@ from .handlers import (
     _get_subsystem,
     _get_understanding,
     _list_subsystems,
+    _read_file_info,
+    _read_file_pages,
+    _search_file,
     _search_knowledgebase,
 )
 
 
 def build_agent_tools(ctx: AgentToolContext) -> list[ToolDef]:
     """构造节点内可用的工具集。"""
-    return [
+    tools: list[ToolDef] = [
         ToolDef(
             name="get_prd_text",
             description="读取当前 PRD 原文。无需参数。当需要回顾输入需求时调用。",
@@ -68,3 +71,88 @@ def build_agent_tools(ctx: AgentToolContext) -> list[ToolDef]:
             handler=lambda args: _get_sources(ctx, str(args.get("query", ""))),
         ),
     ]
+
+    if ctx.file_service is not None:
+        tools.extend(
+            [
+                ToolDef(
+                    name="get_file_info",
+                    description=(
+                        "读取已上传文件的元信息（原始文件名、页数、大小、MIME 类型）。"
+                        "file_id 来自用户消息或 state.prd_file_id。"
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "file_id": {
+                                "type": "string",
+                                "description": "目标文件 ID",
+                            },
+                        },
+                        "required": ["file_id"],
+                    },
+                    handler=lambda args: _read_file_info(
+                        ctx, str(args.get("file_id", ""))
+                    ),
+                ),
+                ToolDef(
+                    name="read_file_pages",
+                    description=(
+                        "读取已上传文件指定页码范围的文本（1-based, inclusive）。"
+                        "先调用 get_file_info 获取页数，再按需取页。"
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "file_id": {
+                                "type": "string",
+                                "description": "目标文件 ID",
+                            },
+                            "start": {
+                                "type": "integer",
+                                "description": "起始页（1-based, inclusive）",
+                            },
+                            "end": {
+                                "type": "integer",
+                                "description": "结束页（1-based, inclusive）",
+                            },
+                        },
+                        "required": ["file_id", "start", "end"],
+                    },
+                    handler=lambda args: _read_file_pages(
+                        ctx,
+                        str(args.get("file_id", "")),
+                        int(args.get("start", 1) or 1),
+                        int(args.get("end", 1) or 1),
+                    ),
+                ),
+                ToolDef(
+                    name="search_file",
+                    description=(
+                        "在已上传文件内做大小写不敏感的子串搜索，返回所有命中页码与上下文片段。"
+                        "适合先定位关键内容再 read_file_pages 取完整页。"
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "file_id": {
+                                "type": "string",
+                                "description": "目标文件 ID",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "搜索关键词",
+                            },
+                        },
+                        "required": ["file_id", "query"],
+                    },
+                    handler=lambda args: _search_file(
+                        ctx,
+                        str(args.get("file_id", "")),
+                        str(args.get("query", "")),
+                    ),
+                ),
+            ]
+        )
+
+    return tools

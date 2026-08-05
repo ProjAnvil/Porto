@@ -15,9 +15,20 @@ from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
 from ..logging_utils import get_component_logger
+from ..models.enums import ChatRole, LLMProvider, TruncationReason
 from ..settings import Settings
 from .parsing import _try_parse_json
-from .types import Message, ModelCapabilities, ToolCall, ToolDef, ToolLoopResult
+from .types import (
+    ContentType,
+    FinishReason,
+    Message,
+    ModelCapabilities,
+    ToolCall,
+    ToolDef,
+    ToolLoopResult,
+)
+
+_CONTINUATION_TAIL_CHARS = 200
 
 
 def _finish_reason(response) -> str | None:
@@ -32,7 +43,7 @@ def _finish_reason(response) -> str | None:
         return None
     fr = meta.get("finish_reason") or meta.get("stop_reason")
     if fr == "max_tokens":  # Anthropic 语义 → 归一化为 OpenAI "length"
-        return "length"
+        return FinishReason.LENGTH.value
     return fr
 
 
@@ -59,7 +70,7 @@ class LLMClient:
         if not self.enabled:
             return ModelCapabilities(False, False, False, "LLM client is disabled")
         model = self.settings.agent_model.lower()
-        if self.settings.agent_provider == "anthropic":
+        if self.settings.agent_provider == LLMProvider.ANTHROPIC:
             supported = model.startswith("claude-")
             return ModelCapabilities(True, supported, supported, "Anthropic model family")
         supported = bool(re.match(r"^(gpt-(?:4o|4\.1|5(?:\.|-|$))|o[134](?:-|$))", model))
@@ -75,7 +86,7 @@ class LLMClient:
         if self._native_client is None:
             return None
         encoded = base64.standard_b64encode(data).decode("ascii")
-        if self.settings.agent_provider == "openai":
+        if self.settings.agent_provider == LLMProvider.OPENAI:
             response = self._native_client.chat.completions.create(
                 model=self.settings.agent_model,
                 messages=[
@@ -118,7 +129,7 @@ class LLMClient:
             ],
         )
         return "".join(
-            block.text for block in response.content if getattr(block, "type", None) == "text"
+            block.text for block in response.content if getattr(block, "type", None) == ContentType.TEXT
         )
 
     # ------------------------------------------------------------------ #
@@ -233,7 +244,7 @@ class LLMClient:
 
             # ── 检测层:单次回复被 max_tokens 硬切(finish_reason="length")──
             # 此时本轮输出(可能含 tool_call)不完整、不可直接使用(Anthropic 官方)。
-            if finish_reason == "length":
+            if finish_reason == FinishReason.LENGTH:
                 if not escalated:
                     # 第 1 层·升级:丢弃本轮残缺输出,用更大 max_tokens 重发同一 convo(不执行残帧)
                     escalated = True
@@ -259,7 +270,7 @@ class LLMClient:
                 # 第 3 层·兜底:续写不收敛 / tool_call 仍被切 → 截断标记,走节点固定提示 + 重跑
                 result.truncated = True
                 result.text = ""  # 残缺产出不暴露
-                result.reason = "max_tokens_truncated"
+                result.reason = TruncationReason.MAX_TOKENS_TRUNCATED
                 self.logger.warning(
                     "llm tool loop still truncated after escalate+continue "
                     "max_tokens=%s tool_calls=%s",
@@ -299,7 +310,7 @@ class LLMClient:
         # tool-turn 用尽仍有 tool_calls(plan 原治理)
         result.truncated = True
         result.text = ""  # 截断 = 无可靠产出;过渡语清空,不暴露给前端
-        result.reason = "tool_loop_truncated"
+        result.reason = TruncationReason.TOOL_LOOP_TRUNCATED
         self.logger.warning(
             "llm tool loop truncated max_turns=%s total=%s",
             resolved_turns, len(result.tool_calls),
@@ -320,14 +331,14 @@ class LLMClient:
         # 部分输出进历史(assistant),模型基于完整上下文(含自己已写)续写
         cont = list(convo) + [partial_response]
         for _ in range(max_rounds):
-            tail = full[-200:]
+            tail = full[-_CONTINUATION_TAIL_CHARS:]
             cont = cont + [
                 HumanMessage(content=f"请继续刚才的回答，不要重复内容：\n{tail}")
             ]
             resp = bound.invoke(cont, max_tokens=cur_max_tokens)
             chunk = resp.content if isinstance(resp.content, str) else ""
             full += chunk
-            if _finish_reason(resp) != "length":
+            if _finish_reason(resp) != FinishReason.LENGTH:
                 return full, True
             cont = cont + [resp]  # 下一轮续写:把这次的部分输出也并入历史
         return full, False
@@ -377,11 +388,11 @@ class LLMClient:
         for m in msgs:
             role = m.get("role")
             content = m.get("content")
-            if role == "system":
+            if role == ChatRole.SYSTEM:
                 out.append(SystemMessage(content=content))
-            elif role == "user":
+            elif role == ChatRole.USER:
                 out.append(HumanMessage(content=content))
-            elif role == "assistant":
+            elif role == ChatRole.ASSISTANT:
                 out.append(AIMessage(content=content))
             else:
                 # 未知角色兜底为 user 消息（tool 结果由 complete_with_tools 用 ToolMessage 单独处理）
@@ -403,9 +414,9 @@ class LLMClient:
         }
         if self.settings.agent_base_url:
             kwargs["base_url"] = self.settings.agent_base_url
-        if self.settings.agent_provider == "openai":
+        if self.settings.agent_provider == LLMProvider.OPENAI:
             client: BaseChatModel = ChatOpenAI(**kwargs)
-        elif self.settings.agent_provider == "anthropic":
+        elif self.settings.agent_provider == LLMProvider.ANTHROPIC:
             client = ChatAnthropic(**kwargs)
         else:
             raise ValueError(f"Unsupported agent provider: {self.settings.agent_provider}")
@@ -421,8 +432,8 @@ class LLMClient:
         }
         if self.settings.agent_base_url:
             kwargs["base_url"] = self.settings.agent_base_url
-        if self.settings.agent_provider == "openai":
+        if self.settings.agent_provider == LLMProvider.OPENAI:
             return OpenAI(**kwargs)
-        if self.settings.agent_provider == "anthropic":
+        if self.settings.agent_provider == LLMProvider.ANTHROPIC:
             return Anthropic(**kwargs)
         return None

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
+from ...models.enums import TruncationReason
 from ...tools import AgentToolContext
 from ..heuristics import extract_bullets, extract_entities, matched_domains, summary_sentence
 from ..state import PortoAgentState
+from ._prd import read_prd_text
 
 _TRUNCATED_NOTICE_TOOL = (
     "⚠️ 业务理解未能完成：本步工具调用已达上限（{calls}/{limit} turn）。建议重跑本步。"
@@ -22,7 +24,11 @@ def understand_prd(state, *, config):
     tool_meta = {"turns": 0, "tool_calls": 0, "truncated": False,
                  "max_turns": max_turns, "reason": None}
     if agent.llm.enabled:
-        ctx = AgentToolContext(state=state, vector_store=agent.vector_store)
+        ctx = AgentToolContext(
+            state=state,
+            vector_store=agent.vector_store,
+            file_service=getattr(agent, "file_service", None),
+        )
         result = asyncio.run(
             agent.backend.execute_node(
                 system=(
@@ -43,7 +49,7 @@ def understand_prd(state, *, config):
             "reason": result.reason,
         }
         if result.truncated:
-            if result.reason == "max_tokens_truncated":
+            if result.reason == TruncationReason.MAX_TOKENS_TRUNCATED:
                 understanding = _TRUNCATED_NOTICE_TOKENS
             else:
                 understanding = _TRUNCATED_NOTICE_TOOL.format(
@@ -58,7 +64,7 @@ def understand_prd(state, *, config):
                 "step understand_prd llm tool_calls=%s turns=%s chars=%s",
                 len(result.tool_calls), result.turns, len(understanding))
     if not understanding:
-        understanding = _fallback_understanding(state)
+        understanding = _fallback_understanding(state, getattr(agent, "file_service", None))
         agent.logger.info(
             "step understand_prd used fallback workflow_id=%s", state.get("workflow_id"))
     return {
@@ -73,8 +79,8 @@ def understand_prd(state, *, config):
     }
 
 
-def _fallback_understanding(state: PortoAgentState) -> str:
-    text = state["prd_text"]
+def _fallback_understanding(state: PortoAgentState, file_service=None) -> str:
+    text = read_prd_text(state, file_service)
     goals = extract_bullets(text, ["目标", "需要", "实现", "支持", "管理"])
     entities = extract_entities(text)
     return "\n".join(

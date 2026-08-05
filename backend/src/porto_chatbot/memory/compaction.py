@@ -59,12 +59,12 @@ def get_compacted_history(
 
     last_old_id = old[-1].id if old else None
     cached = store.get_summary(session_id)
-    if cached and cached.get("last_message_id") == last_old_id and cached.get("summary"):
+    if cached and cached.last_message_id == last_old_id and cached.summary:
         store.logger.info(
             "memory compaction cache hit session_id=%s last_message_id=%s",
             session_id, last_old_id,
         )
-        return cached["summary"], recent
+        return cached.summary, recent
 
     summary = summarize_records(old, llm)
     if summary and last_old_id:

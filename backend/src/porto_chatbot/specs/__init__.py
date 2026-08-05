@@ -16,11 +16,14 @@ from .context import SpecContext
 from .loop import generate_spec_with_loop
 from .rubric import SPEC_RUBRIC
 from .steps import critique_spec, generate_initial_spec, refine_spec
+from .subgraph import SpecSubgraphState, build_spec_subgraph
 from .template import render_template_spec
 
 __all__ = [
     "SPEC_RUBRIC",
     "SpecContext",
+    "SpecSubgraphState",
+    "build_spec_subgraph",
     "render_template_spec",
     "generate_initial_spec",
     "critique_spec",

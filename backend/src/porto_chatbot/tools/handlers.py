@@ -14,7 +14,11 @@ from .context import (
 
 
 def _get_prd_text(ctx: AgentToolContext) -> str:
-    prd = str(ctx.state.get("prd_text", "")).strip()
+    # Task 7:优先走 file_service 分页读取(upload 路径);text 路径 / 未注入时
+    # helper 自动回退到 prd_file_id / prd_text 内联文本。结果统一按 _MAX_PRD_CHARS 截断。
+    from ..agent.nodes._prd import read_prd_text
+
+    prd = read_prd_text(ctx.state, ctx.file_service).strip()
     return _truncate(prd, _MAX_PRD_CHARS) if prd else "PRD 文本尚未提供。"
 
 
@@ -74,3 +78,42 @@ def _get_sources(ctx: AgentToolContext, query: str = "") -> str:
         ]
         sources = filtered or sources
     return _truncate(_format_chunks(sources), _MAX_TOOL_RESULT_CHARS) if sources else "尚无已检索的知识库片段。"
+
+
+# --- File tools -------------------------------------------------------------
+
+
+def _require_file_service(ctx: AgentToolContext):
+    """返回注入的 FileService，未注入时抛 RuntimeError。"""
+    if ctx.file_service is None:
+        raise RuntimeError("file_service 未注入")
+    return ctx.file_service
+
+
+def _read_file_info(ctx: AgentToolContext, file_id: str) -> str:
+    """读取文件元信息（名称/页数/大小/类型）。"""
+    info = _require_file_service(ctx).get_info(file_id)
+    if info is None:
+        return f"[错误] 文件 {file_id} 不存在"
+    return (
+        f"文件: {info.original_name}\n"
+        f"页数: {info.page_count}\n"
+        f"大小: {info.size_bytes}\n"
+        f"类型: {info.mime}"
+    )
+
+
+def _read_file_pages(
+    ctx: AgentToolContext, file_id: str, start: int, end: int
+) -> str:
+    """读取指定页码范围（1-based, inclusive）的文本。"""
+    text = _require_file_service(ctx).read_pages(file_id, start, end)
+    return _truncate(text, _MAX_TOOL_RESULT_CHARS)
+
+
+def _search_file(ctx: AgentToolContext, file_id: str, query: str) -> str:
+    """在指定文件内按 query 做大小写不敏感子串搜索。"""
+    hits = _require_file_service(ctx).search(file_id, query)
+    if not hits:
+        return f"未找到 '{query}'"
+    return "\n".join(f"第 {h.page} 页: {h.snippet}" for h in hits)

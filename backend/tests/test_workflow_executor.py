@@ -34,7 +34,6 @@ _OUT_VALS = {
     "understand": {"understanding": "understand-val"},
     "identify": {"subsystems": "identify-val"},
     "generate": {"specs": {"default": "generate-val"}, "spec_results": {"default": "gen"}},
-    "evaluate": {"evaluation": "evaluate-val"},
 }
 
 
@@ -112,11 +111,11 @@ def test_advance_to_completed(tmp_path):
     wid = _create(store)
     ex.start_workflow(wid)
     ex.wait(wid, timeout=5)
-    for _ in range(3):  # understand→identify→generate→evaluate(END)
+    for _ in range(3):  # understand→identify→generate→END(generate 是最后步)
         assert ex.advance(wid) is True
         ex.wait(wid, timeout=5)
     assert store.get(wid)["status"] == "completed"
-    assert store.get(wid)["current_step"] == "evaluate"
+    assert store.get(wid)["current_step"] == "generate"
 
 
 def test_advance_returns_false_when_running(tmp_path):
@@ -344,7 +343,7 @@ def test_recover_completed_graph_marks_completed(tmp_path):
     wid = _create(store)
     ex.start_workflow(wid)
     ex.wait(wid, timeout=5)
-    for _ in range(3):  # understand→identify→generate→evaluate(END)
+    for _ in range(3):  # understand→identify→generate→END(generate 是最后步)
         assert ex.advance(wid) is True
         ex.wait(wid, timeout=5)
     assert store.get(wid)["status"] == "completed"
@@ -355,7 +354,7 @@ def test_recover_completed_graph_marks_completed(tmp_path):
     assert n == 1
     row = store.get(wid)
     assert row["status"] == "completed"
-    assert row["current_step"] == "evaluate"
+    assert row["current_step"] == "generate"
 
 
 def test_step_output_keys_match_steps():
@@ -471,7 +470,7 @@ def test_project_state_attaches_tool_meta_generate(tmp_path):
         },
         "steps": [],
     }
-    snap.next = ("evaluate",)
+    snap.next = ()  # generate 是最后步,完成后 next 空(=END)
     executor.graph.get_state = MagicMock(return_value=snap)
     executor._project_state(wid, {"configurable": {"thread_id": wid}})
     out = store.get_outputs(wid)["generate"]["output"]

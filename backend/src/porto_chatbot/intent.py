@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
 
 from .llm import LLMClient
 from .logging_utils import get_component_logger
+from .models.enums import ChatIntent
 from .settings import Settings
-
-ChatIntent = Literal["direct", "rag"]
 
 GREETING_RE = re.compile(
     r"^\s*(你好|您好|hi|hello|hey|哈喽|嗨|早上好|下午好|晚上好)[!！。.\s]*$",
@@ -22,6 +20,10 @@ RAG_HINTS = (
     "知识库", "文档", "资料", "根据", "查", "搜索", "分析", "拆", "设计",
     "架构", "需求", "prd", "workflow", "子系统", "支付", "风控", "订单",
 )
+
+_MAX_INTENT_MESSAGE_CHARS = 500
+_MAX_REASON_CHARS = 80
+_SHORT_MESSAGE_THRESHOLD = 12
 
 
 @dataclass(frozen=True)
@@ -65,11 +67,11 @@ def _llm_route(message: str, llm: LLMClient) -> IntentDecision | None:
         "- direct：寒暄、闲聊、自我介绍、帮助询问，或明显不需要查询知识库的短消息\n"
         "- rag：需要查询知识库、PRD 分析、子系统设计、架构/需求/支付/风控等领问题\n"
         "只输出 JSON。",
-        f"用户消息: {message[:500]}",
+        f"用户消息: {message[:_MAX_INTENT_MESSAGE_CHARS]}",
         {
             "type": "object",
             "properties": {
-                "intent": {"type": "string", "enum": ["direct", "rag"]},
+                "intent": {"type": "string", "enum": [e.value for e in ChatIntent]},
                 "reason": {"type": "string"},
             },
             "required": ["intent", "reason"],
@@ -78,20 +80,20 @@ def _llm_route(message: str, llm: LLMClient) -> IntentDecision | None:
     if not isinstance(parsed, dict):
         return None
     intent = parsed.get("intent")
-    if intent not in ("direct", "rag"):
+    if intent not in [e.value for e in ChatIntent]:
         return None
-    return IntentDecision(intent, f"llm:{str(parsed.get('reason', ''))[:80]}")
+    return IntentDecision(intent, f"llm:{str(parsed.get('reason', ''))[:_MAX_REASON_CHARS]}")
 
 
 def _rule_route(message: str) -> IntentDecision:
     normalized = re.sub(r"\s+", " ", message).strip()
     lower = normalized.lower()
     if not normalized:
-        return IntentDecision("direct", "empty_message")
+        return IntentDecision(ChatIntent.DIRECT, "empty_message")
     if GREETING_RE.match(normalized):
-        return IntentDecision("direct", "greeting")
+        return IntentDecision(ChatIntent.DIRECT, "greeting")
     if DIRECT_RE.match(normalized):
-        return IntentDecision("direct", "smalltalk_or_help")
-    if len(normalized) <= 12 and not any(hint in lower for hint in RAG_HINTS):
-        return IntentDecision("direct", "short_without_domain_signal")
-    return IntentDecision("rag", "domain_or_knowledge_request")
+        return IntentDecision(ChatIntent.DIRECT, "smalltalk_or_help")
+    if len(normalized) <= _SHORT_MESSAGE_THRESHOLD and not any(hint in lower for hint in RAG_HINTS):
+        return IntentDecision(ChatIntent.DIRECT, "short_without_domain_signal")
+    return IntentDecision(ChatIntent.RAG, "domain_or_knowledge_request")

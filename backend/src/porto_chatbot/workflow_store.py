@@ -8,6 +8,7 @@ from typing import Any
 
 from .agent.graph import STEPS
 from .logging_utils import get_component_logger
+from .models.enums import WorkflowRunState
 from .settings import Settings
 
 logger = get_component_logger("workflow_store")
@@ -57,35 +58,60 @@ class WorkflowStore:
                     PRIMARY KEY (workflow_id, step_name)
                 )"""
             )
+            # Task 6 migration (审计 B3): 新增 prd_file_id 列。
+            # 旧库无此列 → ALTER TABLE ADD COLUMN；新库已含则跳过。
+            # row["prd_file_id"] 在旧行上读到 NULL,调用方需 fallback 到 prd_text。
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(workflows)")}
+            if "prd_file_id" not in cols:
+                conn.execute("ALTER TABLE workflows ADD COLUMN prd_file_id TEXT")
+                logger.info("workflow_store migrated: added prd_file_id column")
 
     def create(
-        self, session_id, project_name, prd_text, top_k, rag_snapshot, agent_snapshot
+        self,
+        session_id,
+        project_name,
+        prd_text,
+        top_k,
+        rag_snapshot,
+        agent_snapshot,
+        prd_file_id: str | None = None,
     ) -> str:
+        """创建 workflow 行。
+
+        Task 6:``prd_file_id`` 由 upload 路径(FileService.store 返回的 meta.file_id)
+        提供;text 路径(POST /workflows)与历史调用仍只传 ``prd_text``,留空占位。
+        旧库行无 prd_file_id 列时,_init_db 的 ALTER 已补齐;此处统一 INSERT。
+        """
         wid = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO workflows
-                   (workflow_id, session_id, project_name, prd_text, top_k,
+                   (workflow_id, session_id, project_name, prd_text, prd_file_id, top_k,
                     rag_snapshot, agent_snapshot, status, current_step, error,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     wid,
                     session_id,
                     project_name,
                     prd_text,
+                    prd_file_id,
                     top_k,
                     json.dumps(rag_snapshot, ensure_ascii=False),
                     json.dumps(agent_snapshot, ensure_ascii=False),
-                    "created",
+                    WorkflowRunState.CREATED,
                     None,
                     None,
                     now,
                     now,
                 ),
             )
-        logger.info("workflow created workflow_id=%s", wid)
+        logger.info(
+            "workflow created workflow_id=%s prd_file_id=%s",
+            wid,
+            prd_file_id or "(none)",
+        )
         return wid
 
     def get(self, workflow_id) -> dict[str, Any] | None:

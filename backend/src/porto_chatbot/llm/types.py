@@ -3,9 +3,31 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
+from ..models.enums import TruncationReason
+
 Message = dict[str, Any]
+
+
+class FinishReason(StrEnum):
+    """归一化后的 finish_reason 已知值常量集。
+
+    注意：``_finish_reason()`` 返回类型保持 ``str | None``（可能透传未知外部值，
+    如 ``content_filter`` / ``end_turn`` / ``stop_sequence``）。此枚举仅用于
+    比较点（``if x == FinishReason.LENGTH``），不用于返回值类型标注。
+    """
+
+    LENGTH = "length"  # OpenAI 语义（含 Anthropic max_tokens 归一化）
+    STOP = "stop"
+    TOOL_CALLS = "tool_calls"
+
+
+class ContentType(StrEnum):
+    """Anthropic/OpenAI content block 的 type 字段。"""
+
+    TEXT = "text"
 
 
 @dataclass
@@ -34,9 +56,9 @@ class ToolLoopResult:
     turns: int = 0
     truncated: bool = False
     # 截断原因(仅 truncated=True 时有意义,供节点层透传到 tool_meta.reason):
-    #   "tool_loop_truncated"   —— tool-turn 用尽仍有 tool_calls(plan 原治理)
-    #   "max_tokens_truncated"  —— 单次回复被 agent_max_tokens 硬切且升级+续写均未收敛
-    reason: str | None = None
+    #   TruncationReason.TOOL_LOOP_TRUNCATED  —— tool-turn 用尽仍有 tool_calls(plan 原治理)
+    #   TruncationReason.MAX_TOKENS_TRUNCATED —— 单次回复被 agent_max_tokens 硬切且升级+续写均未收敛
+    reason: TruncationReason | None = None
 
 
 @dataclass(frozen=True)

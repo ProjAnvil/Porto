@@ -25,6 +25,7 @@ class SpecContext:
     settings: Settings | None = None
     vector_store: LocalVectorStore | None = None
     critic_llm: LLMClient | None = None  # spec loop 评判模型，缺省用 llm
+    file_service: Any = None  # FileService（final review I-1）：注入后 generate_initial_spec 的 read_file 工具可读 PRD
 
     def __post_init__(self) -> None:
         # 向后兼容：只传了 llm 就自动包一层 LangchainBackend

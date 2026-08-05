@@ -1,6 +1,8 @@
 """规格评审 rubric 常量与辅助函数。"""
 from __future__ import annotations
 
+from ..models.enums import SpecVerdict
+
 # ----------------------------- Rubric ----------------------------- #
 # 6 维 × 0-2 分，满分 12。≥ spec_refine_pass_score(默认10) 为 PASS。
 
@@ -24,7 +26,7 @@ def _critique_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "verdict": {"type": "string", "enum": ["PASS", "NEEDS_IMPROVEMENT", "FAIL"]},
+            "verdict": {"type": "string", "enum": [e.value for e in SpecVerdict]},
             "score": {"type": "integer", "minimum": 0, "maximum": 12},
             "feedback": {"type": "string", "description": "针对未满分维度的具体改进建议"},
             "per_dimension": {

@@ -111,6 +111,21 @@ export async function createWorkflowUpload(
   );
 }
 
+export async function uploadChatFile(
+  file: File,
+  sessionId: string,
+): Promise<{ file_id: string; page_count: number; original_name: string }> {
+  const form = new FormData();
+  form.set("file", file);
+  form.set("session_id", sessionId);
+  return parseJson<{ file_id: string; page_count: number; original_name: string }>(
+    await fetch("/api/chat/files", {
+      method: "POST",
+      body: form,
+    }),
+  );
+}
+
 export async function listWorkflows(params?: {
   sessionId?: string;
   date?: string;
@@ -251,7 +266,7 @@ export const defaultAgentConfig: AgentConfig = {
   critic_max_tokens: null,
   spec_refine_enabled: true,
   spec_refine_max_iter: 3,
-  spec_refine_concurrency: 3,
+  spec_refine_concurrency: 4,
   spec_refine_pass_score: 10,
   spec_refine_budget_tokens: 40000,
   workflow_rework_enabled: true,

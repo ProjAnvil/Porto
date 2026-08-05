@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+from .enums import (
+    DependencyName,
+    DependencyStatus,
+    FeatureName,
+    IndexJobState,
+)
 
 
 class SourceChunk(BaseModel):
@@ -26,13 +33,10 @@ class IndexStats(BaseModel):
     chunk_overlap: int = 0
 
 
-IndexJobState = Literal["idle", "running", "succeeded", "failed", "interrupted"]
-
-
 class IndexJobStatus(BaseModel):
     """RAG 索引任务的持久化状态视图（对应 service_locks['rag_index'] 行）。"""
 
-    status: IndexJobState = "idle"
+    status: IndexJobState = IndexJobState.IDLE
     source: str | None = None
     reset: bool = True
     progress_done: int = 0
@@ -46,14 +50,9 @@ class IndexJobStatus(BaseModel):
     error: str | None = None
 
 
-DependencyName = Literal["embedding", "agent_llm", "critic_llm"]
-DependencyStatus = Literal["ok", "degraded", "down", "unknown"]
-FeatureName = Literal["chat", "rag_search", "workflow"]
-
-
 class DependencyHealth(BaseModel):
     name: DependencyName
-    status: DependencyStatus = "unknown"
+    status: DependencyStatus = DependencyStatus.UNKNOWN
     latency_ms: float | None = None
     detail: str | None = None
     checked_at: str | None = None

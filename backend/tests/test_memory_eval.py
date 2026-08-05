@@ -29,5 +29,5 @@ def test_rag_eval_cases_score_context_grounding():
         ]
     )
 
-    assert result["score"] > 30
-    assert result["cases"][0]["metrics"]["groundedness"] > 0
+    assert result.score > 30
+    assert result.cases[0].metrics.groundedness > 0
