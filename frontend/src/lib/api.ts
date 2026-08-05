@@ -266,7 +266,7 @@ export const defaultAgentConfig: AgentConfig = {
   critic_max_tokens: null,
   spec_refine_enabled: true,
   spec_refine_max_iter: 3,
-  spec_refine_concurrency: 3,
+  spec_refine_concurrency: 4,
   spec_refine_pass_score: 10,
   spec_refine_budget_tokens: 40000,
   workflow_rework_enabled: true,

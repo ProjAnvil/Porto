@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # --- Spec refine loop（Phase 2）---
     spec_refine_enabled: bool = True
     spec_refine_max_iter: int = Field(default=3, ge=0, le=10)
-    spec_refine_concurrency: int = Field(default=3, ge=1, le=10)
+    spec_refine_concurrency: int = Field(default=4, ge=1, le=10)
     spec_refine_pass_score: int = Field(default=10, ge=0, le=12)
     spec_refine_budget_tokens: int = Field(default=40000, ge=1000)
 
