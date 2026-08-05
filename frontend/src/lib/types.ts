@@ -184,8 +184,7 @@ export type WorkflowStepName =
   | "retrieve"
   | "understand"
   | "identify"
-  | "generate"
-  | "evaluate";
+  | "generate";
 
 export type WorkflowStatus =
   | "created"

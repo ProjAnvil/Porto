@@ -110,7 +110,6 @@ const WORKFLOW_STEPS: WorkflowStepName[] = [
   "understand",
   "identify",
   "generate",
-  "evaluate",
 ];
 
 const CHECKPOINT_STEPS: WorkflowStepName[] = [
@@ -124,7 +123,6 @@ const STEP_LABELS: Record<WorkflowStepName, string> = {
   understand: "理解",
   identify: "子系统",
   generate: "规格",
-  evaluate: "评估",
 };
 
 function scoreClass(score?: number) {
@@ -3252,11 +3250,6 @@ function CompletedView({
     | Record<string, string>
     | undefined;
   const specResults = readSpecResults(detail);
-  const evaluateOutput = detail.outputs.evaluate?.output;
-  const score =
-    evaluateOutput && typeof evaluateOutput === "object" && "score" in evaluateOutput
-      ? Number((evaluateOutput as Record<string, unknown>).score)
-      : null;
   const [tab, setTab] = useState<"understand" | "subsystems" | "specs">(
     "understand",
   );
@@ -3268,11 +3261,6 @@ function CompletedView({
           <CheckCircle2 size={15} className="text-emerald-500" />
           拆解完成
         </h3>
-        {score != null ? (
-          <span className={`rounded-full px-2 py-1 text-xs ${scoreClass(score)}`}>
-            score {score}
-          </span>
-        ) : null}
       </div>
       <div className="flex gap-1 border-b border-zinc-200 px-2 py-1">
         {(
