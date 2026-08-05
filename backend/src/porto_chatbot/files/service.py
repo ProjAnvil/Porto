@@ -18,7 +18,7 @@ from fastapi import UploadFile
 
 from ..documents import parse_document
 from ..logging_utils import get_component_logger
-from ..models.file import FileMeta
+from ..models.file import FileHit, FileInfo, FileMeta
 from ..settings import Settings
 
 _MIME_MAP = {
@@ -118,3 +118,73 @@ class FileService:
             return c.execute(
                 "SELECT * FROM files WHERE file_id=?", (file_id,)
             ).fetchone()
+
+    def _pages(self, file_id: str) -> list[str] | None:
+        """Return the cached page-text list for ``file_id``, or None if absent."""
+        row = self._get_row(file_id)
+        if row is None:
+            return None
+        return json.loads(row["pages_json"])
+
+    def get_info(self, file_id: str) -> FileInfo | None:
+        """Return a :class:`FileInfo` snapshot, or None if the file is unknown."""
+        row = self._get_row(file_id)
+        if row is None:
+            return None
+        return FileInfo(
+            file_id=row["file_id"],
+            original_name=row["original_name"],
+            mime=row["mime"],
+            size_bytes=row["size_bytes"],
+            page_count=row["page_count"],
+        )
+
+    def read_pages(self, file_id: str, start: int, end: int) -> str:
+        """Return concatenated text for pages ``[start, end]`` (1-based, inclusive).
+
+        On any failure (missing file, invalid range) returns a localized
+        error string prefixed with ``[错误]`` so the caller can surface it
+        verbatim without raising.
+        """
+        pages = self._pages(file_id)
+        if pages is None:
+            return f"[错误] 文件 {file_id} 不存在"
+        total = len(pages)
+        # Normalise to 1-based inclusive bounds; reject empty / reversed ranges.
+        if start < 1 or end < 1 or start > end:
+            return f"[错误] 页码范围无效，文件共 {total} 页"
+        if start > total or end > total:
+            return f"[错误] 页码范围无效，文件共 {total} 页"
+        chunks: list[str] = []
+        for page_no in range(start, end + 1):
+            chunks.append(f"--- 第 {page_no} 页 ---\n{pages[page_no - 1]}")
+        return "\n".join(chunks)
+
+    def search(self, file_id: str, query: str) -> list[FileHit]:
+        """Case-insensitive substring search across cached pages.
+
+        Returns one :class:`FileHit` per occurrence (page, snippet) with the
+        snippet centred on the match (±60 chars). Empty list if no match or
+        the file is unknown.
+        """
+        if not query:
+            return []
+        pages = self._pages(file_id)
+        if pages is None:
+            return []
+        needle = query.lower()
+        window = 60
+        hits: list[FileHit] = []
+        for idx, page_text in enumerate(pages, start=1):
+            lowered = page_text.lower()
+            start_pos = 0
+            while True:
+                found = lowered.find(needle, start_pos)
+                if found == -1:
+                    break
+                snippet_lo = max(0, found - window)
+                snippet_hi = min(len(page_text), found + len(needle) + window)
+                snippet = page_text[snippet_lo:snippet_hi]
+                hits.append(FileHit(page=idx, snippet=snippet))
+                start_pos = found + len(needle)
+        return hits
