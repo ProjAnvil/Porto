@@ -148,8 +148,8 @@ class WorkflowExecutor:
             logger.exception("workflow worker crashed workflow_id=%s", workflow_id)
             try:
                 self.store.update_status(workflow_id, WorkflowRunState.FAILED, error="worker crashed")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("update_status FAILED failed: %s", exc)
         finally:
             guard.release()
 
@@ -399,8 +399,8 @@ class WorkflowExecutor:
             logger.exception("workflow rerun crashed workflow_id=%s", workflow_id)
             try:
                 self.store.update_status(workflow_id, WorkflowRunState.FAILED, error="rerun crashed")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("update_status FAILED failed: %s", exc)
         finally:
             guard.release()
 

@@ -295,12 +295,12 @@ def reset_rag_singletons() -> None:
     for entry in _rag_singletons.values():
         try:
             entry["supervisor"].stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("supervisor stop failed: %s", exc)
         try:
             entry["health"].stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("health stop failed: %s", exc)
         try:
             # Conditional close: if a workflow worker (and its langgraph-internal
             # ThreadPoolExecutor) is still mid-invoke on this conn, closing would
@@ -315,8 +315,8 @@ def reset_rag_singletons() -> None:
             if ex is not None and ex.is_any_running():
                 continue  # worker still running; leak conn to avoid SIGSEGV
             entry["_checkpoint_conn"].close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("checkpoint conn close failed: %s", exc)
     _rag_singletons = {}
 
 
