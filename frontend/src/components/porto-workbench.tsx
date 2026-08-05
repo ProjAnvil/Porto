@@ -1181,6 +1181,9 @@ function Composer({
 }) {
   // disabled 时同时禁止上传（与输入框行为一致）。
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // I-2: 附件上传中时禁用 Send,避免 file_id 尚未拿到就发送导致附件丢失。
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const sendDisabled = disabled || uploading;
 
   const handlePick = () => {
     if (disabled) return;
@@ -1259,9 +1262,14 @@ function Composer({
         />
         <ComposerPrimitive.Send
           className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-zinc-950 text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={disabled}
+          disabled={sendDisabled}
+          title={uploading ? "附件上传中…" : undefined}
         >
-          <Send size={17} />
+          {uploading ? (
+            <Loader2 size={17} className="animate-spin" />
+          ) : (
+            <Send size={17} />
+          )}
         </ComposerPrimitive.Send>
       </div>
     </ComposerPrimitive.Root>
@@ -2737,24 +2745,29 @@ function StepRerunToolbar({
       {truncatedSteps.map((step) => {
         const isRerunning = rerunning === step;
         const label = STEP_LABELS[step];
-        const title = atCap
-          ? `已达 turn 硬上限(${TOOL_TURN_HARD_CAP}),请检查 prompt 或手动编辑产出`
-          : `${curMax}→${newMax} turn · 上限 ${TOOL_TURN_HARD_CAP}`;
+        // T10-A: generate 步是 spec 子图(Send fan-out),不在 _NODE_FNS 中,
+        // rerun 会 KeyError → FAILED。按钮禁用,仅保留截断指示 chip。
+        const isGenerate = step === "generate";
+        const title = isGenerate
+          ? "规格生成步为子图 fan-out,暂不支持整步重跑。请手动编辑产出或重新创建工作流。"
+          : atCap
+            ? `已达 turn 硬上限(${TOOL_TURN_HARD_CAP}),请检查 prompt 或手动编辑产出`
+            : `${curMax}→${newMax} turn · 上限 ${TOOL_TURN_HARD_CAP}`;
         const buttonClass = isRerunning
           ? "cursor-not-allowed bg-gray-400 text-white"
-          : atCap
+          : atCap || isGenerate
             ? "cursor-not-allowed bg-gray-100 text-gray-500"
             : "bg-blue-600 text-white hover:bg-blue-700";
         return (
           <span className="flex items-center gap-2" key={step}>
-            {step === "generate" && allSpecNames.length > 0 ? (
+            {isGenerate && allSpecNames.length > 0 ? (
               <span className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-red-700">
                 {truncSpecCount}/{allSpecNames.length} 子系统超限
               </span>
             ) : null}
             <button
               className={`flex items-center gap-1 rounded-md border border-transparent px-2.5 py-1 text-xs font-medium ${buttonClass}`}
-              disabled={isRerunning || atCap}
+              disabled={isRerunning || atCap || isGenerate}
               onClick={() => void handleRerun(step)}
               title={title}
               type="button"
@@ -2764,6 +2777,8 @@ function StepRerunToolbar({
                   <Loader2 size={12} className="animate-spin" />
                   重跑中…
                 </>
+              ) : isGenerate ? (
+                `重跑${label} · 不支持`
               ) : atCap ? (
                 `重跑${label} · 已达上限`
               ) : (

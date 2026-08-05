@@ -10,6 +10,7 @@ text-like formats so downstream nodes can cite ``page N`` consistently.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import uuid
 from pathlib import Path
@@ -69,12 +70,17 @@ class FileService:
         stored_path.write_bytes(payload)
         max_bytes = getattr(self.settings, "document_max_upload_mb", 20) * 1024 * 1024
         max_pdf = getattr(self.settings, "document_max_pdf_pages", 200)
-        artifact = parse_document(
-            stored_path,
-            original_name=original,
-            max_bytes=max_bytes,
-            max_pdf_pages=max_pdf,
-        )
+        try:
+            artifact = parse_document(
+                stored_path,
+                original_name=original,
+                max_bytes=max_bytes,
+                max_pdf_pages=max_pdf,
+            )
+        except Exception:
+            # T2-A: parse 失败时清理孤儿目录,避免 files_dir 堆积无 DB 记录的残留。
+            shutil.rmtree(store_dir, ignore_errors=True)
+            raise
         if suffix == ".pdf":
             pages = self._extract_pdf_pages(stored_path)
         else:

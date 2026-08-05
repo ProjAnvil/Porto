@@ -9,13 +9,25 @@ Task 7: 节点不再直接读 ``state["prd_text"]`` —— 改为经 ``file_serv
 - **text 路由**(POST /workflows,测试/历史): workflow_executor 的 fallback
   ``prd_file_id = row["prd_file_id"] or row["prd_text"]`` 把原始文本塞进
   ``prd_file_id``;``get_info`` 返回 None → 回退成纯字符串返回(由调用方截断)。
+
+Final review I-1: 当 ``file_service=None`` 且 ``prd_file_id`` 看起来是 16-hex pointer
+(而非原始 PRD 文本)时,返回明确错误信息,避免把字面 file_id 串当 PRD 正文喂 LLM。
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 #: 默认读取前 5 页 —— 与 brief 一致(避免一次读长 PRD 触发 6000 字截断)。
 _DEFAULT_MAX_PAGES = 5
+
+#: 16-hex file_id 模式(FileService.store 生成: ``uuid.uuid4().hex[:16]``)。
+_HEX_POINTER_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _looks_like_file_pointer(value: str) -> bool:
+    """Heuristic: 纯 16-hex 串大概率是 file_id pointer 而非 PRD 原文。"""
+    return bool(_HEX_POINTER_RE.match(value))
 
 
 def read_prd_text(
@@ -40,5 +52,9 @@ def read_prd_text(
             return file_service.read_pages(prd_file_id, 1, end)
     # 回退:text 路由把原始 PRD 存在 prd_file_id(或老字段 prd_text)。
     if prd_file_id:
+        # Final review I-1 保险:file_service 未注入但 prd_file_id 是 16-hex pointer
+        # → 返回明确错误,而非把字面 id 当 PRD 正文喂 LLM(静默脏数据)。
+        if file_service is None and _looks_like_file_pointer(str(prd_file_id)):
+            return "PRD 原文需经 file_service 读取，当前未注入"
         return str(prd_file_id)
     return str(state.get("prd_text") or "")

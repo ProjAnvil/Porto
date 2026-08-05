@@ -89,6 +89,7 @@ def _make_state(
         "ctx_llm": llm,
         "ctx_settings": settings,
         "ctx_state": {"workflow_id": "w1", "sources": [], "understanding": "理解"},
+        "ctx_file_service": None,
     }
 
 

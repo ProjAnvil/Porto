@@ -35,7 +35,11 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
             "max_turns": max_turns,
             "reason": None,
         }
-    tools_ctx = AgentToolContext(state=ctx.state, vector_store=ctx.vector_store)
+    tools_ctx = AgentToolContext(
+        state=ctx.state,
+        vector_store=ctx.vector_store,
+        file_service=ctx.file_service,
+    )
     result = asyncio.run(
         ctx.backend.execute_node(
             system=(

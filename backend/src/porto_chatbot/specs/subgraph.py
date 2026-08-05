@@ -63,6 +63,7 @@ class SpecSubgraphState(TypedDict, total=False):
     ctx_settings: Any
     ctx_vector_store: Any
     ctx_critic_llm: Any
+    ctx_file_service: Any     # final review I-1: FileService,让 generate_initial_spec 工具可读 PRD
     ctx_sema: Any             # M3: threading.Semaphore,init_spec 入口限流
     # ── 输出（B1：必须用 reducer）──
     spec_results: Annotated[dict, _dict_merge]
@@ -87,6 +88,7 @@ def _ctx(state: SpecSubgraphState) -> SpecContext:
         settings=state.get("ctx_settings"),
         vector_store=state.get("ctx_vector_store"),
         critic_llm=state.get("ctx_critic_llm"),
+        file_service=state.get("ctx_file_service"),
     )
 
 
@@ -135,6 +137,7 @@ def _resolve_ctx(state: SpecSubgraphState, config=None) -> SpecContext:
             settings=agent.settings,
             vector_store=agent.vector_store,
             critic_llm=agent.critic_llm,
+            file_service=getattr(agent, "file_service", None),
         )
     return _ctx(state)
 
@@ -169,6 +172,7 @@ def init_spec(state: SpecSubgraphState, *, config=None) -> dict:
             "ctx_settings": agent.settings,
             "ctx_vector_store": agent.vector_store,
             "ctx_critic_llm": agent.critic_llm,
+            "ctx_file_service": getattr(agent, "file_service", None),
             "ctx_sema": getattr(agent, "_spec_sema", None),
         }
         sema = agent._spec_sema if hasattr(agent, "_spec_sema") else None
@@ -190,6 +194,7 @@ def init_spec(state: SpecSubgraphState, *, config=None) -> dict:
         "ctx_settings": state.get("ctx_settings"),
         "ctx_vector_store": state.get("ctx_vector_store"),
         "ctx_critic_llm": state.get("ctx_critic_llm"),
+        "ctx_file_service": state.get("ctx_file_service"),
         "ctx_sema": state.get("ctx_sema"),
     })
     return result

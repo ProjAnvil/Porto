@@ -244,6 +244,7 @@ def _build_checkpoint_serde():
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
     from ..models.common import SourceChunk
+    from ..models.enums import SubsystemType
     from ..models.spec import SpecAttempt, SpecResult
     from ..models.workflow import AgentStep, Subsystem
 
@@ -254,6 +255,7 @@ def _build_checkpoint_serde():
             SourceChunk,
             SpecAttempt,
             SpecResult,
+            SubsystemType,
         ]
     )
 
