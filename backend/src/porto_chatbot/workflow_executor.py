@@ -155,11 +155,19 @@ class WorkflowExecutor:
 
     def _build_agent(self, row: dict[str, Any]) -> PortoAgent:
         from .api.deps import runtime_settings_from_snapshot
+        from .files import FileService
 
         rag_snap = json.loads(row["rag_snapshot"])
         agent_snap = json.loads(row["agent_snapshot"])
         runtime = runtime_settings_from_snapshot(rag_snap, agent_snap, row["top_k"])
-        return PortoAgent(runtime, LocalVectorStore(runtime), LLMClient(runtime))
+        # Task 7:注入 FileService —— 节点经 ``agent.file_service`` 分页读 PRD
+        # (upload 路径);text 路径下 ``prd_file_id`` 实为原始文本,helper 自动回退。
+        return PortoAgent(
+            runtime,
+            LocalVectorStore(runtime),
+            LLMClient(runtime),
+            file_service=FileService(runtime),
+        )
 
     @staticmethod
     def _config(workflow_id: str, agent: Any = None) -> dict:
@@ -176,10 +184,11 @@ class WorkflowExecutor:
         self.store.update_status(workflow_id, WorkflowRunState.RUNNING)
         agent = self._build_agent(row)
         config = self._config(workflow_id, agent)
-        # Task 6:upload 路径写 prd_file_id(text 路径 / 旧行则 NULL)→ fallback 到
-        # prd_text,保证节点(Task 7 之前)读 state["prd_file_id"] 仍有可读内容。
-        # 同时保留 prd_text 注入,旧节点(understand/retrieve/evaluate/identify)
-        # 仍直接读 state["prd_text"] —— Task 7 改造节点后才移除。
+        # Task 6/7:upload 路径写 prd_file_id(text 路径 / 旧行则 NULL)→ fallback 到
+        # prd_text,保证 state["prd_file_id"] 始终有可读内容。
+        # 节点(retrieve/understand/identify,Task 7)经 file_service.read_pages
+        # 读 prd_file_id;text 路径下 prd_file_id 实为原始文本,helper 自动回退。
+        # evaluate 仍直接读 state["prd_text"](Task 10 清理),故暂保留 prd_text 注入。
         prd_file_id = row["prd_file_id"] or row["prd_text"]
         initial = {
             "workflow_id": workflow_id,

@@ -14,7 +14,11 @@ from .context import (
 
 
 def _get_prd_text(ctx: AgentToolContext) -> str:
-    prd = str(ctx.state.get("prd_text", "")).strip()
+    # Task 7:优先走 file_service 分页读取(upload 路径);text 路径 / 未注入时
+    # helper 自动回退到 prd_file_id / prd_text 内联文本。结果统一按 _MAX_PRD_CHARS 截断。
+    from ..agent.nodes._prd import read_prd_text
+
+    prd = read_prd_text(ctx.state, ctx.file_service).strip()
     return _truncate(prd, _MAX_PRD_CHARS) if prd else "PRD 文本尚未提供。"
 
 

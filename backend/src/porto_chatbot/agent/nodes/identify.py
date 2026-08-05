@@ -13,6 +13,7 @@ from ..heuristics import (
     subsystem_schema,
 )
 from ..state import PortoAgentState
+from ._prd import read_prd_text
 
 
 def identify_subsystems(state, *, config):
@@ -20,6 +21,8 @@ def identify_subsystems(state, *, config):
     agent.logger.info("step identify_subsystems start workflow_id=%s", state["workflow_id"])
     subsystems: list[Subsystem] = []
     if agent.llm.enabled:
+        # Task 7:经 file_service 分页读前 5 页,再 [:2000] 截断给 LLM 上下文。
+        prd_text = read_prd_text(state, getattr(agent, "file_service", None))[:2000]
         result = asyncio.run(
             agent.backend.execute_node(
                 system=(
@@ -28,7 +31,7 @@ def identify_subsystems(state, *, config):
                 ),
                 user=(
                     f"业务理解报告:\n{state['understanding']}\n\n"
-                    f"PRD 节选:\n{state['prd_text'][:2000]}"
+                    f"PRD 节选:\n{prd_text}"
                 ),
                 structured_schema=subsystem_schema(),
             )
@@ -45,7 +48,7 @@ def identify_subsystems(state, *, config):
             len(subsystems),
         )
     if not subsystems:
-        subsystems = _fallback_identify(state)
+        subsystems = _fallback_identify(state, getattr(agent, "file_service", None))
         agent.logger.info(
             "step identify_subsystems used fallback workflow_id=%s", state["workflow_id"]
         )
@@ -63,8 +66,8 @@ def identify_subsystems(state, *, config):
     }
 
 
-def _fallback_identify(state: PortoAgentState) -> list[Subsystem]:
-    domains = matched_domains(state["prd_text"] + "\n" + state["understanding"])
+def _fallback_identify(state: PortoAgentState, file_service=None) -> list[Subsystem]:
+    domains = matched_domains(read_prd_text(state, file_service) + "\n" + state["understanding"])
     subsystems: list[Subsystem] = []
     for domain, matches in domains.items():
         name = f"{domain}-service"
