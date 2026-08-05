@@ -111,6 +111,21 @@ export async function createWorkflowUpload(
   );
 }
 
+export async function uploadChatFile(
+  file: File,
+  sessionId: string,
+): Promise<{ file_id: string; page_count: number; original_name: string }> {
+  const form = new FormData();
+  form.set("file", file);
+  form.set("session_id", sessionId);
+  return parseJson<{ file_id: string; page_count: number; original_name: string }>(
+    await fetch("/api/chat/files", {
+      method: "POST",
+      body: form,
+    }),
+  );
+}
+
 export async function listWorkflows(params?: {
   sessionId?: string;
   date?: string;
