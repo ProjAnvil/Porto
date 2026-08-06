@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from .llm import LLMClient
 from .logging_utils import get_component_logger
-from .models.enums import ChatIntent
+from .models.enums import ChatIntent, IntentRoutingMode
 from .settings import Settings
 
 GREETING_RE = re.compile(
@@ -20,6 +20,8 @@ RAG_HINTS = (
     "知识库", "文档", "资料", "根据", "查", "搜索", "分析", "拆", "设计",
     "架构", "需求", "prd", "workflow", "子系统", "支付", "风控", "订单",
 )
+# adaptive 模式规则降级时判定 deep_rag 的复杂度关键词
+_DEEP_HINTS = ("分析", "架构", "设计", "拆", "完整", "详细", "怎么实现")
 
 _MAX_INTENT_MESSAGE_CHARS = 500
 _MAX_REASON_CHARS = 80
@@ -36,22 +38,28 @@ def route_chat_intent(
     message: str,
     settings: Settings | None = None,
     llm: LLMClient | None = None,
+    routing_mode: IntentRoutingMode = IntentRoutingMode.BINARY,
 ) -> IntentDecision:
-    """意图路由：LLM 优先（更准），规则降级（无 LLM 时）。
+    """意图路由。
 
-    LLM 把意图判断交给模型（function-calling 风格的结构化输出）；
-    LLM 不可用或输出无效时回退到关键词/正则规则。
+    - ``off``：不分流（调用方直接走 RAG），返回 ``RAG`` + ``routing_off``。
+    - ``binary``：``direct`` / ``rag`` 两分类（默认，向后兼容）。
+    - ``adaptive``：``direct`` / ``quick_rag`` / ``deep_rag`` 三分类。
+
+    LLM 优先（更准），不可用或输出无效时回退到关键词/正则规则。
     """
     logger = get_component_logger("intent", settings)
+    if routing_mode == IntentRoutingMode.OFF:
+        return IntentDecision(ChatIntent.RAG, "routing_off")
     if llm is not None and llm.enabled:
-        decision = _llm_route(message, llm)
+        decision = _llm_route(message, llm, routing_mode)
         if decision is not None:
             logger.info(
                 "chat intent routed llm intent=%s reason=%s message_chars=%s",
                 decision.intent, decision.reason, len(message),
             )
             return decision
-    decision = _rule_route(message)
+    decision = _rule_route(message, routing_mode)
     logger.info(
         "chat intent routed rule intent=%s reason=%s message_chars=%s",
         decision.intent, decision.reason, len(message),
@@ -59,19 +67,39 @@ def route_chat_intent(
     return decision
 
 
-def _llm_route(message: str, llm: LLMClient) -> IntentDecision | None:
+def _llm_route(
+    message: str, llm: LLMClient, routing_mode: IntentRoutingMode,
+) -> IntentDecision | None:
+    """LLM 结构化分类。
+
+    按模式裁剪 schema enum：binary 仅暴露 ``[direct, rag]``，
+    adaptive 暴露 ``[direct, quick_rag, deep_rag]``，避免 quick_rag/deep_rag
+    在 binary 模式下渗漏到 LLM 输出（Task 1 review 观察）。
+    """
     if not message.strip():
         return None
+    if routing_mode == IntentRoutingMode.ADAPTIVE:
+        enums = ["direct", "quick_rag", "deep_rag"]
+        desc = (
+            "- direct：寒暄闲聊、无需查库\n"
+            "- quick_rag：简单事实查询\n"
+            "- deep_rag：复杂分析/架构/设计，需深度检索"
+        )
+    else:
+        enums = ["direct", "rag"]
+        desc = (
+            "- direct：寒暄、闲聊、自我介绍、帮助询问，"
+            "或明显不需要查询知识库的短消息\n"
+            "- rag：需要查询知识库、PRD 分析、子系统设计、"
+            "架构/需求/支付/风控等领问题"
+        )
     parsed = llm.complete_structured(
-        "你是意图分类器。判断用户消息属于：\n"
-        "- direct：寒暄、闲聊、自我介绍、帮助询问，或明显不需要查询知识库的短消息\n"
-        "- rag：需要查询知识库、PRD 分析、子系统设计、架构/需求/支付/风控等领问题\n"
-        "只输出 JSON。",
+        f"你是意图分类器。判断用户消息属于：\n{desc}\n只输出 JSON。",
         f"用户消息: {message[:_MAX_INTENT_MESSAGE_CHARS]}",
         {
             "type": "object",
             "properties": {
-                "intent": {"type": "string", "enum": [e.value for e in ChatIntent]},
+                "intent": {"type": "string", "enum": enums},
                 "reason": {"type": "string"},
             },
             "required": ["intent", "reason"],
@@ -80,12 +108,19 @@ def _llm_route(message: str, llm: LLMClient) -> IntentDecision | None:
     if not isinstance(parsed, dict):
         return None
     intent = parsed.get("intent")
-    if intent not in [e.value for e in ChatIntent]:
+    if intent not in enums:
         return None
     return IntentDecision(intent, f"llm:{str(parsed.get('reason', ''))[:_MAX_REASON_CHARS]}")
 
 
-def _rule_route(message: str) -> IntentDecision:
+def _rule_route(
+    message: str, routing_mode: IntentRoutingMode = IntentRoutingMode.BINARY,
+) -> IntentDecision:
+    """关键词/正则降级路由。
+
+    binary/off 输出 ``RAG``；adaptive 按 ``_DEEP_HINTS`` 区分 ``DEEP_RAG``
+    与 ``QUICK_RAG``。
+    """
     normalized = re.sub(r"\s+", " ", message).strip()
     lower = normalized.lower()
     if not normalized:
@@ -96,4 +131,8 @@ def _rule_route(message: str) -> IntentDecision:
         return IntentDecision(ChatIntent.DIRECT, "smalltalk_or_help")
     if len(normalized) <= _SHORT_MESSAGE_THRESHOLD and not any(hint in lower for hint in RAG_HINTS):
         return IntentDecision(ChatIntent.DIRECT, "short_without_domain_signal")
+    if routing_mode == IntentRoutingMode.ADAPTIVE:
+        if any(h in normalized for h in _DEEP_HINTS):
+            return IntentDecision(ChatIntent.DEEP_RAG, "deep_domain_request")
+        return IntentDecision(ChatIntent.QUICK_RAG, "domain_or_knowledge_request")
     return IntentDecision(ChatIntent.RAG, "domain_or_knowledge_request")
