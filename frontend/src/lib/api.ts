@@ -8,7 +8,9 @@ import type {
   KbStats,
   MemoryRecord,
   Paginated,
+  RagChatConfig,
   RagConfig,
+  RagWorkflowConfig,
   SessionItem,
   SourceChunk,
   WorkflowDetail,
@@ -36,6 +38,8 @@ export async function saveAppSettings(settings: {
   rag?: Partial<RagConfig>;
   agent?: Partial<AgentConfig>;
   document?: Partial<DocumentConfig>;
+  rag_chat?: Partial<RagChatConfig>;
+  rag_workflow?: Partial<RagWorkflowConfig>;
 }) {
   return parseJson<AppSettings>(
     await fetch("/api/settings", {
@@ -285,4 +289,18 @@ export const defaultDocumentConfig: DocumentConfig = {
   max_tokens: 16000,
   max_upload_mb: 20,
   max_pdf_pages: 200,
+};
+
+// 与 backend settings.py 默认值保持一致（chat_intent_routing_mode=BINARY、
+// *_query_transform_strategy=NONE、multi_query_count=4、hyde_fallback_threshold=0.3）
+export const defaultRagChatConfig: RagChatConfig = {
+  intent_routing_mode: "binary",
+  query_transform_strategy: "none",
+  multi_query_count: 4,
+  hyde_fallback_threshold: 0.3,
+};
+
+export const defaultRagWorkflowConfig: RagWorkflowConfig = {
+  query_transform_strategy: "none",
+  multi_query_count: 4,
 };

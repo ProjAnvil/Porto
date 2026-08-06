@@ -108,10 +108,31 @@ export type DocumentConfig = {
   max_pdf_pages: number;
 };
 
+// 检索优化（chat 场景）—— intent routing + 查询变换
+export type RagChatConfig = {
+  intent_routing_mode: "off" | "binary" | "adaptive";
+  query_transform_strategy:
+    | "none"
+    | "hyde"
+    | "multi_query"
+    | "decomposition"
+    | "step_back";
+  multi_query_count: number;
+  hyde_fallback_threshold: number;
+};
+
+// 检索优化（workflow 场景）—— 仅查询变换（None/Multi-Query/Decomposition）
+export type RagWorkflowConfig = {
+  query_transform_strategy: "none" | "multi_query" | "decomposition";
+  multi_query_count: number;
+};
+
 export type AppSettings = {
   rag: RagConfig;
   agent: AgentConfig;
   document: DocumentConfig;
+  rag_chat: RagChatConfig;
+  rag_workflow: RagWorkflowConfig;
 };
 
 export type MemoryRecord = {
