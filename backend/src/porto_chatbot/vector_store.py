@@ -184,16 +184,12 @@ class ChromaVectorStore:
         self.logger.info("index stats documents=%s chunks=%s", stats.documents, stats.chunks)
         return stats
 
-    def search(self, query: str, top_k: int | None = None) -> list[SourceChunk]:
+    def _search_raw(self, query: str, top_k: int) -> list[SourceChunk]:
+        """基础检索（vector/bm25/hybrid），不含 rerank。供 query_transform 编排复用。"""
         collection = self._compatible_collection()
         if not self._is_collection_compatible(collection) or self._safe_count(collection) == 0:
             self.logger.info("search skipped index unavailable query_chars=%s", len(query))
             return []
-        resolved_top_k = top_k or self.settings.top_k
-        method = self.settings.retrieval_method
-        self.logger.info(
-            "search start query_chars=%s top_k=%s method=%s", len(query), resolved_top_k, method
-        )
         query_embedding = self.embeddings.embed_query(query)
         stored_dimensions = self._collection_embedding_dimensions(collection)
         if stored_dimensions is not None and stored_dimensions != len(query_embedding):
@@ -203,12 +199,20 @@ class ChromaVectorStore:
                 len(query_embedding),
             )
             return []
+        method = self.settings.retrieval_method
         if method == RetrievalMethod.VECTOR:
-            rows = self._vector_search(collection, query_embedding, resolved_top_k)
-        elif method == RetrievalMethod.BM25:
-            rows = self._bm25_search(collection, query, resolved_top_k)
-        else:
-            rows = self._hybrid_search(collection, query_embedding, query, resolved_top_k)
+            return self._vector_search(collection, query_embedding, top_k)
+        if method == RetrievalMethod.BM25:
+            return self._bm25_search(collection, query, top_k)
+        return self._hybrid_search(collection, query_embedding, query, top_k)
+
+    def search(self, query: str, top_k: int | None = None) -> list[SourceChunk]:
+        resolved_top_k = top_k or self.settings.top_k
+        method = self.settings.retrieval_method
+        self.logger.info(
+            "search start query_chars=%s top_k=%s method=%s", len(query), resolved_top_k, method
+        )
+        rows = self._search_raw(query, resolved_top_k)
         if self.settings.rerank_enabled and rows:
             rows = rerank_chunks(rows, query, self.settings)
         self.logger.info("search finish method=%s results=%s", method, len(rows))

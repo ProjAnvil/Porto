@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from porto_chatbot.settings import Settings
 from porto_chatbot.vector_store import LocalVectorStore
 
@@ -14,6 +16,25 @@ def test_build_and_search(sample_settings):
     assert results
     assert results[0].path == "kb/payment-platform.md"
     assert results[0].score > 0
+
+
+@pytest.fixture()
+def store_with_docs(sample_settings):
+    """构造已索引文档的 store，供 search/_search_raw 测试复用。"""
+    store = LocalVectorStore(sample_settings)
+    store.build()
+    return store
+
+
+def test_search_raw_no_rerank(store_with_docs):
+    """_search_raw 等价于关闭 rerank 的 search（行为不变性回归）。"""
+    store = store_with_docs
+    store.settings.rerank_enabled = False
+    raw = store._search_raw("查询", top_k=3)
+    full = store.search("查询", top_k=3)
+    # rerank 关闭时两者一致
+    assert [r.id for r in raw] == [r.id for r in full]
+    assert len(raw) <= 3
 
 
 def test_ensure_index_no_rebuild_on_dimension_change(sample_settings):
