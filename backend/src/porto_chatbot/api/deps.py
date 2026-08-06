@@ -172,6 +172,25 @@ def effective_rag_workflow_settings(
     return RagWorkflowSettingsPayload(**updates)
 
 
+def rag_workflow_overrides() -> dict:
+    """Capture rag_workflow settings as a dict keyed by ``Settings`` field names.
+
+    Used at workflow creation to merge workflow-scoped RAG settings (query transform
+    strategy, multi_query_count) into the ``rag_snapshot`` so they flow through
+    ``runtime_settings_from_snapshot`` → ``agent.settings`` at execution time —
+    preserving Porto's snapshot-at-creation isolation philosophy.
+
+    ``RagWorkflowSettingsPayload.query_transform_strategy`` must be renamed to
+    ``workflow_query_transform_strategy`` (the ``Settings`` field name); without this
+    rename, ``model_copy(update=...)`` in ``runtime_settings_from_snapshot`` would
+    silently ignore the key and the retrieve node would always see ``NONE``.
+    """
+    wf = effective_rag_workflow_settings().model_dump(exclude_none=True)
+    if "query_transform_strategy" in wf:
+        wf["workflow_query_transform_strategy"] = wf.pop("query_transform_strategy")
+    return wf
+
+
 def apply_rag_settings(
     payload: RagSettingsPayload | None = None,
     agent: AgentSettingsPayload | None = None,

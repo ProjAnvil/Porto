@@ -40,6 +40,7 @@ from ..deps import (
     effective_rag_settings,
     get_workflow_executor,
     get_workflow_store,
+    rag_workflow_overrides,
 )
 
 logger = get_component_logger("api")
@@ -131,6 +132,7 @@ def create_workflow(req: WorkflowRequest):
     if not req.text or not req.text.strip():
         raise HTTPException(400, "text is required")
     rag = effective_rag_settings(req.rag).model_dump(exclude_none=True)
+    rag.update(rag_workflow_overrides())
     agent = effective_agent_settings(req.agent).model_dump(exclude_none=True)
     top_k = req.top_k or effective_rag_settings(req.rag).top_k
     store = get_workflow_store()
@@ -193,6 +195,7 @@ async def upload_workflow(
         )
 
     rag = effective_rag_settings().model_dump(exclude_none=True)
+    rag.update(rag_workflow_overrides())
     agent = effective_agent_settings().model_dump(exclude_none=True)
     resolved_top_k = top_k or effective_rag_settings().top_k
     store = get_workflow_store()
