@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from ..api.deps import (
+    effective_rag_chat_settings,
     get_index_supervisor,
     get_memory,
     get_store,
@@ -30,7 +31,8 @@ from ..memory import (
     trigger_facts_extraction_sync,
 )
 from ..models import ChatRequest, ChatResponse, EvalCase
-from ..models.enums import ChatIntent
+from ..models.enums import ChatIntent, IntentRoutingMode, QueryTransformStrategy
+from ..query_transform import retrieve_with_transform
 
 logger = get_component_logger("api")
 
@@ -158,9 +160,22 @@ def langchain_chat(req: ChatRequest, settings) -> ChatResponse:
         req.top_k,
     )
     llm = LLMClient(settings)
-    decision = route_chat_intent(req.message, settings, llm)
-    if decision.intent == ChatIntent.DIRECT:
-        return _direct_chat_answer(req, settings, decision, llm)
+
+    # Task 8: RAG 检索优化接入——从 effective rag_chat settings (db+env) 取 routing/transform。
+    rag_chat = effective_rag_chat_settings()
+    routing_mode = rag_chat.intent_routing_mode or IntentRoutingMode.BINARY
+    transform_strategy = rag_chat.query_transform_strategy or QueryTransformStrategy.NONE
+
+    transform_degraded: str | None = None
+
+    # 路由：OFF 模式跳过 route_chat_intent（构造一个 RAG decision 供 steps 渲染），
+    # binary/adaptive 调 route；DIRECT 早返（不查库、不做 rag_available 检查）。
+    if routing_mode == IntentRoutingMode.OFF:
+        decision: IntentDecision = IntentDecision(ChatIntent.RAG, "routing_off")
+    else:
+        decision = route_chat_intent(req.message, settings, llm, routing_mode=routing_mode)
+        if decision.intent == ChatIntent.DIRECT:
+            return _direct_chat_answer(req, settings, decision, llm)
 
     available, reason = get_index_supervisor().rag_available()
     if not available:
@@ -172,7 +187,15 @@ def langchain_chat(req: ChatRequest, settings) -> ChatResponse:
     store = get_store(settings)
     memory = get_memory(settings)
     store.ensure_index()
-    sources = store.search(req.message, top_k=top_k)
+    # Task 8: QUICK_RAG 走 store.search（无 transform）；其他（RAG/DEEP_RAG/off）走 transform。
+    if decision.intent == ChatIntent.QUICK_RAG:
+        sources = store.search(req.message, top_k=top_k)
+    else:
+        result = retrieve_with_transform(
+            req.message, transform_strategy, store, settings, llm, top_k
+        )
+        sources = result.chunks
+        transform_degraded = result.degrade_reason if result.degraded else None
     memories = memory.search(req.message, session_id=req.session_id, top_k=5)
     summary, recent = get_compacted_history(req.session_id, memory, llm)
     memory.add(session_id=req.session_id, role="user", content=req.message)
@@ -243,6 +266,7 @@ def langchain_chat(req: ChatRequest, settings) -> ChatResponse:
         sources=sources,
         memory=memories,
         evaluation=evaluation,
+        transform_degraded=transform_degraded,
         steps=[
             {
                 "name": "route_intent",
@@ -344,6 +368,8 @@ async def _stream_rag_path(
     decision: IntentDecision,
     llm: LLMClient,
     text_id: str,
+    *,
+    transform_strategy: QueryTransformStrategy,
 ) -> AsyncIterator[str]:
     """RAG 路径 SSE 生成：检索 + facts + 流式回答 + Inspector 数据 + finish。
 
@@ -356,7 +382,16 @@ async def _stream_rag_path(
     store = get_store(settings)
     memory = get_memory(settings)
     store.ensure_index()
-    sources = store.search(req.message, top_k=top_k)
+    # Task 8: QUICK_RAG 走 store.search（无 transform）；其他（RAG/DEEP_RAG/off）走 transform。
+    transform_degraded: str | None = None
+    if decision.intent == ChatIntent.QUICK_RAG:
+        sources = store.search(req.message, top_k=top_k)
+    else:
+        result = retrieve_with_transform(
+            req.message, transform_strategy, store, settings, llm, top_k
+        )
+        sources = result.chunks
+        transform_degraded = result.degrade_reason if result.degraded else None
     memories = memory.search(req.message, session_id=req.session_id, top_k=5)
     summary, recent = get_compacted_history(req.session_id, memory, llm)
     memory.add(session_id=req.session_id, role="user", content=req.message)
@@ -488,19 +523,23 @@ async def _stream_rag_path(
         }
     )
     yield _ai_sdk_sse({"type": "finish-step"})
+    finish_meta: dict = {"evaluation": evaluation, "source_count": len(sources)}
+    if transform_degraded is not None:
+        finish_meta["transform_degraded"] = transform_degraded
     yield _ai_sdk_sse(
         {
             "type": "finish",
             "finishReason": "stop",
-            "messageMetadata": {"evaluation": evaluation, "source_count": len(sources)},
+            "messageMetadata": finish_meta,
         }
     )
     yield "data: [DONE]\n\n"
     logger.info(
-        "chat stream finish session_id=%s sources=%s streamed=%s",
+        "chat stream finish session_id=%s sources=%s streamed=%s degraded=%s",
         req.session_id,
         len(sources),
         streamed,
+        transform_degraded,
     )
 
 
@@ -516,7 +555,18 @@ async def langchain_chat_stream(req: ChatRequest, settings) -> AsyncIterator[str
     logger.info("chat stream start session_id=%s", req.session_id)
 
     llm = LLMClient(settings)
-    decision = route_chat_intent(req.message, settings, llm)
+
+    # Task 8: RAG 检索优化接入——与 langchain_chat() 同策略：OFF 跳过 route，
+    # binary/adaptive 调 route + DIRECT 早返。
+    rag_chat = effective_rag_chat_settings()
+    routing_mode = rag_chat.intent_routing_mode or IntentRoutingMode.BINARY
+    transform_strategy = rag_chat.query_transform_strategy or QueryTransformStrategy.NONE
+
+    if routing_mode == IntentRoutingMode.OFF:
+        decision: IntentDecision = IntentDecision(ChatIntent.RAG, "routing_off")
+    else:
+        decision = route_chat_intent(req.message, settings, llm, routing_mode=routing_mode)
+
     text_id = "answer-1"
     try:
         if decision.intent == ChatIntent.DIRECT:
@@ -530,7 +580,14 @@ async def langchain_chat_stream(req: ChatRequest, settings) -> AsyncIterator[str
                 yield chunk
             return
 
-        async for chunk in _stream_rag_path(req, settings, decision, llm, text_id):
+        async for chunk in _stream_rag_path(
+            req,
+            settings,
+            decision,
+            llm,
+            text_id,
+            transform_strategy=transform_strategy,
+        ):
             yield chunk
     except Exception as exc:
         logger.exception("chat stream failed session_id=%s", req.session_id)
