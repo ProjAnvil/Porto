@@ -28,6 +28,22 @@ class RetrievalMethod(StrEnum):
     HYBRID = "hybrid"
 
 
+# ── 查询变换策略（检索前如何改写 query）──
+class QueryTransformStrategy(StrEnum):
+    NONE = "none"
+    HYDE = "hyde"
+    MULTI_QUERY = "multi_query"
+    DECOMPOSITION = "decomposition"
+    STEP_BACK = "step_back"
+
+
+# ── 意图路由模式（chat 专有）──
+class IntentRoutingMode(StrEnum):
+    OFF = "off"
+    BINARY = "binary"
+    ADAPTIVE = "adaptive"
+
+
 # ── Agent 引擎 ──
 class ChatbotBackend(StrEnum):
     LANGCHAIN = "langchain"
@@ -74,7 +90,9 @@ class ChatRole(StrEnum):
 
 class ChatIntent(StrEnum):
     DIRECT = "direct"
-    RAG = "rag"
+    RAG = "rag"               # binary 模式
+    QUICK_RAG = "quick_rag"   # adaptive：快速检索（强制 none）
+    DEEP_RAG = "deep_rag"     # adaptive：深度检索（套 transform）
 
 
 # ── Health ──

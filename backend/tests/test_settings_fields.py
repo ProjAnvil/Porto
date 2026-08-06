@@ -33,3 +33,11 @@ def test_payload_has_new_fields():
     )
     assert document.local_parser == "docling"
     assert document.max_upload_mb == 50
+
+
+def test_rag_optimization_defaults():
+    s = Settings()
+    assert s.chat_intent_routing_mode == "binary"
+    assert s.chat_query_transform_strategy == "none"
+    assert s.workflow_query_transform_strategy == "none"
+    assert s.multi_query_count == 4
