@@ -123,20 +123,37 @@ def retrieve_with_transform(
 
 # --- 各策略 LLM 生成函数（Task 6 实现） ---
 def _generate_hypothetical(llm, query: str) -> str:
-    """HYDE：让 LLM 生成假设答案，用作检索 query。Task 6 实现。"""
-    raise NotImplementedError  # Task 6
+    """HyDE：让 LLM 生成一个假设性答案文档，用它（而非原问题）去检索。"""
+    return llm.complete(
+        "请根据用户问题，写一段假设性的、像知识库文档一样的答案（中文，3-5 句）。"
+        "只输出答案正文，不要解释、不要说'假设'。",
+        f"用户问题: {query}",
+    ).strip()
 
 
 def _generate_query_variants(llm, query: str, n: int) -> list[str]:
-    """MULTI_QUERY：让 LLM 生成 n 条改写变体。Task 6 实现。"""
-    raise NotImplementedError  # Task 6
+    """Multi-Query：生成 n 个改写 query，每行一个。"""
+    raw = llm.complete(
+        f"请把下面的问题改写成 {n} 个语义相同但表述不同的检索用查询（每行一个，不要编号）：",
+        f"原问题: {query}",
+    )
+    variants = [line.strip() for line in raw.splitlines() if line.strip()]
+    return variants[:n] if variants else [query]
 
 
 def _decompose(llm, query: str) -> list[str]:
-    """DECOMPOSITION：让 LLM 拆解子问题。Task 6 实现。"""
-    raise NotImplementedError  # Task 6
+    """Decomposition：把复杂问题拆成子问题，每行一个。"""
+    raw = llm.complete(
+        "请把下面的问题拆成若干个独立的子问题（每行一个，不要编号），便于分别检索：",
+        f"原问题: {query}",
+    )
+    subs = [line.strip() for line in raw.splitlines() if line.strip()]
+    return subs if subs else [query]
 
 
 def _step_back(llm, query: str) -> str:
-    """STEP_BACK：让 LLM 生成更高阶的抽象问题。Task 6 实现。"""
-    raise NotImplementedError  # Task 6
+    """Step-Back：抽象出更高层的背景问题。"""
+    return llm.complete(
+        "请把下面的问题抽象成一个更宽泛的背景问题（一句话），用于检索相关背景知识。只输出问题本身：",
+        f"原问题: {query}",
+    ).strip()

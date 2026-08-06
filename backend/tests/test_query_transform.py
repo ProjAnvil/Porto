@@ -54,3 +54,66 @@ def test_hyde_fallback_on_llm_failure(store_with_docs, monkeypatch):
     assert "llm_call_failed" in result.degrade_reason
     # 仍返回基础检索结果，不崩
     assert isinstance(result.chunks, list)
+
+
+def test_hyde_uses_fake_doc_for_search(store_with_docs, monkeypatch):
+    """HyDE：用 LLM 生成的假答案（而非原 query）做检索。"""
+    store = store_with_docs
+    captured = {}
+
+    class FakeLLM:
+        enabled = True
+
+        def complete(self, system, user):
+            captured["called"] = True
+            return "这是一个假设性的答案文档，描述了支付风控的架构。"
+
+    monkeypatch.setattr(
+        store, "_search_raw", lambda q, top_k: captured.setdefault("query_used", q) or []
+    )
+    result = retrieve_with_transform(
+        "支付风控", QueryTransformStrategy.HYDE, store, store.settings, FakeLLM(), top_k=3
+    )
+    assert result.degraded is False
+    assert "假设性" in captured["query_used"]  # 用假答案而非原 query 检索
+
+
+def test_multi_query_fuses_variants(store_with_docs, monkeypatch):
+    """Multi-Query：3 个改写变体各检索一次，再 RRF 融合。"""
+    store = store_with_docs
+    calls = []
+
+    class FakeLLM:
+        enabled = True
+
+        def complete(self, system, user):
+            return "改写1\n改写2\n改写3"
+
+    monkeypatch.setattr(store, "_search_raw", lambda q, top_k: calls.append(q) or [])
+    retrieve_with_transform(
+        "查询", QueryTransformStrategy.MULTI_QUERY, store, store.settings, FakeLLM(), top_k=3
+    )
+    assert len(calls) == 3  # 3 个改写各检索一次
+
+
+def test_decomposition_splits_and_merges(store_with_docs, monkeypatch):
+    """Decomposition：拆成 2 个子问题分别检索，再 merge_dedupe。"""
+    store = store_with_docs
+    calls = []
+
+    class FakeLLM:
+        enabled = True
+
+        def complete(self, system, user):
+            return "子问题1\n子问题2"
+
+    monkeypatch.setattr(store, "_search_raw", lambda q, top_k: calls.append(q) or [])
+    retrieve_with_transform(
+        "复杂问题",
+        QueryTransformStrategy.DECOMPOSITION,
+        store,
+        store.settings,
+        FakeLLM(),
+        top_k=3,
+    )
+    assert len(calls) == 2
