@@ -2756,31 +2756,6 @@ function RagOptimizationSettingsForm({
                 />
               </label>
             ) : null}
-            {chatDraft.query_transform_strategy === "hyde" ? (
-              <label className="mt-4 block">
-                <span className="text-xs text-zinc-500">
-                  HyDE 降级阈值（hyde_fallback_threshold）：
-                  {chatDraft.hyde_fallback_threshold.toFixed(2)}
-                </span>
-                <input
-                  className="mt-2 w-full accent-zinc-950"
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={chatDraft.hyde_fallback_threshold}
-                  onChange={(event) =>
-                    updateChat(
-                      "hyde_fallback_threshold",
-                      Number(event.target.value),
-                    )
-                  }
-                />
-                <span className="mt-1 block text-xs text-zinc-400">
-                  当 HyDE 假设性答案与原始问题相似度低于阈值时降级为原始检索（fail-open）。
-                </span>
-              </label>
-            ) : null}
           </div>
         </div>
       </SettingsCard>
