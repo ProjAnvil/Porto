@@ -9,7 +9,13 @@ from ..index_supervisor import IndexSupervisor
 from ..locking import DbLockStore
 from ..logging_utils import get_component_logger
 from ..memory import MemoryStore
-from ..models import AgentSettingsPayload, DocumentSettingsPayload, RagSettingsPayload
+from ..models import (
+    AgentSettingsPayload,
+    DocumentSettingsPayload,
+    RagChatSettingsPayload,
+    RagSettingsPayload,
+    RagWorkflowSettingsPayload,
+)
 from ..vector_store import LocalVectorStore
 
 if TYPE_CHECKING:
@@ -126,6 +132,44 @@ def effective_document_settings(
     if payload:
         updates.update(payload.model_dump(exclude_none=True))
     return DocumentSettingsPayload(**updates)
+
+
+def default_rag_chat_settings() -> RagChatSettingsPayload:
+    s = current_settings()
+    return RagChatSettingsPayload(
+        intent_routing_mode=s.chat_intent_routing_mode,
+        query_transform_strategy=s.chat_query_transform_strategy,
+        multi_query_count=s.multi_query_count,
+        hyde_fallback_threshold=s.hyde_fallback_threshold,
+    )
+
+
+def default_rag_workflow_settings() -> RagWorkflowSettingsPayload:
+    s = current_settings()
+    return RagWorkflowSettingsPayload(
+        query_transform_strategy=s.workflow_query_transform_strategy,
+        multi_query_count=s.multi_query_count,
+    )
+
+
+def effective_rag_chat_settings(
+    payload: RagChatSettingsPayload | None = None,
+) -> RagChatSettingsPayload:
+    updates = default_rag_chat_settings().model_dump(exclude_none=True)
+    updates.update(get_config_store().get_rag_chat_settings().model_dump(exclude_none=True))
+    if payload:
+        updates.update(payload.model_dump(exclude_none=True))
+    return RagChatSettingsPayload(**updates)
+
+
+def effective_rag_workflow_settings(
+    payload: RagWorkflowSettingsPayload | None = None,
+) -> RagWorkflowSettingsPayload:
+    updates = default_rag_workflow_settings().model_dump(exclude_none=True)
+    updates.update(get_config_store().get_rag_workflow_settings().model_dump(exclude_none=True))
+    if payload:
+        updates.update(payload.model_dump(exclude_none=True))
+    return RagWorkflowSettingsPayload(**updates)
 
 
 def apply_rag_settings(

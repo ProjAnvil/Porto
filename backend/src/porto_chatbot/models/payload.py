@@ -98,12 +98,16 @@ class AppSettingsPayload(BaseModel):
     rag: RagSettingsPayload | None = None
     agent: AgentSettingsPayload | None = None
     document: DocumentSettingsPayload | None = None
+    rag_chat: RagChatSettingsPayload | None = None
+    rag_workflow: RagWorkflowSettingsPayload | None = None
 
 
 class AppSettingsResponse(BaseModel):
     rag: RagSettingsPayload
     agent: AgentSettingsPayload
     document: DocumentSettingsPayload
+    rag_chat: RagChatSettingsPayload
+    rag_workflow: RagWorkflowSettingsPayload
 
 
 class IndexRequest(RagSettingsPayload):
