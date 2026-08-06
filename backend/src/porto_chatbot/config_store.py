@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .logging_utils import get_component_logger
-from .models import AgentSettingsPayload, DocumentSettingsPayload, RagSettingsPayload
+from .models import (
+    AgentSettingsPayload,
+    DocumentSettingsPayload,
+    RagChatSettingsPayload,
+    RagSettingsPayload,
+    RagWorkflowSettingsPayload,
+)
 from .settings import Settings
 
 RAG_SETTING_KEYS = {
@@ -65,6 +71,18 @@ DOCUMENT_SETTING_KEYS = {
     "max_pdf_pages",
 }
 
+RAG_CHAT_SETTING_KEYS = {
+    "intent_routing_mode",
+    "query_transform_strategy",
+    "multi_query_count",
+    "hyde_fallback_threshold",
+}
+
+RAG_WORKFLOW_SETTING_KEYS = {
+    "query_transform_strategy",
+    "multi_query_count",
+}
+
 SENSITIVE_SETTING_KEYS = {"agent_api_key", "critic_api_key"}
 
 
@@ -108,6 +126,34 @@ class ConfigStore:
         current.update(payload.model_dump(exclude_none=True))
         saved = DocumentSettingsPayload(**current)
         self._save_namespace("document", saved.model_dump(exclude_none=True))
+        return saved
+
+    def get_rag_chat_settings(self) -> RagChatSettingsPayload:
+        return RagChatSettingsPayload(
+            **self._get_namespace("rag_chat", RAG_CHAT_SETTING_KEYS)
+        )
+
+    def save_rag_chat_settings(
+        self, payload: RagChatSettingsPayload
+    ) -> RagChatSettingsPayload:
+        current = self.get_rag_chat_settings().model_dump(exclude_none=True)
+        current.update(payload.model_dump(exclude_none=True))
+        saved = RagChatSettingsPayload(**current)
+        self._save_namespace("rag_chat", saved.model_dump(exclude_none=True))
+        return saved
+
+    def get_rag_workflow_settings(self) -> RagWorkflowSettingsPayload:
+        return RagWorkflowSettingsPayload(
+            **self._get_namespace("rag_workflow", RAG_WORKFLOW_SETTING_KEYS)
+        )
+
+    def save_rag_workflow_settings(
+        self, payload: RagWorkflowSettingsPayload
+    ) -> RagWorkflowSettingsPayload:
+        current = self.get_rag_workflow_settings().model_dump(exclude_none=True)
+        current.update(payload.model_dump(exclude_none=True))
+        saved = RagWorkflowSettingsPayload(**current)
+        self._save_namespace("rag_workflow", saved.model_dump(exclude_none=True))
         return saved
 
     def _get_namespace(self, namespace: str, keys: set[str]) -> dict[str, Any]:

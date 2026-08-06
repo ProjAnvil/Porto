@@ -54,7 +54,9 @@ from .payload import (
     EvalCase,
     EvalRequest,
     IndexRequest,
+    RagChatSettingsPayload,
     RagSettingsPayload,
+    RagWorkflowSettingsPayload,
     WorkflowRequest,
 )
 from .file import FileHit, FileMeta, FileInfo
@@ -73,6 +75,8 @@ __all__ = [
     "FeatureName",
     "HealthSnapshot",
     "RagSettingsPayload",
+    "RagChatSettingsPayload",
+    "RagWorkflowSettingsPayload",
     "AgentSettingsPayload",
     "AppSettingsPayload",
     "AppSettingsResponse",
