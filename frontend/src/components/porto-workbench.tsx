@@ -49,7 +49,7 @@ import {
   getKbStats,
   getWorkflow,
   indexKnowledgeBase,
-  listMemory,
+  listMessages,
   rerunStep,
   saveAppSettings,
   saveStepOutput,
@@ -63,7 +63,7 @@ import type {
   HealthSnapshot,
   InspectorState,
   KbStats,
-  MemoryRecord,
+  MessageRecord,
   RagChatConfig,
   RagConfig,
   RagWorkflowConfig,
@@ -280,7 +280,7 @@ export function PortoWorkbench() {
   const [kbStats, setKbStats] = useState<KbStats | null>(null);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [backendOnline, setBackendOnline] = useState(true);
-  const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
+  const [memoryItems, setMemoryItems] = useState<MessageRecord[]>([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
   // runWorkflowAction 重入守卫：按钮 disabled 之外的 defense-in-depth
@@ -297,7 +297,7 @@ export function PortoWorkbench() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshMemory = useCallback(async () => {
-    const data = await listMemory(sessionId);
+    const data = await listMessages(sessionId);
     setMemoryItems(data.items);
   }, [sessionId]);
 
@@ -361,7 +361,7 @@ export function PortoWorkbench() {
       const [settingsResult, statsResult, memoryResult] = await Promise.allSettled([
         getAppSettings(),
         getKbStats(),
-        listMemory(sessionId),
+        listMessages(sessionId),
       ]);
       if (cancelled) return;
       if (settingsResult.status === "fulfilled") {
@@ -808,7 +808,7 @@ function ChatLoader({
   const [initialMessages, setInitialMessages] = useState<ChatUIMessage[] | null>(null);
   useEffect(() => {
     let cancelled = false;
-    listMemory(sessionId)
+    listMessages(sessionId)
       .then((data) => {
         if (cancelled) return;
         const history: ChatUIMessage[] = [...data.items]
@@ -3783,7 +3783,7 @@ function Inspector({
   memoryItems,
 }: {
   inspector: InspectorState;
-  memoryItems: MemoryRecord[];
+  memoryItems: MessageRecord[];
 }) {
   return (
     <aside className="min-w-0 overflow-y-auto border-t border-zinc-200 bg-zinc-50 p-4 lg:border-t-0">
