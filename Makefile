@@ -1,6 +1,6 @@
 # Porto Chatbot · frontend/backend process management (pid files in ~/.porto/agent/)
 BACKEND_PORT  ?= 8100
-FRONTEND_PORT ?= 3000
+FRONTEND_PORT ?= 3100
 PID_DIR       := $(HOME)/.porto/chatbot
 RUN_DIR       := .run
 BACKEND_PID   := $(PID_DIR)/backend.pid

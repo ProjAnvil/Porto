@@ -25,3 +25,6 @@ out/
 # Python local artifacts
 .ruff_cache/
 .pytest_cache/
+
+# ide
+.idea
