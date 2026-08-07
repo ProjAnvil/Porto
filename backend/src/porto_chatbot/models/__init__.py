@@ -4,8 +4,8 @@ from .chat import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
-    MemoryRecord,
     MemorySearchResponse,
+    MessageRecord,
     SessionFact,
 )
 from .common import (
@@ -86,7 +86,8 @@ __all__ = [
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
-    "MemoryRecord",
+    "MemoryRecord",  # deprecated alias of MessageRecord (Task 10 removes)
+    "MessageRecord",
     "MemorySearchResponse",
     "SessionFact",
     "EvalCase",
@@ -126,3 +127,8 @@ __all__ = [
     "TruncationReason",
     "WorkflowRunState",
 ]
+
+
+# Backward-compat alias: existing imports of `MemoryRecord` keep working
+# during the session/message/memory split. Removed in Task 10.
+MemoryRecord = MessageRecord  # noqa: F811  (deprecated alias)
