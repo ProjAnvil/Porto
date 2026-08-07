@@ -3754,10 +3754,10 @@ function Inspector({
     <aside className="min-w-0 overflow-y-auto border-t border-zinc-200 bg-zinc-50 p-4 lg:border-t-0">
       <InspectorSection icon={<Play size={15} />} title="Agent Steps">
         <div className="space-y-2">
-          {inspector.steps.map((step) => (
+          {inspector.steps.map((step, index) => (
             <details
               className="rounded-lg border border-zinc-200 bg-white p-3"
-              key={step.name}
+              key={`${step.name}-${index}`}
             >
               <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium">{step.name}</span>
