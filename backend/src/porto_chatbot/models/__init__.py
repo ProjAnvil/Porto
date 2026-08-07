@@ -4,7 +4,6 @@ from .chat import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
-    MemorySearchResponse,
     MessageRecord,
     SessionFact,
 )
@@ -46,6 +45,7 @@ from .evaluation import (
     WorkflowCheck,
     WorkflowEvaluation,
 )
+from .file import FileHit, FileInfo, FileMeta
 from .payload import (
     AgentSettingsPayload,
     AppSettingsPayload,
@@ -59,7 +59,6 @@ from .payload import (
     RagWorkflowSettingsPayload,
     WorkflowRequest,
 )
-from .file import FileHit, FileMeta, FileInfo
 from .spec import Critique, SpecAttempt, SpecResult
 from .workflow import AgentStep, Subsystem, WorkflowResponse
 
@@ -86,9 +85,7 @@ __all__ = [
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
-    "MemoryRecord",  # deprecated alias of MessageRecord (Task 10 removes)
     "MessageRecord",
-    "MemorySearchResponse",
     "SessionFact",
     "EvalCase",
     "EvalRequest",
@@ -127,8 +124,3 @@ __all__ = [
     "TruncationReason",
     "WorkflowRunState",
 ]
-
-
-# Backward-compat alias: existing imports of `MemoryRecord` keep working
-# during the session/message/memory split. Removed in Task 10.
-MemoryRecord = MessageRecord  # noqa: F811  (deprecated alias)

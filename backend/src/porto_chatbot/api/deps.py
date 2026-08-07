@@ -8,7 +8,7 @@ from ..health import HealthMonitor
 from ..index_supervisor import IndexSupervisor
 from ..locking import DbLockStore
 from ..logging_utils import get_component_logger
-from ..memory import ConversationMemory, MemoryStore, SessionStore
+from ..memory import ConversationMemory, SessionStore
 from ..models import (
     AgentSettingsPayload,
     DocumentSettingsPayload,
@@ -212,10 +212,6 @@ def apply_rag_settings(
 
 def get_store(runtime_settings=None) -> LocalVectorStore:
     return LocalVectorStore(runtime_settings or current_settings())
-
-
-def get_memory(runtime_settings=None) -> MemoryStore:
-    return MemoryStore(runtime_settings or current_settings())
 
 
 def get_session_store(runtime_settings=None) -> SessionStore:

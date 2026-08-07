@@ -7,8 +7,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..deps import current_settings, get_session_store
 from ...models import MessageRecord, SessionFact
+from ..deps import current_settings, get_session_store
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 

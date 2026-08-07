@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from porto_chatbot.llm import LLMClient
-from porto_chatbot.memory import MemoryStore, get_compacted_history, summarize_records
+from porto_chatbot.memory import SessionStore, get_compacted_history, summarize_records
 from porto_chatbot.settings import Settings
 
 
@@ -17,19 +17,24 @@ def _enabled_llm(tmp_path) -> LLMClient:
     return LLMClient(s)
 
 
-def _add_n(store: MemoryStore, session_id: str, n: int) -> None:
+def _add_n(store: SessionStore, session_id: str, n: int) -> None:
+    """Add n messages and mark them all as indexed (compaction only sees indexed)."""
     for i in range(n):
-        store.add(
+        store.add_message(
             session_id=session_id,
             role="user" if i % 2 == 0 else "assistant",
             content=f"msg-{i}",
+            intent="rag",
         )
+    # Mark all as indexed so compaction (indexed_only=True) can see them
+    all_ids = [m.id for m in store.list_messages(session_id)]
+    store.mark_indexed(all_ids)
 
 
-def _store(sample_settings, **overrides) -> MemoryStore:
+def _store(sample_settings, **overrides) -> SessionStore:
     for key, value in overrides.items():
         setattr(sample_settings, key, value)
-    return MemoryStore(sample_settings)
+    return SessionStore(sample_settings)
 
 
 def test_compaction_below_threshold_returns_all(sample_settings):

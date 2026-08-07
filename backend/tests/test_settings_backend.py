@@ -1,6 +1,6 @@
 """Test that backend fields exist with correct defaults and types."""
-from porto_chatbot.settings import Settings
 from porto_chatbot.models.payload import AgentSettingsPayload
+from porto_chatbot.settings import Settings
 
 
 def test_settings_default_backends_are_langchain():

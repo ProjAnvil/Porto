@@ -9,21 +9,17 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from porto_chatbot.agent.state import _dict_merge
 from porto_chatbot.llm import LLMClient, ToolLoopResult
 from porto_chatbot.models import SpecAttempt, SpecResult, Subsystem
 from porto_chatbot.models.enums import SpecVerdict
 from porto_chatbot.settings import Settings
-from porto_chatbot.specs.context import SpecContext
 from porto_chatbot.specs.subgraph import (
     SpecSubgraphState,
     _should_stop,
     build_spec_subgraph,
     init_spec,
 )
-
 
 # ----------------------------- helpers ----------------------------- #
 

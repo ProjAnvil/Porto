@@ -4,11 +4,11 @@ from unittest.mock import MagicMock
 
 from porto_chatbot.memory.compaction import get_compacted_history, summarize_records
 from porto_chatbot.memory.session_store import SessionStore
-from porto_chatbot.models import MemoryRecord
+from porto_chatbot.models import MessageRecord
 
 
 def _record(role, content):
-    return MemoryRecord(id="x", session_id="s", role=role, content=content, created_at="t")
+    return MessageRecord(id="x", session_id="s", role=role, content=content, created_at="t")
 
 
 def test_summarize_prompt_preserves_entities():
@@ -45,7 +45,7 @@ def test_compaction_only_uses_indexed_messages(sample_settings):
     store = SessionStore(sample_settings)
     # Add 25 indexed messages (above threshold=20)
     for i in range(25):
-        msg = store.add_message(
+        store.add_message(
             session_id="s1", role="user" if i % 2 == 0 else "assistant",
             content=f"rag message {i}", intent="rag", indexed=False,
         )

@@ -51,11 +51,6 @@ class MessageRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class MemorySearchResponse(BaseModel):
-    query: str
-    results: list[SourceChunk]
-
-
 class SessionFact(BaseModel):
     """会话级关键事实(a2)。每条独立原子化,带 category 优先级与 status 生命周期。"""
 

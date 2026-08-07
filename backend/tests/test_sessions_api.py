@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from porto_chatbot.memory.store import MemoryStore
+from porto_chatbot.memory.session_store import SessionStore
 
 
 def _store(sample_settings):
-    return MemoryStore(sample_settings)
+    return SessionStore(sample_settings)
 
 
 def test_list_sessions_aggregates_by_session(sample_settings):
     s = _store(sample_settings)
-    s.add(session_id="s1", role="user", content="hello")
-    s.add(session_id="s1", role="assistant", content="hi there")
-    s.add(session_id="s2", role="user", content="another session")
+    s.add_message(session_id="s1", role="user", content="hello")
+    s.add_message(session_id="s1", role="assistant", content="hi there")
+    s.add_message(session_id="s2", role="user", content="another session")
     items, total = s.list_sessions(limit=20, offset=0)
     assert total == 2
     # 按 last_at 倒序：s2 后加 → 在前
@@ -27,7 +27,7 @@ def test_list_sessions_aggregates_by_session(sample_settings):
 def test_list_sessions_pagination(sample_settings):
     s = _store(sample_settings)
     for i in range(5):
-        s.add(session_id=f"s{i}", role="user", content=f"msg {i}")
+        s.add_message(session_id=f"s{i}", role="user", content=f"msg {i}")
     items, total = s.list_sessions(limit=2, offset=0)
     assert total == 5
     assert len(items) == 2
@@ -40,7 +40,7 @@ def test_list_sessions_pagination(sample_settings):
 
 def test_list_sessions_date_filter(sample_settings):
     s = _store(sample_settings)
-    s.add(session_id="s1", role="user", content="msg")
+    s.add_message(session_id="s1", role="user", content="msg")
     # date 过滤 last_at 所在日期；用今天日期应能匹配刚加的
     from datetime import UTC, datetime
     today = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -57,14 +57,12 @@ def test_list_sessions_date_filter_uses_last_at(sample_settings):
     """spec: date 过滤 last_at 所在日期。多日期 session 按非最后日期不应匹配。"""
     import sqlite3
 
-    from porto_chatbot.memory.store import MemoryStore
-    s = MemoryStore(sample_settings)
-    r1 = s.add(session_id="s1", role="user", content="day1 msg")
-    r2 = s.add(session_id="s1", role="assistant", content="day2 msg")
-    # 改 created_at 模拟跨日期（s1 的 last_at = 2026-07-15）
+    s = SessionStore(sample_settings)
+    s.add_message(session_id="s1", role="user", content="day1 msg")
+    s.add_message(session_id="s1", role="assistant", content="day2 msg")
+    # 改 last_active_at 模拟跨日期（s1 的 last_at = 2026-07-15）
     with sqlite3.connect(s.settings.memory_db_path) as conn:
-        conn.execute("UPDATE memories SET created_at=? WHERE id=?", ("2026-07-13T10:00:00+00:00", r1.id))
-        conn.execute("UPDATE memories SET created_at=? WHERE id=?", ("2026-07-15T10:00:00+00:00", r2.id))
+        conn.execute("UPDATE sessions SET last_active_at=? WHERE id=?", ("2026-07-15T10:00:00+00:00", "s1"))
     # 按 last_at 日期(07-15)过滤 → 应匹配 s1
     items, total = s.list_sessions(date="2026-07-15", limit=20, offset=0)
     assert total == 1

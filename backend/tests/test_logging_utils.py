@@ -7,7 +7,6 @@ from loguru import logger as _loguru
 from porto_chatbot.logging_utils import (
     get_component_logger,
     get_logger,
-    reset_logging,
     setup_logging,
 )
 

@@ -1,8 +1,8 @@
 """Test that PortoAgent gets a backend injected and AgentToolContext supports memory."""
 from porto_chatbot.agent.agent import PortoAgent
 from porto_chatbot.agent.backends import LangchainBackend
-from porto_chatbot.tools.context import AgentToolContext
 from porto_chatbot.settings import Settings
+from porto_chatbot.tools.context import AgentToolContext
 
 
 def test_porto_agent_has_backend():

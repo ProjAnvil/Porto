@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 from unittest.mock import AsyncMock, MagicMock
-from porto_chatbot.agent.nodes.understand import understand_prd
+
 from porto_chatbot.agent.backends import NodeExecutionResult
+from porto_chatbot.agent.nodes.understand import understand_prd
 from porto_chatbot.models import AgentStep
 
 

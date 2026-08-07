@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 
 from porto_chatbot.memory.conversation_memory import ConversationMemory
 from porto_chatbot.memory.persist import (
-    index_and_mark,
     maybe_generate_title,
     persist_turn,
 )

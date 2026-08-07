@@ -13,7 +13,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from ..api.deps import effective_rag_chat_settings, get_index_supervisor
-from ..api.sse import _ai_sdk_sse, _text_chunks
 from ..evaluation import evaluate_rag_cases
 from ..intent import IntentDecision, route_chat_intent
 from ..llm import LLMClient, format_sources
@@ -25,10 +24,9 @@ from ..memory import (
     index_and_mark,
     maybe_generate_title,
     persist_turn,
-    trigger_facts_extraction_async,
     trigger_facts_extraction_sync,
 )
-from ..models import ChatRequest, ChatResponse, EvalCase, MessageRecord
+from ..models import ChatRequest, ChatResponse, EvalCase
 from ..models.enums import ChatIntent, IntentRoutingMode, QueryTransformStrategy
 from ..query_transform import retrieve_with_transform
 from ..vector_store import LocalVectorStore

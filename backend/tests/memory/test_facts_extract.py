@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from porto_chatbot.models import MemoryRecord, SessionFact
 from porto_chatbot.memory.facts import build_facts_prompt
+from porto_chatbot.models import MessageRecord, SessionFact
 
 
 def _fact(category, content):
@@ -44,19 +44,19 @@ def test_skips_empty_categories():
 
 
 def _make_store(tmp_path):
-    from porto_chatbot.memory.store import MemoryStore
     from porto_chatbot.memory.facts import SessionFactsStore
+    from porto_chatbot.memory.session_store import SessionStore
     from porto_chatbot.settings import Settings
 
     settings = Settings(data_dir=tmp_path)
-    MemoryStore(settings)
+    SessionStore(settings)
     return SessionFactsStore(settings), settings
 
 
 def _call_extract(store, llm, settings, message):
     from porto_chatbot.memory.facts import extract_facts
 
-    recent = [MemoryRecord(
+    recent = [MessageRecord(
         id="m1", session_id="s1", role="user", content="做个登录页", created_at="t",
     )]
     return extract_facts(
@@ -152,7 +152,7 @@ def test_trigger_sync_runs_in_thread(tmp_path):
         "facts": [{"category": "user_decision", "content": "X", "action": "add"}]
     }
     from porto_chatbot.memory.facts import trigger_facts_extraction_sync
-    from porto_chatbot.models import MemoryRecord
+    from porto_chatbot.models import MessageRecord as MemoryRecord
 
     recent = [MemoryRecord(id="m", session_id="s", role="user", content="x", created_at="t")]
     trigger_facts_extraction_sync(
@@ -175,7 +175,7 @@ def test_trigger_async_fire_and_forget(tmp_path):
         "facts": [{"category": "user_decision", "content": "Y", "action": "add"}]
     }
     from porto_chatbot.memory.facts import trigger_facts_extraction_async
-    from porto_chatbot.models import MemoryRecord
+    from porto_chatbot.models import MessageRecord as MemoryRecord
 
     recent = [MemoryRecord(id="m", session_id="s", role="user", content="y", created_at="t")]
 

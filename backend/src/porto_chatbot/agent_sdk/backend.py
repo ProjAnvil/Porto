@@ -16,11 +16,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 import time
 from collections import Counter
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -91,11 +89,6 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
     UserMessage = None  # type: ignore[assignment]
     create_sdk_mcp_server = None  # type: ignore[assignment]
 
-# Process-level cache: Porto session_id → Claude Code CLI session_id.
-# Enables conversation continuity across separate /api/chat/stream requests.
-_claude_session_map: dict[str, str] = {}
-
-
 # 工具调用名 → 是否计入 RAG（决定 intent 与 index_vector）。
 _RAG_TOOL_NAMES = {"search_knowledgebase", "search_memory"}
 
@@ -132,48 +125,6 @@ async def _receive_with_idle_timeout(
             yield await asyncio.wait_for(response_gen.__anext__(), timeout=timeout)
         except StopAsyncIteration:
             return
-
-
-def _get_claude_session(settings: Settings, porto_session_id: str) -> str | None:
-    """Read porto→claude session mapping. Memory cache first, then sqlite."""
-    if porto_session_id in _claude_session_map:
-        return _claude_session_map[porto_session_id]
-    try:
-        with sqlite3.connect(str(settings.memory_db_path)) as conn:
-            row = conn.execute(
-                "SELECT claude_session_id FROM session_metadata WHERE session_id=?",
-                (porto_session_id,),
-            ).fetchone()
-            if row:
-                _claude_session_map[porto_session_id] = row[0]
-                return row[0]
-    except Exception:
-        pass
-    return None
-
-
-def _set_claude_session(settings: Settings, porto_session_id: str, claude_session_id: str) -> None:
-    """Persist porto→claude session mapping to memory cache + sqlite."""
-    _claude_session_map[porto_session_id] = claude_session_id
-    try:
-        with sqlite3.connect(str(settings.memory_db_path)) as conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS session_metadata ("
-                "  session_id TEXT PRIMARY KEY,"
-                "  claude_session_id TEXT,"
-                "  updated_at TEXT"
-                ")"
-            )
-            conn.execute(
-                "INSERT INTO session_metadata (session_id, claude_session_id, updated_at) "
-                "VALUES (?, ?, ?) "
-                "ON CONFLICT(session_id) DO UPDATE SET "
-                "  claude_session_id=excluded.claude_session_id, "
-                "  updated_at=excluded.updated_at",
-                (porto_session_id, claude_session_id, datetime.now(UTC).isoformat()),
-            )
-    except Exception:
-        pass
 
 
 class AgentSDKBackend:

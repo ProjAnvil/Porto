@@ -8,10 +8,10 @@ from porto_chatbot.settings import Settings
 @pytest.fixture
 def store(tmp_path):
     from porto_chatbot.memory.facts import SessionFactsStore
-    from porto_chatbot.memory.store import MemoryStore
+    from porto_chatbot.memory.session_store import SessionStore
 
     settings = Settings(data_dir=tmp_path)
-    MemoryStore(settings)  # 触发 _init_db
+    SessionStore(settings)  # 触发 _init_db
     return SessionFactsStore(settings)
 
 

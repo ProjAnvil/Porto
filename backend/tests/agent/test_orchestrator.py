@@ -1,7 +1,8 @@
 # backend/tests/agent/test_orchestrator.py
 """ChatOrchestrator 测试——验证 DIRECT/RAG 路径的持久化行为。"""
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from porto_chatbot.agent.orchestrator import ChatOrchestrator
 from porto_chatbot.memory.conversation_memory import ConversationMemory
@@ -25,7 +26,7 @@ def test_direct_path_persists_sqlite_not_vector(orch, sample_settings):
     with patch.object(orch, "_route_intent", return_value=MagicMock(
             intent=ChatIntent.DIRECT, reason="greeting")), \
          patch.object(orch, "_llm_complete", return_value="你好！"):
-        resp = orch.handle(req)
+        orch.handle(req)
     msgs = orch.sessions.list_messages("test-direct")
     assert len(msgs) == 2  # user + assistant
     assert orch.memory.count() == 0  # not indexed
@@ -38,7 +39,7 @@ def test_rag_path_persists_both(orch, sample_settings):
             intent=ChatIntent.RAG, reason="keyword")), \
          patch.object(orch, "_check_rag_available", return_value=(True, None)), \
          patch.object(orch, "_llm_complete", return_value="payment service handles it"):
-        resp = orch.handle(req)
+        orch.handle(req)
     msgs = orch.sessions.list_messages("test-rag")
     assert len(msgs) == 2
     assert all(m.indexed for m in msgs)

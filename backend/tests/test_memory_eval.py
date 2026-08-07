@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from porto_chatbot.evaluation import evaluate_rag_cases
-from porto_chatbot.memory import MemoryStore
+from porto_chatbot.memory import ConversationMemory, SessionStore
 from porto_chatbot.models import EvalCase
 
 
 def test_memory_store_add_list_and_search(sample_settings):
-    memory = MemoryStore(sample_settings)
-    memory.add(session_id="s1", role="user", content="我关心支付风控和退款流程")
-    memory.add(session_id="s1", role="assistant", content="payment-service 需要调用 risk-service")
+    sessions = SessionStore(sample_settings)
+    conv = ConversationMemory(sample_settings)
+    u = sessions.add_message(session_id="s1", role="user", content="我关心支付风控和退款流程", intent="rag")
+    a = sessions.add_message(session_id="s1", role="assistant", content="payment-service 需要调用 risk-service", intent="rag")
+    conv.index([u, a])
+    sessions.mark_indexed([u.id, a.id])
 
-    items = memory.list_session("s1")
+    items = sessions.list_messages("s1")
     assert len(items) == 2
 
-    results = memory.search("风险审核", session_id="s1", top_k=2)
+    results = conv.search("风险审核", session_id="s1", top_k=2)
     assert results
     assert results[0].path == "memory:s1"
 
