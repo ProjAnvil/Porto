@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from porto_chatbot.models import SourceChunk
 from porto_chatbot.models.enums import QueryTransformStrategy
 from porto_chatbot.query_transform import TransformResult
+from tests.rag_eval.metrics import THRESHOLDS, aggregate, judge
 from tests.rag_eval.provision import build_eval_kb
 from tests.rag_eval.runner import run_rag
 from tests.rag_eval.schema import CorpusDoc, RagCorpus, RagGolden
@@ -87,3 +88,29 @@ def test_run_rag_guards_disabled_llm():
     tc, _ = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
     assert "未返回" in tc.actual_output  # guard 文案
     assert tc.retrieval_context == []
+
+
+def test_aggregate_means_per_metric():
+    per_case = [
+        {"faithfulness": 0.8, "answer_relevancy": 0.6},
+        {"faithfulness": 0.4, "answer_relevancy": 0.8},
+    ]
+    agg = aggregate(per_case)
+    assert agg["faithfulness"] == 0.6
+    assert agg["answer_relevancy"] == 0.7
+
+
+def test_judge_passes_when_all_above_threshold():
+    mean = {k: v + 0.2 for k, v in THRESHOLDS.items()}
+    passed, detail = judge(mean)
+    assert passed
+    assert all(d["passed"] for d in detail.values())
+
+
+def test_judge_fails_when_any_below_threshold():
+    key = next(iter(THRESHOLDS))
+    mean = {k: v + 0.2 for k, v in THRESHOLDS.items()}
+    mean[key] = THRESHOLDS[key] - 0.1  # 拉低一个
+    passed, detail = judge(mean)
+    assert not passed
+    assert detail[key]["passed"] is False

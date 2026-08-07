@@ -37,7 +37,7 @@ document-ai = [
     "docling>=2.0.0",
 ]
 eval = [
-    "deepeval>=2.5.0",
+    "deepeval>=4.0,<5.0",
     "gdown>=2.0.0",
 ]
 
