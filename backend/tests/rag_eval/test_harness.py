@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from porto_chatbot.models import SourceChunk
 from porto_chatbot.models.enums import QueryTransformStrategy
 from porto_chatbot.query_transform import TransformResult
+from tests.rag_eval.loaders.domainrag import load_domainrag_from_records
 from tests.rag_eval.metrics import THRESHOLDS, aggregate, judge
 from tests.rag_eval.provision import build_eval_kb
 from tests.rag_eval.runner import run_rag
@@ -114,3 +115,25 @@ def test_judge_fails_when_any_below_threshold():
     passed, detail = judge(mean)
     assert not passed
     assert detail[key]["passed"] is False
+
+
+def test_domainrag_loader_normalizes():
+    # 匹配 DomainRAG 真实 schema（int id、answers 为 list of list、positive_reference 带 id）
+    corpus_recs = [
+        {"id": 159, "title": "中法那些事儿", "url": "u", "contents": "中法学院开设法语课程。"},
+    ]
+    qa_recs = [
+        {
+            "question": "用哪三个语言教学？",
+            "answers": [["汉语", "法语", "英语"]],
+            "positive_reference": [{"id": 159, "title": "中法那些事儿", "contents": "..."}],
+        }
+    ]
+    corpus, goldens = load_domainrag_from_records(corpus_recs, qa_recs)
+    assert corpus.docs[0].id == "159"  # int → str
+    assert corpus.docs[0].text == "中法学院开设法语课程。"
+    assert len(goldens) == 1
+    g = goldens[0]
+    assert g.question == "用哪三个语言教学？"
+    assert g.reference_answer == "汉语、法语、英语"  # join answers[0]
+    assert g.gold_doc_ids == ["159"]
