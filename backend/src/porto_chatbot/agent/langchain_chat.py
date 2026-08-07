@@ -69,9 +69,6 @@ def _direct_chat_answer(
     req: ChatRequest, runtime_settings, decision: IntentDecision, llm: LLMClient | None = None
 ) -> ChatResponse:
     llm = llm or LLMClient(runtime_settings)
-    # DIRECT（闲聊）路径也要记录会话：存 user 消息，确保 session 出现在列表里
-    memory = get_memory(runtime_settings)
-    memory.add(session_id=req.session_id, role="user", content=req.message)
     answer = llm.complete(
         "你是 Porto 助手。用户当前消息不需要检索知识库，直接、简洁、友好地回应。",
         f"用户消息:\n{req.message}",
@@ -84,7 +81,6 @@ def _direct_chat_answer(
         else:
             answer = "我在。你可以继续提问，或说明需要查询哪部分知识库内容。"
 
-    memory.add(session_id=req.session_id, role="assistant", content=answer)
     evaluation = {"score": 0.0, "passed": True, "cases": []}
     logger.info(
         "chat direct finish session_id=%s reason=%s answer_chars=%s",
