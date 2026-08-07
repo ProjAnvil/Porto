@@ -18,11 +18,15 @@ _CORRECTNESS_CRITERIA = (
 )
 
 
-def build_metrics(model: str) -> dict[str, Any]:
+def build_metrics(model: str | Any) -> dict[str, Any]:
     """实例化 6 个 DeepEval 指标（threshold=0：逐条不判过，统一由 aggregate 批量判）。
 
     deepeval 4.x 没有 AnswerCorrectnessMetric，答案正确性用 GEval（CoT LLM-judge）
     对 actual_output vs expected_output 评判实现。
+
+    ``model`` 可为字符串或 deepeval ``DeepEvalBaseLLM`` 实例。对自建 OpenAI-compatible
+    端点（DeepSeek/vLLM 等）**必须传实例**——字符串会 fallback 到 ``GPTModel`` 但不传
+    ``base_url``，导致 401（见 conftest._build_judge_model）。
     """
     from deepeval.metrics import (
         AnswerRelevancyMetric,

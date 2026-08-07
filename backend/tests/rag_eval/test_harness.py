@@ -10,7 +10,7 @@ from tests.rag_eval.loaders.domainrag import load_domainrag_from_records
 from tests.rag_eval.metrics import THRESHOLDS, aggregate, judge
 from tests.rag_eval.provision import build_eval_kb
 from tests.rag_eval.runner import run_rag
-from tests.rag_eval.schema import CorpusDoc, RagCorpus, RagGolden
+from tests.rag_eval.schema import CorpusDoc, EvalProfile, RagCorpus, RagGolden
 
 
 def test_schema_constructs():
@@ -34,15 +34,16 @@ def _synth_corpus(synth_dir: Path) -> RagCorpus:
 def test_build_eval_kb_indexes_and_retrieves(tmp_path):
     synth_dir = Path(__file__).parent / "synth"
     corpus = _synth_corpus(synth_dir)
-    kb = build_eval_kb(corpus, tmp_path)
+    profile = EvalProfile(name="test_build", max_chunk_chars=600)
+    kb = build_eval_kb(corpus, tmp_path, profile)
     # 索引就绪
     assert kb.store.is_rag_ready()
     # 已知文档可被中文查询检索命中
     hits = kb.store.search("支付退款结算", top_k=3)
     assert hits, "检索应返回结果"
     assert any("支付" in h.text for h in hits)
-    # 隔离：collection 名与默认 porto_kb 不同，data_dir 不在用户家目录
-    assert kb.settings.vector_collection == "eval_domainrag"
+    # 隔离：collection 名按 profile 隔离，data_dir 不在用户家目录
+    assert kb.settings.vector_collection == "eval_test_build"
     assert kb.settings.data_dir != Path.home() / ".porto"
 
 
@@ -64,7 +65,7 @@ def test_run_rag_assembles_llm_test_case():
     llm = MagicMock()
     llm.complete.return_value = "支付服务负责支付授权、退款、结算与渠道路由。"
 
-    tc, result = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
+    tc, result, timing = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
 
     # NONE 策略走 store.search 原路径
     eval_kb.store.search.assert_called_once_with(golden.question, 3)
@@ -86,7 +87,7 @@ def test_run_rag_guards_disabled_llm():
     llm = MagicMock()
     llm.complete.return_value = None  # LLM 禁用
 
-    tc, _ = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
+    tc, _, _ = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
     assert "未返回" in tc.actual_output  # guard 文案
     assert tc.retrieval_context == []
 

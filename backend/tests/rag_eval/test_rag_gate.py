@@ -1,3 +1,13 @@
+"""RAG 质量门禁——``run_experiment()`` 的 pytest 薄封装。
+
+默认跑 ``rerank`` profile（P0 改进配置）；可通过 env 切换::
+
+    RAG_EVAL_PROFILE=baseline pytest ...        # 换 profile
+    RAG_EVAL_MAX_CASES=5 pytest ...             # 减 case 数
+    RAG_EVAL_REPORT_ONLY=0 pytest ...           # 启用硬门禁（低分 fail）
+
+CLI 实验请用 ``python -m tests.rag_eval.experiment``（支持 --sweep / --compare）。
+"""
 from __future__ import annotations
 
 import json
@@ -6,61 +16,25 @@ from pathlib import Path
 
 import pytest
 
-from porto_chatbot.models.enums import QueryTransformStrategy
-
-from .metrics import aggregate, build_metrics, evaluate_case, judge
-from .runner import run_rag
+from .experiment import run_experiment
+from .profiles import get_profile
 
 pytestmark = pytest.mark.integration
 
-_REPORT = Path(__file__).resolve().parent / ".last_report.json"
-# 检索变换策略：默认 none（基线）；可经 env 切换以横向对比 hyde/multi_query 等。
-_STRATEGY = QueryTransformStrategy(os.environ.get("RAG_EVAL_STRATEGY", "none"))
+_LAST_REPORT = Path(__file__).resolve().parent / ".last_report.json"
 
 
-def test_rag_quality_gate(eval_kb, domainrag_data, eval_llm, judge_env):
-    _corpus, goldens = domainrag_data
-    # 成本控制：默认仅评前 N 条（90 条 × 6 judge + 90 生成开销大）；env 可放开。
-    max_cases = int(os.environ.get("RAG_EVAL_MAX_CASES", "20"))
-    goldens = goldens[:max_cases] if max_cases > 0 else goldens
+def test_rag_quality_gate(gate_env):
+    profile = get_profile(os.environ.get("RAG_EVAL_PROFILE", "rerank"))
+    if max_cases := os.environ.get("RAG_EVAL_MAX_CASES"):
+        profile.max_cases = int(max_cases)
 
-    metrics = build_metrics(f"openai/{judge_env}")
+    report = run_experiment(profile, env=gate_env)
 
-    per_case: list[dict[str, float]] = []
-    case_reports: list[dict] = []
-    errored: list[str] = []
-    for idx, g in enumerate(goldens):
-        try:
-            tc, result = run_rag(g, eval_kb, eval_llm, strategy=_STRATEGY)
-            scores = evaluate_case(tc, metrics)
-        except Exception as e:  # noqa: BLE001
-            errored.append(f"case#{idx} {g.question[:30]}: {e}")
-            continue
-        per_case.append(scores)
-        case_reports.append(
-            {"question": g.question, "scores": scores, "degraded": result.degraded}
-        )
+    # 门禁报告写 .last_report.json（向后兼容），run_experiment 同时写 reports/<name>_<ts>.json
+    _LAST_REPORT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    mean = aggregate(per_case)
-    passed, detail = judge(mean)
-    _REPORT.write_text(
-        json.dumps(
-            {
-                "n": len(goldens),
-                "strategy": _STRATEGY.value,
-                "mean": mean,
-                "detail": detail,
-                "cases": case_reports,
-                "errored": errored,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    # report-only 起步：默认只产出报告、不因低分 fail；errored 始终 fail（真故障）。
-    report_only = os.environ.get("RAG_EVAL_REPORT_ONLY", "1") == "1"
-    assert not errored, f"有 case 出错（真故障）：{errored}"
-    if not report_only:
-        assert passed, f"RAG 门禁未达标：{detail}"
+    # errored 始终 fail（真故障）；低分默认 report-only
+    assert not report["errored"], f"有 case 出错（真故障）：{report['errored']}"
+    if os.environ.get("RAG_EVAL_REPORT_ONLY", "1") != "1":
+        assert report["passed"], f"RAG 门禁未达标：{report['detail']}"
