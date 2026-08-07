@@ -1425,32 +1425,55 @@ function SettingsPage({
     <div className="grid min-h-0 flex-1 grid-cols-1 bg-white md:grid-cols-[220px_minmax(0,1fr)]">
       <aside className="border-b border-zinc-200 bg-zinc-50 p-3 md:border-b-0 md:border-r">
         <div className="space-y-1">
-          {[
-            { id: "rag" as const, label: "RAG", icon: <Gauge size={15} /> },
-            { id: "agent" as const, label: "Agent", icon: <Bot size={15} /> },
-            {
-              id: "document" as const,
-              label: "文件解析",
-              icon: <FileInput size={15} />,
-            },
-            {
-              id: "knowledge" as const,
-              label: "Knowledge",
-              icon: <Database size={15} />,
-            },
-            {
-              id: "architecture" as const,
-              label: "架构",
-              icon: <Network size={15} />,
-            },
-            {
-              id: "retrieval_optimization" as const,
-              label: "检索优化",
-              icon: <Search size={15} />,
-            },
-          ].map((item) => (
+          {(
+            [
+              {
+                id: "rag",
+                label: "RAG",
+                icon: <Gauge size={15} />,
+                child: false,
+              },
+              {
+                id: "retrieval_optimization",
+                label: "检索优化",
+                icon: <Search size={15} />,
+                child: true,
+              },
+              {
+                id: "agent",
+                label: "Agent",
+                icon: <Bot size={15} />,
+                child: false,
+              },
+              {
+                id: "document",
+                label: "文件解析",
+                icon: <FileInput size={15} />,
+                child: false,
+              },
+              {
+                id: "knowledge",
+                label: "Knowledge",
+                icon: <Database size={15} />,
+                child: false,
+              },
+              {
+                id: "architecture",
+                label: "架构",
+                icon: <Network size={15} />,
+                child: false,
+              },
+            ] as {
+              id: SettingsSection;
+              label: string;
+              icon: React.ReactNode;
+              child: boolean;
+            }[]
+          ).map((item) => (
             <button
-              className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm ${
+              className={`flex w-full items-center gap-2 rounded-md py-2 text-sm ${
+                item.child ? "pl-7 text-[13px]" : "px-3"
+              } ${
                 section === item.id
                   ? "bg-zinc-950 text-white"
                   : "text-zinc-600 hover:bg-zinc-100"
