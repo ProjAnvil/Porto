@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from porto_chatbot.models import SourceChunk
+from porto_chatbot.models.enums import QueryTransformStrategy
+from porto_chatbot.query_transform import TransformResult
 from tests.rag_eval.provision import build_eval_kb
+from tests.rag_eval.runner import run_rag
 from tests.rag_eval.schema import CorpusDoc, RagCorpus, RagGolden
 
 
@@ -37,3 +42,48 @@ def test_build_eval_kb_indexes_and_retrieves(tmp_path):
     # 隔离：collection 名与默认 porto_kb 不同，data_dir 不在用户家目录
     assert kb.settings.vector_collection == "eval_domainrag"
     assert kb.settings.data_dir != Path.home() / ".porto"
+
+
+def test_run_rag_assembles_llm_test_case():
+    golden = RagGolden(
+        question="支付服务负责什么？",
+        reference_answer="支付授权、退款、结算与渠道路由。",
+        gold_doc_ids=["payment"],
+    )
+    eval_kb = MagicMock()
+    eval_kb.store = MagicMock()
+    eval_kb.settings = MagicMock()
+    eval_kb.settings.rerank_enabled = False
+    chunk = SourceChunk(
+        id="c1", path="p", title="t", text="payment-service 负责支付、退款、结算", score=0.9, metadata={}
+    )
+    eval_kb.store.search.return_value = [chunk]
+
+    llm = MagicMock()
+    llm.complete.return_value = "支付服务负责支付授权、退款、结算与渠道路由。"
+
+    tc, result = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
+
+    # NONE 策略走 store.search 原路径
+    eval_kb.store.search.assert_called_once_with(golden.question, 3)
+    assert isinstance(result, TransformResult)
+    # LLMTestCase 字段组装正确
+    assert tc.input == golden.question
+    assert tc.expected_output == golden.reference_answer
+    assert tc.actual_output == llm.complete.return_value
+    assert tc.retrieval_context == [chunk.text]
+
+
+def test_run_rag_guards_disabled_llm():
+    golden = RagGolden(question="Q", reference_answer="A", gold_doc_ids=["x"])
+    eval_kb = MagicMock()
+    eval_kb.store = MagicMock()
+    eval_kb.settings = MagicMock()
+    eval_kb.settings.rerank_enabled = False
+    eval_kb.store.search.return_value = []
+    llm = MagicMock()
+    llm.complete.return_value = None  # LLM 禁用
+
+    tc, _ = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
+    assert "未返回" in tc.actual_output  # guard 文案
+    assert tc.retrieval_context == []
