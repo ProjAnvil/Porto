@@ -282,6 +282,9 @@ export function PortoWorkbench() {
   const [backendOnline, setBackendOnline] = useState(true);
   const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
+  const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
+  // runWorkflowAction 重入守卫：按钮 disabled 之外的 defense-in-depth
+  const workflowRunningRef = useRef(false);
   const [inspector, setInspector] = useState<InspectorState>(emptyInspector);
   const [projectName, setProjectName] = useState("");
   const [workflowText, setWorkflowText] = useState("");
@@ -523,10 +526,14 @@ export function PortoWorkbench() {
   const handleChatFinish = useCallback(() => {
     setBusyLabel("");
     void refreshMemory();
+    // 首条消息发出后后端才创建 session；chat 完成时刷新左侧列表
+    setSessionRefreshKey((k) => k + 1);
   }, [refreshMemory]);
 
   async function runWorkflowAction() {
+    if (workflowRunningRef.current) return; // 防重入
     if (!workflowText.trim() && !selectedFile) return;
+    workflowRunningRef.current = true;
     setBusyLabel("提交拆解");
     setError("");
     setWorkflowDetail(null);
@@ -547,6 +554,7 @@ export function PortoWorkbench() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交拆解失败");
     } finally {
+      workflowRunningRef.current = false;
       setBusyLabel("");
     }
   }
@@ -661,6 +669,7 @@ export function PortoWorkbench() {
           view={view}
           workflowId={workflowId}
           workflowRefreshKey={workflowRefreshKey}
+          sessionRefreshKey={sessionRefreshKey}
           setMode={setMode}
           setSessionId={setSessionId}
           setView={setView}
@@ -986,6 +995,7 @@ function Sidebar({
   view,
   workflowId,
   workflowRefreshKey,
+  sessionRefreshKey,
   setMode,
   setSessionId,
   setView,
@@ -1000,6 +1010,7 @@ function Sidebar({
   view: View;
   workflowId: string | null;
   workflowRefreshKey: number;
+  sessionRefreshKey: number;
   setMode: (value: Mode) => void;
   setSessionId: (value: string) => void;
   setView: (value: View) => void;
@@ -1086,6 +1097,7 @@ function Sidebar({
 
       <SessionList
         activeSessionId={sessionId}
+        refreshKey={sessionRefreshKey}
         onPickSession={(sid) => {
           setSessionId(sid);
           setMode("chat");
