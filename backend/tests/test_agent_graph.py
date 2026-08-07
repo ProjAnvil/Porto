@@ -13,6 +13,7 @@ from porto_chatbot.agent.nodes import understand as understand_node
 from porto_chatbot.agent.state import PortoAgentState, _dict_merge
 from porto_chatbot.llm import LLMClient
 from porto_chatbot.models import SpecResult, Subsystem
+from porto_chatbot.models.enums import QueryTransformStrategy
 from porto_chatbot.settings import Settings
 
 
@@ -39,6 +40,12 @@ def _disabled_agent():  # llm.enabled=False → 走 fallback,不碰真 LLM/检�
     ag.llm.enabled = False
     ag.logger.info = lambda *a, **k: None
     ag._step = lambda name, summary, data: {"steps": [{"name": name}]}
+    # Task 8: retrieve_knowledge 经 retrieve_with_transform 读 settings 字段；
+    # MagicMock 自动属性会返回 MagicMock 而非 enum，导致 strategy != NONE 误入 LLM 分支。
+    # 显式设成 NONE+rerank 关闭，保证走 store.search 原路径。
+    ag.settings.workflow_query_transform_strategy = QueryTransformStrategy.NONE
+    ag.settings.rerank_enabled = False
+    ag.settings.multi_query_count = 4
     return ag
 
 

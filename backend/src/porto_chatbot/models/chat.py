@@ -33,6 +33,9 @@ class ChatResponse(BaseModel):
     steps: list[AgentStep]
     evaluation: dict[str, Any] = Field(default_factory=dict)
     memory: list[SourceChunk] = Field(default_factory=list)
+    # Task 8: 查询变换降级原因（None=正常；字符串=降级原因如 "llm_call_failed"）。
+    # 默认 None 保持 binary+none 路径的 ChatResponse 序列化与改造前一致。
+    transform_degraded: str | None = None
 
 
 class MemoryRecord(BaseModel):

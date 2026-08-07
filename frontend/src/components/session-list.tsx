@@ -10,9 +10,11 @@ import { DatePickerPopover } from "./date-picker-popover";
 export function SessionList({
   activeSessionId,
   onPickSession,
+  refreshKey,
 }: {
   activeSessionId: string;
   onPickSession: (sessionId: string) => void;
+  refreshKey: number;
 }) {
   const [items, setItems] = useState<SessionItem[]>([]);
   const [date, setDate] = useState("");
@@ -40,7 +42,7 @@ export function SessionList({
     return () => {
       cancelled = true;
     };
-  }, [date]);
+  }, [date, refreshKey]);
 
   async function loadMore() {
     if (loading || !hasMore) return;

@@ -7,7 +7,9 @@ from ...models import AppSettingsPayload, AppSettingsResponse
 from ..deps import (
     effective_agent_settings,
     effective_document_settings,
+    effective_rag_chat_settings,
     effective_rag_settings,
+    effective_rag_workflow_settings,
     get_config_store,
 )
 
@@ -23,6 +25,8 @@ def get_app_settings():
         rag=effective_rag_settings(),
         agent=effective_agent_settings(),
         document=effective_document_settings(),
+        rag_chat=effective_rag_chat_settings(),
+        rag_workflow=effective_rag_workflow_settings(),
     )
 
 
@@ -42,4 +46,10 @@ def save_app_settings(req: AppSettingsPayload):
     if req.document:
         logger.info("settings save namespace=document")
         store.save_document_settings(req.document)
+    if req.rag_chat:
+        logger.info("settings save namespace=rag_chat")
+        store.save_rag_chat_settings(req.rag_chat)
+    if req.rag_workflow:
+        logger.info("settings save namespace=rag_workflow")
+        store.save_rag_workflow_settings(req.rag_workflow)
     return get_app_settings()

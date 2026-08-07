@@ -6,7 +6,9 @@ from porto_chatbot.models import (
     AgentSettingsPayload,
     AppSettingsPayload,
     DocumentSettingsPayload,
+    RagChatSettingsPayload,
     RagSettingsPayload,
+    RagWorkflowSettingsPayload,
 )
 from porto_chatbot.settings import Settings
 
@@ -149,3 +151,38 @@ def test_document_settings_api_values_flow_into_runtime(monkeypatch, tmp_path):
     assert runtime.document_max_tokens == 22000
     assert runtime.document_max_upload_mb == 35
     assert runtime.document_max_pdf_pages == 280
+
+
+def test_rag_chat_settings_roundtrip(tmp_path):
+    from porto_chatbot.config_store import ConfigStore
+    from porto_chatbot.settings import Settings
+
+    store = ConfigStore(
+        Settings(data_dir=tmp_path / "d", log_dir=tmp_path / "l", kb_dirs=[tmp_path / "kb"])
+    )
+    assert store.get_rag_chat_settings().intent_routing_mode is None  # 空库
+    saved = store.save_rag_chat_settings(
+        RagChatSettingsPayload(
+            intent_routing_mode="adaptive", query_transform_strategy="hyde"
+        )
+    )
+    assert saved.intent_routing_mode == "adaptive"
+    assert saved.query_transform_strategy == "hyde"
+    # 重新读
+    assert store.get_rag_chat_settings().intent_routing_mode == "adaptive"
+
+
+def test_rag_workflow_settings_roundtrip(tmp_path):
+    from porto_chatbot.config_store import ConfigStore
+    from porto_chatbot.settings import Settings
+
+    store = ConfigStore(
+        Settings(data_dir=tmp_path / "d", log_dir=tmp_path / "l", kb_dirs=[tmp_path / "kb"])
+    )
+    saved = store.save_rag_workflow_settings(
+        RagWorkflowSettingsPayload(
+            query_transform_strategy="multi_query", multi_query_count=5
+        )
+    )
+    assert saved.query_transform_strategy == "multi_query"
+    assert store.get_rag_workflow_settings().multi_query_count == 5

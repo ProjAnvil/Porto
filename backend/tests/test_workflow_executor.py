@@ -557,3 +557,75 @@ def test_rerun_step_at_cap_raises(tmp_path):
     import pytest
     with pytest.raises(WorkflowRunning):
         executor.rerun_step(wid, "understand")
+
+
+# ----------------------------------------------- Critical fix: workflow_query_transform_strategy snapshot
+
+#: retrieve.py:18 reads ``agent.settings.workflow_query_transform_strategy``.  Before the
+#: fix, workflow creation only captured ``effective_rag_settings`` (base RAG) into
+#: ``rag_snapshot`` — ``effective_rag_workflow_settings`` was never snapshotted, so the
+#: field stayed at the ``Settings`` class default ``NONE`` on every workflow run.  Users
+#: saved ``multi_query``/``decomposition`` in the UI → persisted to SQLite → never read.
+#: The fix (方案 A) captures rag_workflow settings into the snapshot at creation time;
+#: ``rag_workflow_overrides()`` maps ``query_transform_strategy`` (payload name) to
+#: ``workflow_query_transform_strategy`` (Settings name) so model_copy applies it.
+
+
+def test_rag_workflow_overrides_maps_payload_to_settings_field_names(tmp_path, monkeypatch):
+    """``rag_workflow_overrides()`` must rename ``query_transform_strategy`` → ``workflow_query_transform_strategy``.
+
+    Without this rename, ``model_copy(update=...)`` in ``runtime_settings_from_snapshot``
+    would silently ignore the payload key (no matching Settings field) and the retrieve
+    node would always see NONE.
+    """
+    from porto_chatbot import main
+    from porto_chatbot.api.deps import rag_workflow_overrides
+    from porto_chatbot.config_store import ConfigStore
+    from porto_chatbot.models import RagWorkflowSettingsPayload
+
+    settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
+    monkeypatch.setattr(main, "settings", settings)
+    ConfigStore(settings).save_rag_workflow_settings(
+        RagWorkflowSettingsPayload(query_transform_strategy="multi_query", multi_query_count=5)
+    )
+    overrides = rag_workflow_overrides()
+    assert overrides["workflow_query_transform_strategy"] == "multi_query"
+    assert "query_transform_strategy" not in overrides  # renamed away
+    assert overrides["multi_query_count"] == 5
+
+
+def test_build_agent_reads_workflow_query_transform_from_snapshot(tmp_path, monkeypatch):
+    """Critical: snapshot ``workflow_query_transform_strategy`` → ``agent.settings``.
+
+    Simulates the fixed creation path: rag_snapshot carries the mapped key, _build_agent
+    rebuilds Settings via runtime_settings_from_snapshot, retrieve.py:18 reads it.
+    Verifies multi_query (NOT none) reaches the agent that retrieve_knowledge uses.
+    """
+    from porto_chatbot import main
+    from porto_chatbot.models.enums import QueryTransformStrategy
+
+    settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
+    monkeypatch.setattr(main, "settings", settings)
+    ex, store = _make(tmp_path)
+    rag_snap = {"embedding_provider": "local", "workflow_query_transform_strategy": "multi_query"}
+    agent_snap = {"agent_provider": "openai"}
+    wid = store.create("s", "p", "prd", 6, rag_snap, agent_snap)
+    agent = ex._build_agent(store.get(wid))
+    assert agent.settings.workflow_query_transform_strategy == QueryTransformStrategy.MULTI_QUERY
+
+
+def test_build_agent_defaults_to_none_without_workflow_overrides(tmp_path, monkeypatch):
+    """Backward compat: old snapshots (pre-fix, no workflow_query_transform_strategy key)
+    still default to NONE — existing workflows/tests are unaffected."""
+    from porto_chatbot import main
+    from porto_chatbot.models.enums import QueryTransformStrategy
+
+    settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
+    monkeypatch.setattr(main, "settings", settings)
+    ex, store = _make(tmp_path)
+    # Old-style snapshot: only base RAG keys, no workflow_query_transform_strategy
+    rag_snap = {"embedding_provider": "local"}
+    agent_snap = {"agent_provider": "openai"}
+    wid = store.create("s", "p", "prd", 6, rag_snap, agent_snap)
+    agent = ex._build_agent(store.get(wid))
+    assert agent.settings.workflow_query_transform_strategy == QueryTransformStrategy.NONE

@@ -41,7 +41,9 @@ import {
   createWorkflowUpload,
   defaultAgentConfig,
   defaultDocumentConfig,
+  defaultRagChatConfig,
   defaultRagConfig,
+  defaultRagWorkflowConfig,
   getAppSettings,
   getHealth,
   getKbStats,
@@ -62,7 +64,9 @@ import type {
   InspectorState,
   KbStats,
   MemoryRecord,
+  RagChatConfig,
   RagConfig,
+  RagWorkflowConfig,
   SourceChunk,
   Subsystem,
   ToolMeta,
@@ -83,7 +87,13 @@ const SpecMdxEditor = dynamic(
 
 type Mode = "chat" | "workflow";
 type View = "workbench" | "settings";
-type SettingsSection = "rag" | "agent" | "document" | "knowledge" | "architecture";
+type SettingsSection =
+  | "rag"
+  | "agent"
+  | "document"
+  | "knowledge"
+  | "architecture"
+  | "retrieval_optimization";
 
 type ChatAttachmentStatus = "uploading" | "done" | "error";
 type ChatAttachment = {
@@ -262,11 +272,19 @@ export function PortoWorkbench() {
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(defaultAgentConfig);
   const [documentConfig, setDocumentConfig] =
     useState<DocumentConfig>(defaultDocumentConfig);
+  const [ragChatConfig, setRagChatConfig] = useState<RagChatConfig>(
+    defaultRagChatConfig,
+  );
+  const [ragWorkflowConfig, setRagWorkflowConfig] =
+    useState<RagWorkflowConfig>(defaultRagWorkflowConfig);
   const [kbStats, setKbStats] = useState<KbStats | null>(null);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [backendOnline, setBackendOnline] = useState(true);
   const [memoryItems, setMemoryItems] = useState<MemoryRecord[]>([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
+  const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
+  // runWorkflowAction 重入守卫：按钮 disabled 之外的 defense-in-depth
+  const workflowRunningRef = useRef(false);
   const [inspector, setInspector] = useState<InspectorState>(emptyInspector);
   const [projectName, setProjectName] = useState("");
   const [workflowText, setWorkflowText] = useState("");
@@ -350,6 +368,8 @@ export function PortoWorkbench() {
         setRagConfig(settingsResult.value.rag);
         setAgentConfig(settingsResult.value.agent);
         setDocumentConfig(settingsResult.value.document);
+        setRagChatConfig(settingsResult.value.rag_chat);
+        setRagWorkflowConfig(settingsResult.value.rag_workflow);
       }
       setKbStats(statsResult.status === "fulfilled" ? statsResult.value : null);
       if (memoryResult.status === "fulfilled") {
@@ -459,6 +479,44 @@ export function PortoWorkbench() {
     }
   }
 
+  async function saveRagChatConfig(
+    nextConfig: RagChatConfig,
+  ): Promise<boolean> {
+    setBusyLabel("保存检索优化（Chat 场景）");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ rag_chat: nextConfig });
+      setRagChatConfig(saved.rag_chat);
+      return true;
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "保存检索优化（Chat 场景）失败",
+      );
+      return false;
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function saveRagWorkflowConfig(
+    nextConfig: RagWorkflowConfig,
+  ): Promise<boolean> {
+    setBusyLabel("保存检索优化（Workflow 场景）");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ rag_workflow: nextConfig });
+      setRagWorkflowConfig(saved.rag_workflow);
+      return true;
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "保存检索优化（Workflow 场景）失败",
+      );
+      return false;
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
   const handleChatStart = useCallback(() => {
     setBusyLabel("生成回答");
     setError("");
@@ -468,10 +526,14 @@ export function PortoWorkbench() {
   const handleChatFinish = useCallback(() => {
     setBusyLabel("");
     void refreshMemory();
+    // 首条消息发出后后端才创建 session；chat 完成时刷新左侧列表
+    setSessionRefreshKey((k) => k + 1);
   }, [refreshMemory]);
 
   async function runWorkflowAction() {
+    if (workflowRunningRef.current) return; // 防重入
     if (!workflowText.trim() && !selectedFile) return;
+    workflowRunningRef.current = true;
     setBusyLabel("提交拆解");
     setError("");
     setWorkflowDetail(null);
@@ -492,6 +554,7 @@ export function PortoWorkbench() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交拆解失败");
     } finally {
+      workflowRunningRef.current = false;
       setBusyLabel("");
     }
   }
@@ -606,6 +669,7 @@ export function PortoWorkbench() {
           view={view}
           workflowId={workflowId}
           workflowRefreshKey={workflowRefreshKey}
+          sessionRefreshKey={sessionRefreshKey}
           setMode={setMode}
           setSessionId={setSessionId}
           setView={setView}
@@ -648,10 +712,14 @@ export function PortoWorkbench() {
               health={health}
               kbStats={kbStats}
               ragConfig={ragConfig}
+              ragChatConfig={ragChatConfig}
+              ragWorkflowConfig={ragWorkflowConfig}
               onRefreshIndex={refreshIndex}
               onSaveAgent={saveAgentConfig}
               onSaveDocument={saveDocumentConfig}
               onSaveRag={saveRagConfig}
+              onSaveRagChat={saveRagChatConfig}
+              onSaveRagWorkflow={saveRagWorkflowConfig}
             />
           ) : mode === "chat" ? (
             <ChatLoader
@@ -927,6 +995,7 @@ function Sidebar({
   view,
   workflowId,
   workflowRefreshKey,
+  sessionRefreshKey,
   setMode,
   setSessionId,
   setView,
@@ -941,6 +1010,7 @@ function Sidebar({
   view: View;
   workflowId: string | null;
   workflowRefreshKey: number;
+  sessionRefreshKey: number;
   setMode: (value: Mode) => void;
   setSessionId: (value: string) => void;
   setView: (value: View) => void;
@@ -1027,6 +1097,7 @@ function Sidebar({
 
       <SessionList
         activeSessionId={sessionId}
+        refreshKey={sessionRefreshKey}
         onPickSession={(sid) => {
           setSessionId(sid);
           setMode("chat");
@@ -1284,10 +1355,14 @@ function SettingsPage({
   health,
   kbStats,
   ragConfig,
+  ragChatConfig,
+  ragWorkflowConfig,
   onRefreshIndex,
   onSaveAgent,
   onSaveDocument,
   onSaveRag,
+  onSaveRagChat,
+  onSaveRagWorkflow,
 }: {
   agentConfig: AgentConfig;
   busy: boolean;
@@ -1296,10 +1371,14 @@ function SettingsPage({
   health: HealthSnapshot | null;
   kbStats: KbStats | null;
   ragConfig: RagConfig;
+  ragChatConfig: RagChatConfig;
+  ragWorkflowConfig: RagWorkflowConfig;
   onRefreshIndex: (config?: RagConfig) => Promise<void>;
   onSaveAgent: (config: AgentConfig) => Promise<void>;
   onSaveDocument: (config: DocumentConfig) => Promise<boolean>;
   onSaveRag: (config: RagConfig) => Promise<RagConfig | null>;
+  onSaveRagChat: (config: RagChatConfig) => Promise<boolean>;
+  onSaveRagWorkflow: (config: RagWorkflowConfig) => Promise<boolean>;
 }) {
   const [section, setSection] = useState<SettingsSection>("rag");
   const [savedLabel, setSavedLabel] = useState("");
@@ -1346,27 +1425,55 @@ function SettingsPage({
     <div className="grid min-h-0 flex-1 grid-cols-1 bg-white md:grid-cols-[220px_minmax(0,1fr)]">
       <aside className="border-b border-zinc-200 bg-zinc-50 p-3 md:border-b-0 md:border-r">
         <div className="space-y-1">
-          {[
-            { id: "rag" as const, label: "RAG", icon: <Gauge size={15} /> },
-            { id: "agent" as const, label: "Agent", icon: <Bot size={15} /> },
-            {
-              id: "document" as const,
-              label: "文件解析",
-              icon: <FileInput size={15} />,
-            },
-            {
-              id: "knowledge" as const,
-              label: "Knowledge",
-              icon: <Database size={15} />,
-            },
-            {
-              id: "architecture" as const,
-              label: "架构",
-              icon: <Network size={15} />,
-            },
-          ].map((item) => (
+          {(
+            [
+              {
+                id: "rag",
+                label: "RAG",
+                icon: <Gauge size={15} />,
+                child: false,
+              },
+              {
+                id: "retrieval_optimization",
+                label: "检索优化",
+                icon: <Search size={15} />,
+                child: true,
+              },
+              {
+                id: "agent",
+                label: "Agent",
+                icon: <Bot size={15} />,
+                child: false,
+              },
+              {
+                id: "document",
+                label: "文件解析",
+                icon: <FileInput size={15} />,
+                child: false,
+              },
+              {
+                id: "knowledge",
+                label: "Knowledge",
+                icon: <Database size={15} />,
+                child: false,
+              },
+              {
+                id: "architecture",
+                label: "架构",
+                icon: <Network size={15} />,
+                child: false,
+              },
+            ] as {
+              id: SettingsSection;
+              label: string;
+              icon: React.ReactNode;
+              child: boolean;
+            }[]
+          ).map((item) => (
             <button
-              className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm ${
+              className={`flex w-full items-center gap-2 rounded-md py-2 text-sm ${
+                item.child ? "pl-7 text-[13px]" : "px-3"
+              } ${
                 section === item.id
                   ? "bg-zinc-950 text-white"
                   : "text-zinc-600 hover:bg-zinc-100"
@@ -1421,6 +1528,21 @@ function SettingsPage({
             documentConfig={documentConfig}
             onSaved={() => markSaved("文件解析设置已保存")}
             onSaveDocument={onSaveDocument}
+          />
+        ) : null}
+
+        {section === "retrieval_optimization" ? (
+          <RagOptimizationSettingsForm
+            key={`${JSON.stringify(ragChatConfig)}|${JSON.stringify(
+              ragWorkflowConfig,
+            )}`}
+            busy={busy}
+            ragChatConfig={ragChatConfig}
+            ragWorkflowConfig={ragWorkflowConfig}
+            onSavedChat={() => markSaved("Chat 场景检索优化已保存")}
+            onSavedWorkflow={() => markSaved("Workflow 场景检索优化已保存")}
+            onSaveRagChat={onSaveRagChat}
+            onSaveRagWorkflow={onSaveRagWorkflow}
           />
         ) : null}
 
@@ -2450,6 +2572,279 @@ function AgentSettingsForm({
   );
 }
 
+// ── 检索优化：横向卡片选择器 + 表单 ──────────────────────────────────────────
+
+type CardOption = {
+  value: string;
+  label: string;
+  description: string;
+};
+
+const ROUTING_OPTIONS: CardOption[] = [
+  {
+    value: "off",
+    label: "Off",
+    description: "不做意图分流，所有消息都查知识库",
+  },
+  {
+    value: "binary",
+    label: "Binary",
+    description: "自动区分闲聊与知识库问答；闲聊直答，其余查库",
+  },
+  {
+    value: "adaptive",
+    label: "Adaptive",
+    description:
+      "三级分流——闲聊直答 / 快速检索 / 深度检索（自动套用查询变换）",
+  },
+];
+
+const CHAT_TRANSFORM_OPTIONS: CardOption[] = [
+  {
+    value: "none",
+    label: "None",
+    description: "直接用原始问题检索",
+  },
+  {
+    value: "hyde",
+    label: "HyDE",
+    description:
+      "先生成假设性答案再检索，弥补问题与文档的措辞差异（+1 次模型调用）",
+  },
+  {
+    value: "multi_query",
+    label: "Multi-Query",
+    description: "生成多个改写问题分别检索后融合，提升召回",
+  },
+  {
+    value: "decomposition",
+    label: "Decomposition",
+    description: "将复杂问题拆成子问题分别检索，适合多跳追问",
+  },
+  {
+    value: "step_back",
+    label: "Step-Back",
+    description: "先抽象出更高层问题，检索背景知识",
+  },
+];
+
+const WORKFLOW_TRANSFORM_OPTIONS: CardOption[] = [
+  {
+    value: "none",
+    label: "None",
+    description: "直接用原始问题检索",
+  },
+  {
+    value: "multi_query",
+    label: "Multi-Query",
+    description: "生成多个改写问题分别检索后融合，提升召回",
+  },
+  {
+    value: "decomposition",
+    label: "Decomposition",
+    description: "将复杂问题拆成子问题分别检索，适合多跳追问",
+  },
+];
+
+function StrategyCardGroup({
+  options,
+  value,
+  onChange,
+}: {
+  options: CardOption[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-3">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          className={`flex-1 min-w-[140px] rounded-lg border p-3 text-left transition ${
+            value === opt.value
+              ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900"
+              : "border-zinc-200 hover:border-zinc-400"
+          }`}
+        >
+          <div className="text-sm font-semibold text-zinc-900">{opt.label}</div>
+          <div className="mt-1 text-xs text-zinc-500">{opt.description}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RagOptimizationSettingsForm({
+  busy,
+  ragChatConfig,
+  ragWorkflowConfig,
+  onSavedChat,
+  onSavedWorkflow,
+  onSaveRagChat,
+  onSaveRagWorkflow,
+}: {
+  busy: boolean;
+  ragChatConfig: RagChatConfig;
+  ragWorkflowConfig: RagWorkflowConfig;
+  onSavedChat: () => void;
+  onSavedWorkflow: () => void;
+  onSaveRagChat: (config: RagChatConfig) => Promise<boolean>;
+  onSaveRagWorkflow: (config: RagWorkflowConfig) => Promise<boolean>;
+}) {
+  const [chatDraft, setChatDraft] = useState<RagChatConfig>(ragChatConfig);
+  const [workflowDraft, setWorkflowDraft] =
+    useState<RagWorkflowConfig>(ragWorkflowConfig);
+
+  const updateChat = <K extends keyof RagChatConfig>(
+    key: K,
+    value: RagChatConfig[K],
+  ) => {
+    setChatDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateWorkflow = <K extends keyof RagWorkflowConfig>(
+    key: K,
+    value: RagWorkflowConfig[K],
+  ) => {
+    setWorkflowDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  async function saveChat() {
+    const ok = await onSaveRagChat(chatDraft);
+    if (ok) onSavedChat();
+  }
+
+  async function saveWorkflow() {
+    const ok = await onSaveRagWorkflow(workflowDraft);
+    if (ok) onSavedWorkflow();
+  }
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+        查询优化为查询时行为，修改后立即生效，无需重建知识库索引。
+      </div>
+
+      {/* Chat 场景 */}
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存 Chat 场景"
+        title="Chat 场景检索优化"
+        onSave={saveChat}
+      >
+        <div className="space-y-6">
+          <div>
+            <div className="mb-2 text-sm font-semibold text-zinc-900">
+              意图路由（Intent Routing）
+            </div>
+            <p className="mb-3 text-xs text-zinc-500">
+              控制是否在检索前对用户消息分流；Adaptive 模式会自动套用下方的查询变换。
+            </p>
+            <StrategyCardGroup
+              options={ROUTING_OPTIONS}
+              value={chatDraft.intent_routing_mode}
+              onChange={(v) =>
+                updateChat(
+                  "intent_routing_mode",
+                  v as RagChatConfig["intent_routing_mode"],
+                )
+              }
+            />
+          </div>
+
+          <div className="border-t border-zinc-200 pt-4">
+            <div className="mb-2 text-sm font-semibold text-zinc-900">
+              查询变换（Query Transform）
+            </div>
+            <p className="mb-3 text-xs text-zinc-500">
+              检索前对问题做改写/拆解，提升召回质量。Adaptive 路由命中"深度检索"时自动套用此策略。
+            </p>
+            <StrategyCardGroup
+              options={CHAT_TRANSFORM_OPTIONS}
+              value={chatDraft.query_transform_strategy}
+              onChange={(v) =>
+                updateChat(
+                  "query_transform_strategy",
+                  v as RagChatConfig["query_transform_strategy"],
+                )
+              }
+            />
+            {chatDraft.query_transform_strategy === "multi_query" ? (
+              <label className="mt-4 block">
+                <span className="text-xs text-zinc-500">
+                  改写数量（multi_query_count）：{chatDraft.multi_query_count}
+                </span>
+                <input
+                  className="mt-2 w-full accent-zinc-950"
+                  type="range"
+                  min={2}
+                  max={8}
+                  value={chatDraft.multi_query_count}
+                  onChange={(event) =>
+                    updateChat(
+                      "multi_query_count",
+                      Number(event.target.value),
+                    )
+                  }
+                />
+              </label>
+            ) : null}
+          </div>
+        </div>
+      </SettingsCard>
+
+      {/* Workflow 场景 */}
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存 Workflow 场景"
+        title="Workflow 场景检索优化"
+        onSave={saveWorkflow}
+      >
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-zinc-900">
+            查询变换（Query Transform）
+          </div>
+          <p className="text-xs text-zinc-500">
+            仅提供适用于长 PRD 文档的变换策略；HyDE / Step-Back 不适用于长文档场景，故不提供。
+          </p>
+          <StrategyCardGroup
+            options={WORKFLOW_TRANSFORM_OPTIONS}
+            value={workflowDraft.query_transform_strategy}
+            onChange={(v) =>
+              updateWorkflow(
+                "query_transform_strategy",
+                v as RagWorkflowConfig["query_transform_strategy"],
+              )
+            }
+          />
+          {workflowDraft.query_transform_strategy === "multi_query" ? (
+            <label className="mt-4 block">
+              <span className="text-xs text-zinc-500">
+                改写数量（multi_query_count）：{workflowDraft.multi_query_count}
+              </span>
+              <input
+                className="mt-2 w-full accent-zinc-950"
+                type="range"
+                min={2}
+                max={8}
+                value={workflowDraft.multi_query_count}
+                onChange={(event) =>
+                  updateWorkflow(
+                    "multi_query_count",
+                    Number(event.target.value),
+                  )
+                }
+              />
+            </label>
+          ) : null}
+        </div>
+      </SettingsCard>
+    </div>
+  );
+}
+
 function SettingsCard({
   busy,
   children,
@@ -3394,10 +3789,10 @@ function Inspector({
     <aside className="min-w-0 overflow-y-auto border-t border-zinc-200 bg-zinc-50 p-4 lg:border-t-0">
       <InspectorSection icon={<Play size={15} />} title="Agent Steps">
         <div className="space-y-2">
-          {inspector.steps.map((step) => (
+          {inspector.steps.map((step, index) => (
             <details
               className="rounded-lg border border-zinc-200 bg-white p-3"
-              key={step.name}
+              key={`${step.name}-${index}`}
             >
               <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium">{step.name}</span>

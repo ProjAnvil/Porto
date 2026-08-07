@@ -305,3 +305,92 @@ def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
     assert "用 OAuth 吧" in captured["user"]
     # trigger 仍被调(内部按 settings.facts_enabled 走,不依赖 facts_block)
     trig_async.assert_called_once()
+
+
+def test_chat_propagates_transform_degraded(monkeypatch, tmp_path):
+    """Task 8: retrieve_with_transform 返回 degraded 时 ChatResponse.transform_degraded 非空。
+
+    默认 binary+none 路径走 retrieve_with_transform(NONE) → store.search，degraded=False
+    （transform_degraded=None，保持向后兼容）。本测试 monkeypatch retrieve_with_transform
+    强制返回 degraded=True，断言 ChatResponse.transform_degraded 透传降级原因。
+    """
+    from porto_chatbot import main
+    from porto_chatbot.agent import langchain_chat as langchain_chat_mod
+    from porto_chatbot.api.routes import chat as chat_mod
+    from porto_chatbot.memory.store import MemoryStore
+    from porto_chatbot.query_transform import TransformResult
+    from porto_chatbot.settings import Settings
+
+    settings = Settings(data_dir=tmp_path)
+    monkeypatch.setattr(main, "settings", settings)
+    MemoryStore(settings)  # 初始化 memory 表 schema
+
+    fake_llm = MagicMock()
+    fake_llm.enabled = True
+    fake_llm.complete = MagicMock(return_value="回答")
+
+    degraded_result = TransformResult([], degraded=True, degrade_reason="llm_call_failed")
+
+    with (
+        patch.object(
+            langchain_chat_mod, "retrieve_with_transform", return_value=degraded_result
+        ) as grt,
+        patch.object(langchain_chat_mod, "get_store") as gs,
+        patch.object(langchain_chat_mod, "get_memory") as gm,
+        patch.object(langchain_chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(langchain_chat_mod, "get_index_supervisor") as gi,
+        patch.object(langchain_chat_mod, "route_chat_intent") as ri,
+        patch.object(langchain_chat_mod, "trigger_facts_extraction_sync"),
+    ):
+        gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
+        gm.return_value = _mock_memory()
+        gi.return_value.rag_available.return_value = (True, "")
+        ri.return_value = MagicMock(intent="rag", reason="x")
+
+        req = chat_mod.ChatRequest(message="查知识库", session_id="s1")
+        resp = chat_mod.chat(req)
+
+    # transform_degraded 透传降级原因字符串
+    assert resp.transform_degraded == "llm_call_failed"
+    # retrieve_with_transform 被调（默认 binary + rag intent 走 transform 分支）
+    grt.assert_called_once()
+
+
+def test_chat_transform_degraded_none_when_normal(monkeypatch, tmp_path):
+    """Task 8: 默认 binary+none + 正常检索 → transform_degraded=None（向后兼容锁）。
+
+    不 mock retrieve_with_transform，走真的 retrieve_with_transform(NONE) → store.search
+    原路径；degraded 恒为 False，ChatResponse.transform_degraded 必须为 None。
+    """
+    from porto_chatbot import main
+    from porto_chatbot.agent import langchain_chat as langchain_chat_mod
+    from porto_chatbot.api.routes import chat as chat_mod
+    from porto_chatbot.memory.store import MemoryStore
+    from porto_chatbot.settings import Settings
+
+    settings = Settings(data_dir=tmp_path)
+    monkeypatch.setattr(main, "settings", settings)
+    MemoryStore(settings)
+
+    fake_llm = MagicMock()
+    fake_llm.enabled = True
+    fake_llm.complete = MagicMock(return_value="回答")
+
+    with (
+        patch.object(langchain_chat_mod, "get_store") as gs,
+        patch.object(langchain_chat_mod, "get_memory") as gm,
+        patch.object(langchain_chat_mod, "LLMClient", return_value=fake_llm),
+        patch.object(langchain_chat_mod, "get_index_supervisor") as gi,
+        patch.object(langchain_chat_mod, "route_chat_intent") as ri,
+        patch.object(langchain_chat_mod, "trigger_facts_extraction_sync"),
+    ):
+        gs.return_value = MagicMock(search=MagicMock(return_value=[]), ensure_index=MagicMock())
+        gm.return_value = _mock_memory()
+        gi.return_value.rag_available.return_value = (True, "")
+        ri.return_value = MagicMock(intent="rag", reason="x")
+
+        req = chat_mod.ChatRequest(message="普通问题", session_id="s1")
+        resp = chat_mod.chat(req)
+
+    # 默认 binary+none 路径 transform_degraded 必须为 None（向后兼容）
+    assert resp.transform_degraded is None

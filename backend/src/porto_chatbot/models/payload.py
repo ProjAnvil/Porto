@@ -6,8 +6,10 @@ from .enums import (
     ChatbotBackend,
     DocumentParseMode,
     EmbeddingProvider,
+    IntentRoutingMode,
     LLMProvider,
     LocalParser,
+    QueryTransformStrategy,
     RetrievalMethod,
 )
 
@@ -80,16 +82,32 @@ class DocumentSettingsPayload(BaseModel):
     max_pdf_pages: int | None = Field(default=None, ge=1, le=1000)
 
 
+class RagChatSettingsPayload(BaseModel):
+    intent_routing_mode: IntentRoutingMode | None = None
+    query_transform_strategy: QueryTransformStrategy | None = None
+    multi_query_count: int | None = Field(default=None, ge=2, le=8)
+    hyde_fallback_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class RagWorkflowSettingsPayload(BaseModel):
+    query_transform_strategy: QueryTransformStrategy | None = None
+    multi_query_count: int | None = Field(default=None, ge=2, le=8)
+
+
 class AppSettingsPayload(BaseModel):
     rag: RagSettingsPayload | None = None
     agent: AgentSettingsPayload | None = None
     document: DocumentSettingsPayload | None = None
+    rag_chat: RagChatSettingsPayload | None = None
+    rag_workflow: RagWorkflowSettingsPayload | None = None
 
 
 class AppSettingsResponse(BaseModel):
     rag: RagSettingsPayload
     agent: AgentSettingsPayload
     document: DocumentSettingsPayload
+    rag_chat: RagChatSettingsPayload
+    rag_workflow: RagWorkflowSettingsPayload
 
 
 class IndexRequest(RagSettingsPayload):
