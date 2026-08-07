@@ -301,7 +301,7 @@ def build_eval_kb(
     settings = Settings(
         kb_dirs=[kb_dir],
         data_dir=tmp_dir / "eval_data",
-        log_dir=tmp_path_log(tmp_dir),
+        log_dir=tmp_dir / "eval_logs",
         embedding_provider="local",
         embedding_dimensions=embedding_dimensions,
         vector_collection="eval_domainrag",
@@ -311,10 +311,6 @@ def build_eval_kb(
     store = ChromaVectorStore(settings)
     store.build(reset=True)
     return EvalKb(store=store, settings=settings)
-
-
-def tmp_path_log(tmp_dir: Path) -> Path:
-    return tmp_dir / "eval_logs"
 ```
 
 - [ ] **Step 5: 运行验证通过**
@@ -402,7 +398,7 @@ def test_run_rag_guards_disabled_llm(tmp_path):
     assert tc.retrieval_context == []
 ```
 
-> 注：`SourceChunk` 的字段以仓库 `models/common.py` 实际定义为准；若构造报错，按其实际必填字段调整（保持 id/path/title/text/score/metadata 语义）。
+> 已核实：`SourceChunk`（`models/common.py:15`）字段为 `id/path/title/text/score=0.0/metadata={}`，本测试构造与之完全一致。
 
 - [ ] **Step 2: 运行验证失败**
 
@@ -863,7 +859,11 @@ def _has_llm_key() -> bool:
 
 @pytest.fixture(scope="session")
 def domainrag_data():
-    corpus, goldens = load_domainrag()
+    """加载 DomainRAG；未下载时 pytest.skip（只影响请求本 fixture 的集成门禁）。"""
+    try:
+        corpus, goldens = load_domainrag()
+    except FileNotFoundError:
+        pytest.skip("DomainRAG 未下载 —— 运行 make eval-dataset")
     return corpus, goldens
 
 
@@ -876,13 +876,17 @@ def eval_kb(tmp_path_factory, domainrag_data):
 
 @pytest.fixture(scope="session")
 def eval_llm() -> LLMClient:
-    """用 .env.test 的 LLM 配置建 LLMClient（检索阶段 transform / 生成阶段作答共用）。"""
+    """用 .env.test 的 LLM 配置建 LLMClient（检索阶段 transform / 生成阶段作答共用）。
+
+    无 key 时 skip：本 fixture 只被集成门禁请求，不影响 test_harness 廉价单测。
+    """
     env = _read_env_test()
-    # Settings 默认 agent_provider=OPENAI；这里把 .env.test 的 key/url/model 注入
+    if not env.get("LANGCHAIN_API_KEY"):
+        pytest.skip("无 LANGCHAIN_API_KEY（.env.test）—— 跳过 RAG 集成门禁")
     settings = Settings(
         agent_provider=env.get("LANGCHAIN_AGENT_PROVIDER", "openai"),
         agent_api_key=env.get("LANGCHAIN_API_KEY"),
-        agent_base_url=env.get("LANGCHAIN_BASE_URL"),
+        agent_base_url=env.get("LANGCHAIN_BASE_URL") or None,
         agent_model=env.get("LANGCHAIN_MODEL", "gpt-4.1-mini"),
     )
     return LLMClient(settings)
@@ -890,35 +894,17 @@ def eval_llm() -> LLMClient:
 
 @pytest.fixture(scope="session")
 def judge_env():
-    """为 DeepEval（litellm 后端）设置 OpenAI-compatible judge env。"""
+    """为 DeepEval（litellm 后端）设置 OpenAI-compatible judge env，返回模型名。"""
     env = _read_env_test()
-    if not _has_llm_key():
-        return None
+    if not env.get("LANGCHAIN_API_KEY"):
+        pytest.skip("无 LANGCHAIN_API_KEY（.env.test）—— 跳过 RAG 集成门禁")
     os.environ["OPENAI_API_KEY"] = env["LANGCHAIN_API_KEY"]
     if env.get("LANGCHAIN_BASE_URL"):
         os.environ["OPENAI_API_BASE"] = env["LANGCHAIN_BASE_URL"]
     return env.get("LANGCHAIN_MODEL", "gpt-4.1-mini")
-
-
-@pytest.fixture(autouse=True)
-def _skip_without_key_or_data():
-    if not _has_llm_key():
-        pytest.skip("无 LANGCHAIN_API_KEY（.env.test）—— 跳过 RAG 集成门禁")
-    if not _has_dataset():
-        pytest.skip("DomainRAG 未下载 —— 运行 make eval-dataset")
-
-
-def _has_dataset() -> bool:
-    from .loaders.domainrag import DATA_DIR
-
-    try:
-        load_domainrag()
-        return True
-    except Exception:
-        return False
 ```
 
-> autouse `_skip_without_key_or_data` 保证无 key/无数据时安静跳过，不报错。
+> **关键**：没有任何 autouse skip。`test_harness.py` 的廉价单测**永远运行**（CI 必跑）；只有集成门禁因请求上述 session fixture 才会在缺 key/数据时 skip。
 
 - [ ] **Step 2: 写门禁测试（report-only 起步）**
 
@@ -973,16 +959,14 @@ def test_rag_quality_gate(eval_kb, domainrag_data, eval_llm, judge_env):
         encoding="utf-8",
     )
 
-    # report-only 起步：默认只产出报告不判 pass；设 RAG_EVAL_HARD_GATE=1 后才硬判定
+    # report-only 起步：默认只产出报告、不因低分 fail；errored 始终 fail（真故障）。
     report_only = os.environ.get("RAG_EVAL_REPORT_ONLY", "1") == "1"
     assert not errored, f"有 case 出错（真故障）：{errored}"
     if not report_only:
         assert passed, f"RAG 门禁未达标：{detail}"
-    else:
-        pytest.mark.xfail(reason="report-only：仅出基线，不判 pass")  # noqa
 ```
 
-> report-only 语义：`RAG_EVAL_REPORT_ONLY=1`（默认）→ 不因指标低分 fail，仅 errored 才 fail；`RAG_EVAL_REPORT_ONLY=0` → 启用硬阈值判定。
+> report-only 语义：`RAG_EVAL_REPORT_ONLY=1`（默认）→ 不因指标低分 fail，仅 errored 才 fail；`RAG_EVAL_REPORT_ONLY=0` → 启用硬阈值判定。（注意：不要用 `pytest.mark.xfail()` 在函数体内抑制——它是 marker 装饰器，不是运行期断言开关。）
 
 - [ ] **Step 3: 运行（需 key + 数据集）**
 
