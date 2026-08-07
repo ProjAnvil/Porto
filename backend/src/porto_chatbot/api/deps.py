@@ -8,7 +8,7 @@ from ..health import HealthMonitor
 from ..index_supervisor import IndexSupervisor
 from ..locking import DbLockStore
 from ..logging_utils import get_component_logger
-from ..memory import MemoryStore
+from ..memory import ConversationMemory, MemoryStore, SessionStore
 from ..models import (
     AgentSettingsPayload,
     DocumentSettingsPayload,
@@ -216,6 +216,16 @@ def get_store(runtime_settings=None) -> LocalVectorStore:
 
 def get_memory(runtime_settings=None) -> MemoryStore:
     return MemoryStore(runtime_settings or current_settings())
+
+
+def get_session_store(runtime_settings=None) -> SessionStore:
+    """SessionStore 工厂——SQLite 层（sessions + messages + summaries + facts）。"""
+    return SessionStore(runtime_settings or current_settings())
+
+
+def get_conversation_memory(runtime_settings=None) -> ConversationMemory:
+    """ConversationMemory 工厂——ChromaDB 向量层（session-isolated search）。"""
+    return ConversationMemory(runtime_settings or current_settings())
 
 
 # ---------------- RAG 监督 / 健康监控 单例 ----------------
