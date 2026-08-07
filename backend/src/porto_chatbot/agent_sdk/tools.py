@@ -184,16 +184,20 @@ def build_sdk_tools(ctx: AgentToolContext, tool_timeout: int = 60) -> list:
     if ctx.memory_store is not None:
         @tool(
             "search_memory",
-            "跨会话语义检索对话记忆。session_id 可选，用于限定检索范围。",
-            {"query": str, "session_id": str},
+            "跨会话语义检索对话记忆。自动限定到当前会话范围。",
+            {"query": str},
         )
         async def search_mem(args):  # noqa: ANN001
+            # 优先用 ctx.session_id（chatbot 模式注入），不依赖 Claude 传参
+            sid = ctx.session_id
+            if not sid:
+                return _mcp_text("错误：未设置 session_id，无法执行记忆检索。")
             try:
                 results = await asyncio.wait_for(
                     asyncio.to_thread(
                         ctx.memory_store.search,
                         str(args.get("query", "")),
-                        session_id=str(args.get("session_id", "")) or None,
+                        session_id=sid,
                     ),
                     timeout=tool_timeout,
                 )

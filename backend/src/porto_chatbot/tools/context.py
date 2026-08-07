@@ -37,11 +37,12 @@ def _format_chunks(chunks: list[SourceChunk], *, per_chunk: int = _MAX_SOURCE_CH
 class AgentToolContext:
     """工具执行上下文：持有可变的 workflow state 与向量库句柄。
 
-    chatbot 模式额外传 memory_store / facts_store（workflow 模式为 None）。
+    chatbot 模式额外传 memory_store / facts_store / session_id（workflow 模式为 None）。
     """
 
     state: State
     vector_store: LocalVectorStore | None = None
-    memory_store: Any = None  # chatbot 专属（MemoryStore），workflow 为 None
-    facts_store: Any = None  # chatbot 专属（SessionFactsStore），workflow 为 None
-    file_service: Any = None  # FileService（files/service.py），未注入时为 None
+    memory_store: Any = None       # chatbot 专属（ConversationMemory），workflow 为 None
+    facts_store: Any = None        # chatbot 专属（SessionFactsStore），workflow 为 None
+    file_service: Any = None       # FileService（files/service.py），未注入时为 None
+    session_id: str | None = None  # chatbot 专属（当前会话 id），供 search_memory 工具使用

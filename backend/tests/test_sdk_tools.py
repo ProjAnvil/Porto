@@ -170,20 +170,38 @@ def test_search_knowledgebase_tool_returns_unavailable_without_store():
 
 
 def test_search_memory_tool_calls_memory_store():
-    """search_memory delegates to ctx.memory_store.search with kwargs."""
+    """search_memory delegates to ctx.memory_store.search with session_id from ctx."""
     fake_store = MagicMock()
     fake_store.search.return_value = []  # empty → "无匹配记忆"
-    ctx = AgentToolContext(state={}, memory_store=fake_store)
+    ctx = AgentToolContext(state={}, memory_store=fake_store, session_id="ctx-sess-1")
     build_sdk_tools = _import_build_sdk_tools()
     tools = build_sdk_tools(ctx)
     mem_tool = next(t for t in tools if t.name == "search_memory")
 
     async def _call():
-        return await mem_tool.handler({"query": "x", "session_id": "sess-1"})
+        # session_id is no longer taken from args; ctx.session_id is authoritative.
+        return await mem_tool.handler({"query": "x"})
 
     result = _run(_call())
-    fake_store.search.assert_called_once_with("x", session_id="sess-1")
+    fake_store.search.assert_called_once_with("x", session_id="ctx-sess-1")
     assert "无匹配记忆" in result["content"][0]["text"]
+
+
+def test_search_memory_tool_returns_error_when_session_id_missing():
+    """Without ctx.session_id, the tool short-circuits with an error message."""
+    fake_store = MagicMock()
+    fake_store.search.return_value = []
+    ctx = AgentToolContext(state={}, memory_store=fake_store, session_id=None)
+    build_sdk_tools = _import_build_sdk_tools()
+    tools = build_sdk_tools(ctx)
+    mem_tool = next(t for t in tools if t.name == "search_memory")
+
+    async def _call():
+        return await mem_tool.handler({"query": "x"})
+
+    result = _run(_call())
+    fake_store.search.assert_not_called()
+    assert "session_id" in result["content"][0]["text"]
 
 
 def test_get_session_facts_tool_uses_build_facts_prompt():
