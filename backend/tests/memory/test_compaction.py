@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from porto_chatbot.memory.compaction import summarize_records
+from porto_chatbot.memory.compaction import get_compacted_history, summarize_records
+from porto_chatbot.memory.session_store import SessionStore
 from porto_chatbot.models import MemoryRecord
 
 
@@ -37,3 +38,26 @@ def test_summarize_empty_records():
     llm.enabled = True
     assert summarize_records([], llm) == ""
     llm.complete.assert_not_called()
+
+
+def test_compaction_only_uses_indexed_messages(sample_settings):
+    """indexed_only=True: chitchat (indexed=False) 被排除出 compaction。"""
+    store = SessionStore(sample_settings)
+    # Add 25 indexed messages (above threshold=20)
+    for i in range(25):
+        msg = store.add_message(
+            session_id="s1", role="user" if i % 2 == 0 else "assistant",
+            content=f"rag message {i}", intent="rag", indexed=False,
+        )
+    store.mark_indexed([m.id for m in store.list_messages("s1")])
+    # Add 5 chitchat messages (not indexed)
+    for i in range(5):
+        store.add_message(
+            session_id="s1", role="user",
+            content=f"chitchat {i}", intent="direct", indexed=False,
+        )
+    summary, recent = get_compacted_history("s1", store, llm=None)
+    # LLM disabled → returns ("", recent). recent should only contain indexed messages.
+    # Without LLM, threshold logic still runs: total indexed = 25 > 20 → keep_recent
+    assert len(recent) <= store.settings.memory_recent_keep
+    assert all(r.indexed for r in recent)  # no chitchat in recent
