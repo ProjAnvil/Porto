@@ -11,6 +11,7 @@ from anthropic import Anthropic
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
@@ -149,7 +150,7 @@ class LLMClient:
             len(msgs),
         )
         try:
-            response = self._client.invoke(self._to_lc_messages(msgs))
+            response = self._with_retry(self._client).invoke(self._to_lc_messages(msgs))
         except Exception:
             self.logger.exception("llm complete failed model=%s", self.settings.agent_model)
             raise
@@ -224,7 +225,7 @@ class LLMClient:
             }
             for t in tools
         ]
-        bound = self._client.bind_tools(tool_specs)
+        bound = self._with_retry(self._client.bind_tools(tool_specs))
         handlers = {t.name: t for t in tools}
         resolved_turns = max_turns or self.settings.agent_max_tool_turns
         result = ToolLoopResult()
@@ -360,7 +361,7 @@ class LLMClient:
             len(msgs),
         )
         try:
-            for chunk in self._client.stream(self._to_lc_messages(msgs)):
+            for chunk in self._with_retry(self._client).stream(self._to_lc_messages(msgs)):
                 delta = chunk.content
                 if isinstance(delta, str) and delta:
                     yield delta
@@ -399,6 +400,19 @@ class LLMClient:
                 out.append(HumanMessage(content=content))
         return out
 
+    def _with_retry(self, runnable):
+        """挂 langchain ``.with_retry()``（指数退避）治理瞬时错误（429/超时/连接错误）。
+
+        ``agent_retry_attempts`` 为总尝试次数（含首次）：1 = 不包装直接返回。
+        RunnableRetry 无 ``bind_tools``，故必须在 ``bind_tools`` 之后、调用点包装，
+        而不是在 ``_build_client`` 里整体包装。测试替身（非 Runnable）无
+        ``with_retry`` 方法，原样返回以兼容。
+        """
+        attempts = self.settings.agent_retry_attempts
+        if attempts <= 1 or not hasattr(runnable, "with_retry"):
+            return runnable
+        return runnable.with_retry(stop_after_attempt=attempts)
+
     def _build_client(self) -> BaseChatModel | None:
         if not self.settings.agent_api_key:
             self.logger.info(
@@ -414,6 +428,11 @@ class LLMClient:
         }
         if self.settings.agent_base_url:
             kwargs["base_url"] = self.settings.agent_base_url
+        if self.settings.agent_rate_limit_rps:
+            # langchain-core 原生令牌桶限流（请求级 RPM 控制，429 的第一道防线）
+            kwargs["rate_limiter"] = InMemoryRateLimiter(
+                requests_per_second=self.settings.agent_rate_limit_rps
+            )
         if self.settings.agent_provider == LLMProvider.OPENAI:
             client: BaseChatModel = ChatOpenAI(**kwargs)
         elif self.settings.agent_provider == LLMProvider.ANTHROPIC:

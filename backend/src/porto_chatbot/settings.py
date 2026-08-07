@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     # --- LLM 请求超时（秒），抗单次调用挂死 ---
     agent_request_timeout: int = Field(default=120, ge=10)
 
+    # --- LLM 治理：限流与重试（langchain-core 原生原语）---
+    # InMemoryRateLimiter 令牌桶（构造 chat model 时挂 rate_limiter）；None = 不限流
+    agent_rate_limit_rps: float | None = Field(default=2.0, gt=0)
+    # .with_retry 总尝试次数（含首次，指数退避）；1 = 不重试。默认 3 = 最多重试 2 次
+    agent_retry_attempts: int = Field(default=3, ge=1, le=10)
+
     # --- Agent SDK 子进程保护（抗 Claude CLI 挂起）---
     # Claude CLI 子进程无 stdout 输出的超时（秒），防止多轮工具调用后静默挂起
     agent_sdk_idle_timeout: int = Field(default=120, ge=10)

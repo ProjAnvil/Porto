@@ -16,6 +16,7 @@ def _client(mock_chat, max_turns=3, max_tokens=2000, recovery=2):
         agent_request_timeout=10,
         agent_max_tokens=max_tokens,
         max_output_recovery_attempts=recovery,
+        agent_retry_attempts=1,  # 截断逻辑单测：关掉 .with_retry 包装，直接打到 mock
     )
     return c
 
