@@ -120,22 +120,27 @@ tests/rag_eval/data/domainrag/         # gitignored，make eval-dataset 下载�
 3. session fixture：`build_eval_kb(corpus)` → corpus 落 tmp kb_dir 文件 → 隔离 Settings（`vector_collection="eval_domainrag"`、`embedding_provider=LOCAL`、`chroma_dir`/`kb_dirs` 指向 tmp）→ `ChromaVectorStore.build()` + BM25 → `EvalKb(store, settings, llm)`。
 4. 每条 `RagGolden`（parametrize）：
    - `retrieve_with_transform(q, strategy, store, settings, llm, top_k)` → `sources: list[SourceChunk]`
-   - `llm.complete(rag_answer_prompt(q, sources))` → `answer`
+   - `llm.complete(rag_system_prompt, user=f"{q}\n\n上下文:\n{sources}")` → `answer`（None 时 guard）
    - 组 `LLMTestCase(input=q, actual_output=answer, expected_output=reference_answer, retrieval_context=[s.text for s in sources])`
-5. DeepEval 5 指标评测（judge = Porto 的 OpenAI-compatible LLM）。
+5. DeepEval 6 指标评测（judge = Porto 的 OpenAI-compatible LLM）。
 6. `aggregate()` → 各指标批量均值 vs `THRESHOLDS` → pass/fail，写 `.last_report.json`。
 
 ## 指标集
 
-DeepEval 标准 RAG 套件（全 LLM-as-judge）：
+DeepEval 2026 标准 RAG 套件（全 LLM-as-judge），6 个指标：
 
 | 指标 | 测什么 | 所需 LLMTestCase 字段 |
 |---|---|---|
-| `FaithfulnessMetric` | 答案是否忠于召回上下文（不臆造） | actual_output + retrieval_context |
+| `FaithfulnessMetric` | 答案是否忠于召回上下文（不臆造/覆盖幻觉） | actual_output + retrieval_context |
 | `AnswerRelevancyMetric` | 答案是否切题 | input + actual_output |
-| `ContextualPrecisionMetric` | 相关 chunk 是否排在前面 | input + retrieval_context + expected_output |
+| `AnswerCorrectnessMetric` | 答案相对**参考答案**的事实正确性 | input + actual_output + expected_output |
+| `ContextualPrecisionMetric` | 相关 chunk 是否排在前面（rerank 质量） | input + retrieval_context + expected_output |
 | `ContextualRecallMetric` | 该召回的是否都召回了 | expected_output + retrieval_context |
 | `ContextualRelevancyMetric` | 召回上下文是否与问题相关 | input + retrieval_context |
+
+**为什么含 AnswerCorrectness**：DomainRAG 带参考答案（`expected_output`），AnswerCorrectness 是唯一"拿参考答案判事实正确性"的指标，与 Faithfulness（对上下文忠实）互补——一个查"有没有说错"，一个查"说得对不对"。社区/工业最佳实践（Patronus AI、DeepLearning.ai）都把 context precision/recall + answer correctness 列为重中之重。
+
+**暂不做**：`GEval`（自定义 CoT LLM-judge，DeepEval 最热门指标）留作日后自定义质量维度的钩子；`HallucinationMetric` 与 Faithfulness 重叠，不重复。
 
 ## 阈值与抖动策略
 
@@ -188,7 +193,7 @@ LLM-as-judge 单条抖动大，门禁可用性的关键在降噪：
 
 1. `make eval-dataset` 可重复下载 DomainRAG 到 gitignored 目录；`data/` 不进 git。
 2. `test_harness.py`（合成语料）CI 全绿、无需 LLM。
-3. `test_rag_gate.py` 在配 key 环境下能跑完整批 DomainRAG golden，输出 5 指标均值 + `.last_report.json`。
+3. `test_rag_gate.py` 在配 key 环境下能跑完整批 DomainRAG golden，输出 6 指标均值 + `.last_report.json`。
 4. report-only 模式可产出基线分；切换为硬阈值后，批量均值判定生效。
 5. 现有测试不受影响（新代码全在 `tests/rag_eval/` + 可选依赖，零侵入）。
 
@@ -223,5 +228,10 @@ LLM-as-judge 单条抖动大，门禁可用性的关键在降噪：
 
 - DomainRAG 下载后的确切字段名（corpus 文档结构、QA 集 `query` / 参考答案 / golden-references 字段），据此定 `loaders/domainrag.py` 的映射。
 - Google Drive 文件 id（README 所示 `1NquEyPGwP0MpTGJwDUUYKU37snYN4Er4`）有效性 / 是否拆多文件，据此调 `fetch_dataset.py`。
-- `retrieve_with_transform` 的确切签名（`query_transform.py:73`，已存在），确认 strategy / top_k 参数取值。
-- `LLMClient.complete` 的入参形态（`llm/client.py:138`，消息列表 vs 纯文本），据此写 `rag_answer_prompt` 调用。
+
+## 已核实项（spec review 阶段确认）
+
+- `retrieve_with_transform(query, strategy, store, settings, llm, top_k) -> TransformResult`（`query_transform.py:73`）：签名如上；`store` 显式参数 → **无全局单例耦合**，可传入隔离 store 实例。
+- `store.search` / `_search_raw` / BM25 全部走 `self.settings`；`build()` 会落 eval 专属 BM25 → 隔离 Settings 自洽。
+- `LLMClient.complete(system, user, *, messages=None) -> str | None`（`llm/client.py:138`）：**两参**（system, user）形态，返回 `str | None`（禁用时 None）。runner 的生成调用须写成 `llm.complete(rag_system_prompt, user=f"{question}\n\n上下文:\n{sources}")` 并对 None 做 guard。
+- DeepEval 2026 标准 RAG 指标 = 上述 6 个；社区最常用排序 GEval > AnswerRelevancy > Faithfulness > ContextualPrecision > ContextualRecall（[DeepEval 指南](https://deepeval.com/guides/guides-rag-evaluation)、[Confident AI](https://www.confident-ai.com/blog/rag-evaluation-metrics-answer-relevancy-faithfulness-and-more)、[Patronus AI](https://www.patronus.ai/llm-testing/rag-evaluation-metrics)、[DeepLearning.ai](https://community.deeplearning.ai/t/rag-evaluation-metrics-score-threshold-and-when-to-use-each-metric/742660)）。
