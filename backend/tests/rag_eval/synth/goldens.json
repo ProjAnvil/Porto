@@ -1,0 +1,4 @@
+[
+  {"question": "支付服务负责什么？", "reference_answer": "支付授权、退款、结算与渠道路由。", "gold_doc_ids": ["payment"], "category": "extractive"},
+  {"question": "高额交易前谁评估欺诈？", "reference_answer": "risk-service 评估欺诈规则并可能拦截。", "gold_doc_ids": ["risk"], "category": "extractive"}
+]

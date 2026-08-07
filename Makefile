@@ -9,7 +9,7 @@ BACKEND_LOG   := $(RUN_DIR)/backend.log
 FRONTEND_LOG  := $(RUN_DIR)/frontend.log
 
 .PHONY: help install start stop restart status logs logs-follow backend-start backend-stop frontend-start frontend-stop backend-dev frontend-dev clean \
-        bundle-build bundle-start docker-build docker-build-bundled docker-run-bundled compose-up compose-down
+        bundle-build bundle-start docker-build docker-build-bundled docker-run-bundled compose-up compose-down eval-install eval-dataset eval-test
 
 help:
 	@echo "Porto Chatbot process manager (pid dir: $(PID_DIR))"
@@ -172,3 +172,14 @@ docker-run-bundled: docker-build-bundled
 	  --env-file backend/.env \
 	  -v porto-chatbot-data:/data \
 	  porto-chatbot
+
+# ==================== RAG eval (DeepEval) ====================
+
+eval-install: ## 安装 RAG 评测可选依赖 (deepeval, gdown)
+	cd backend && pip install -e ".[eval]"
+
+eval-dataset: ## 下载 DomainRAG 评测数据集到 gitignored 目录
+	cd backend && python -m tests.rag_eval.scripts.fetch_dataset
+
+eval-test: ## 运行 DeepEval RAG 质量门禁 (需 LLM key + 数据集)
+	cd backend && pytest -m integration tests/rag_eval/test_rag_gate.py

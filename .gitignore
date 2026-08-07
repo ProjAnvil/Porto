@@ -28,3 +28,7 @@ out/
 
 # ide
 .idea
+
+# RAG eval dataset (downloaded via make eval-dataset)
+backend/tests/rag_eval/data/
+backend/tests/rag_eval/.last_report.json
