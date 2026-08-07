@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from unittest.mock import MagicMock
+
 from porto_chatbot.llm.client import LLMClient
 from porto_chatbot.llm.types import ToolDef
 

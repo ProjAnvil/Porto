@@ -86,7 +86,9 @@ export function SessionList({
             onClick={() => onPickSession(s.session_id)}
           >
             <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-              <span className="truncate font-medium">{s.session_id}</span>
+              <span className="truncate font-medium">
+                {s.title ?? s.session_id}
+              </span>
               <span className="truncate text-zinc-400">
                 {s.last_at.slice(0, 10)}
               </span>

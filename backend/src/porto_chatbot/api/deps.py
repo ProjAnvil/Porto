@@ -8,7 +8,7 @@ from ..health import HealthMonitor
 from ..index_supervisor import IndexSupervisor
 from ..locking import DbLockStore
 from ..logging_utils import get_component_logger
-from ..memory import MemoryStore
+from ..memory import ConversationMemory, SessionStore
 from ..models import (
     AgentSettingsPayload,
     DocumentSettingsPayload,
@@ -214,8 +214,34 @@ def get_store(runtime_settings=None) -> LocalVectorStore:
     return LocalVectorStore(runtime_settings or current_settings())
 
 
-def get_memory(runtime_settings=None) -> MemoryStore:
-    return MemoryStore(runtime_settings or current_settings())
+def get_session_store(runtime_settings=None) -> SessionStore:
+    """按 data_dir 缓存的 SessionStore 单例(挂入 _ensure_rag_singletons entry dict)。
+
+    复用 ``_ensure_rag_singletons`` 的 data_dir-keyed entry,与 WorkflowStore 等
+    其他 rag 单例共享生命周期;同一测试的 data_dir 内只构造一次。
+    """
+    entry = _ensure_rag_singletons()
+    key = "session_store"
+    store = entry.get(key)
+    if store is None:
+        store = SessionStore(runtime_settings or current_settings())
+        entry[key] = store
+    return store
+
+
+def get_conversation_memory(runtime_settings=None) -> ConversationMemory:
+    """按 data_dir 缓存的 ConversationMemory 单例(挂入 _ensure_rag_singletons entry dict)。
+
+    复用 ``_ensure_rag_singletons`` 的 data_dir-keyed entry,与 SessionStore 等
+    其他 rag 单例共享生命周期;同一测试的 data_dir 内只构造一次。
+    """
+    entry = _ensure_rag_singletons()
+    key = "conv_memory"
+    mem = entry.get(key)
+    if mem is None:
+        mem = ConversationMemory(runtime_settings or current_settings())
+        entry[key] = mem
+    return mem
 
 
 # ---------------- RAG 监督 / 健康监控 单例 ----------------
@@ -399,6 +425,14 @@ def reset_rag_singletons() -> None:
             entry["_checkpoint_conn"].close()
         except Exception as exc:
             logger.warning("checkpoint conn close failed: %s", exc)
+        # SessionStore.close() is a no-op (per-operation connections), but call
+        # for interface completeness in case future impls hold a pooled conn.
+        try:
+            ss = entry.get("session_store")
+            if ss is not None:
+                ss.close()
+        except Exception as exc:
+            logger.warning("session store close failed: %s", exc)
     _rag_singletons = {}
 
 

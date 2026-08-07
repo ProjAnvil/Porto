@@ -255,5 +255,56 @@ def test_execute_node_omits_mcp_when_tools_empty(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Task 7 — decide_intent_from_tool_calls + AgentToolContext.session_id
+# --------------------------------------------------------------------------- #
+def test_decide_intent_from_tool_calls_with_rag():
+    """RAG 工具调用 → intent='rag', index_vector=True。"""
+    from collections import Counter
+
+    from porto_chatbot.agent_sdk.backend import decide_intent_from_tool_calls
+
+    tool_calls: Counter[tuple[str, str]] = Counter()
+    tool_calls[("search_knowledgebase", '{"query":"payment"}')] += 1
+    intent, index_vector = decide_intent_from_tool_calls(tool_calls)
+    assert intent == "rag"
+    assert index_vector is True
+
+
+def test_decide_intent_from_tool_calls_without_rag():
+    """无 RAG 工具调用 → intent='direct', index_vector=False。"""
+    from collections import Counter
+
+    from porto_chatbot.agent_sdk.backend import decide_intent_from_tool_calls
+
+    tool_calls: Counter[tuple[str, str]] = Counter()
+    tool_calls[("get_prd_text", '{}')] += 1
+    intent, index_vector = decide_intent_from_tool_calls(tool_calls)
+    assert intent == "direct"
+    assert index_vector is False
+
+
+def test_decide_intent_search_memory_counts_as_rag():
+    """search_memory 也算 RAG 工具。"""
+    from collections import Counter
+
+    from porto_chatbot.agent_sdk.backend import decide_intent_from_tool_calls
+
+    tool_calls: Counter[tuple[str, str]] = Counter()
+    tool_calls[("search_memory", '{"query":"history"}')] += 1
+    intent, _ = decide_intent_from_tool_calls(tool_calls)
+    assert intent == "rag"
+
+
+def test_agent_tool_context_has_session_id():
+    from porto_chatbot.tools.context import AgentToolContext
+
+    ctx = AgentToolContext(state={}, session_id="test-sid")
+    assert ctx.session_id == "test-sid"
+    # Default is None for workflow mode
+    ctx2 = AgentToolContext(state={})
+    assert ctx2.session_id is None
+
+
+# --------------------------------------------------------------------------- #
 # chat / chat_stream — implemented in Task 7 (see test_agent_sdk_chat.py)
 # --------------------------------------------------------------------------- #

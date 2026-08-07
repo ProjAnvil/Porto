@@ -135,13 +135,17 @@ export type AppSettings = {
   rag_workflow: RagWorkflowConfig;
 };
 
-export type MemoryRecord = {
+export type MessageRecord = {
   id: string;
   session_id: string;
   role: string;
   content: string;
+  intent?: string;
   created_at: string;
 };
+
+// Backward-compat alias
+export type MemoryRecord = MessageRecord;
 
 export type IndexJobStatus = {
   status: "idle" | "running" | "succeeded" | "failed" | "interrupted";
@@ -254,6 +258,7 @@ export type WorkflowListItem = {
 
 export type SessionItem = {
   session_id: string;
+  title: string | null;
   first_at: string;
   last_at: string;
   message_count: number;

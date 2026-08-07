@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from porto_chatbot.models import SessionFact
+from porto_chatbot.models import MessageRecord, SessionFact
 from porto_chatbot.settings import Settings
 
 
@@ -26,3 +26,22 @@ def test_settings_facts_defaults():
     assert s.facts_recent_context_turns == 6
     assert s.facts_provider is None
     assert s.facts_model is None
+
+
+def test_message_record_has_intent_and_indexed():
+    r = MessageRecord(
+        id="m1", session_id="s1", role="user", content="hello",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    assert r.intent is None
+    assert r.indexed is False
+    assert r.metadata == {}
+
+
+def test_message_record_with_intent():
+    r = MessageRecord(
+        id="m2", session_id="s1", role="assistant", content="answer",
+        intent="rag", indexed=True, created_at="2026-01-01T00:00:00Z",
+    )
+    assert r.intent == "rag"
+    assert r.indexed is True

@@ -2,7 +2,7 @@
 import tempfile
 from pathlib import Path
 
-from porto_chatbot.agent_sdk.skills import deploy_skills, SKILLS, CLAUDE_MD
+from porto_chatbot.agent_sdk.skills import SKILLS, deploy_skills
 
 
 def test_skills_dict_has_required_entries():

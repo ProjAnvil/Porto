@@ -4,8 +4,7 @@ from .chat import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
-    MemoryRecord,
-    MemorySearchResponse,
+    MessageRecord,
     SessionFact,
 )
 from .common import (
@@ -46,6 +45,7 @@ from .evaluation import (
     WorkflowCheck,
     WorkflowEvaluation,
 )
+from .file import FileHit, FileInfo, FileMeta
 from .payload import (
     AgentSettingsPayload,
     AppSettingsPayload,
@@ -59,7 +59,6 @@ from .payload import (
     RagWorkflowSettingsPayload,
     WorkflowRequest,
 )
-from .file import FileHit, FileMeta, FileInfo
 from .spec import Critique, SpecAttempt, SpecResult
 from .workflow import AgentStep, Subsystem, WorkflowResponse
 
@@ -86,8 +85,7 @@ __all__ = [
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
-    "MemoryRecord",
-    "MemorySearchResponse",
+    "MessageRecord",
     "SessionFact",
     "EvalCase",
     "EvalRequest",

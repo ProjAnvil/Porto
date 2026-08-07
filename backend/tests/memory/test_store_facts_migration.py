@@ -7,10 +7,10 @@ from porto_chatbot.settings import Settings
 
 def test_session_facts_table_created(tmp_path):
     settings = Settings(data_dir=tmp_path)
-    # 触发 _init_db(MemoryStore.__init__ 会调)
-    from porto_chatbot.memory.store import MemoryStore
+    # SessionStore._init_db 创建 session_facts 表
+    from porto_chatbot.memory.session_store import SessionStore
 
-    MemoryStore(settings)
+    SessionStore(settings)
     with sqlite3.connect(settings.memory_db_path) as conn:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(session_facts)").fetchall()}
         assert cols == {

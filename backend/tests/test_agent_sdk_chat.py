@@ -282,7 +282,7 @@ def test_chat_stream_yields_rag_unavailable_hint(tmp_path):
 # Stop hook — memory persistence + facts trigger
 # --------------------------------------------------------------------------- #
 def test_stop_hook_persists_conversation(tmp_path):
-    """The Stop hook persists user+assistant messages to MemoryStore."""
+    """The Stop hook persists user+assistant messages to SessionStore."""
     backend, s = _make_backend(tmp_path)
     req = ChatRequest(message="user question", session_id="hook-sess")
 
@@ -297,14 +297,14 @@ def test_stop_hook_persists_conversation(tmp_path):
     # Simulate that the SDK produced some answer text.
     state["answer_text"] = "assistant answer"
 
-    # Invoke the hook (async). It should persist to real MemoryStore.
+    # Invoke the hook (async). It should persist via persist_turn → SessionStore.
     asyncio.run(hook_cb(MagicMock(), None, MagicMock()))
 
-    # Verify the conversation was persisted.
-    from porto_chatbot.api.deps import get_memory
+    # Verify the conversation was persisted to the new SessionStore.
+    from porto_chatbot.api.deps import get_session_store
 
-    memory = get_memory(s)
-    records = memory.list_session("hook-sess")
+    sessions = get_session_store(s)
+    records = sessions.list_messages("hook-sess")
     roles = [r.role for r in records]
     assert "user" in roles
     assert "assistant" in roles
@@ -315,7 +315,7 @@ def test_stop_hook_persists_conversation(tmp_path):
 
 
 def test_stop_hook_swallows_memory_errors(tmp_path):
-    """If MemoryStore.add raises, the Stop hook must not propagate."""
+    """If SessionStore.add_message raises, the Stop hook must not propagate."""
     backend, s = _make_backend(tmp_path)
     req = ChatRequest(message="q", session_id="err-sess")
 
@@ -326,8 +326,9 @@ def test_stop_hook_swallows_memory_errors(tmp_path):
     hook_cb = options.hooks["Stop"][0].hooks[0]
     state["answer_text"] = "answer"
 
-    # Patch MemoryStore.add to raise — the hook must catch and return {}.
-    with patch("porto_chatbot.memory.store.MemoryStore.add",
+    # Patch SessionStore.add_message to raise — persist_turn calls this
+    # internally; the hook must catch and return {}.
+    with patch("porto_chatbot.memory.session_store.SessionStore.add_message",
                side_effect=RuntimeError("db locked")):
         result = asyncio.run(hook_cb(MagicMock(), None, MagicMock()))
 

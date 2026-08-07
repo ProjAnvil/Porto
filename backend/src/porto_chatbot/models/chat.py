@@ -38,18 +38,17 @@ class ChatResponse(BaseModel):
     transform_degraded: str | None = None
 
 
-class MemoryRecord(BaseModel):
+class MessageRecord(BaseModel):
+    """单条会话消息——SQLite messages 表的一行。"""
+
     id: str
     session_id: str
-    role: ChatRole
+    role: str
     content: str
+    intent: str | None = None        # direct / rag / quick_rag / deep_rag
+    indexed: bool = False            # True=已写入 ChromaDB 向量库
     created_at: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class MemorySearchResponse(BaseModel):
-    query: str
-    results: list[SourceChunk]
 
 
 class SessionFact(BaseModel):

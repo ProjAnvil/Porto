@@ -16,16 +16,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 import time
 from collections import Counter
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from ..agent.backends import BackendTools, NodeExecutionResult
 from ..logging_utils import get_component_logger
+from ..memory import (
+    ConversationMemory,
+    SessionFactsStore,
+    SessionStore,
+    maybe_generate_title,
+    persist_turn,
+    trigger_facts_extraction_sync,
+)
 from ..models import ChatRequest, ChatResponse
 from ..models.enums import StepStatus
 from ..settings import Settings
@@ -83,9 +89,24 @@ except ImportError:  # SDK not installed — AgentSDKBackend is unusable
     UserMessage = None  # type: ignore[assignment]
     create_sdk_mcp_server = None  # type: ignore[assignment]
 
-# Process-level cache: Porto session_id → Claude Code CLI session_id.
-# Enables conversation continuity across separate /api/chat/stream requests.
-_claude_session_map: dict[str, str] = {}
+# 工具调用名 → 是否计入 RAG（决定 intent 与 index_vector）。
+_RAG_TOOL_NAMES = {"search_knowledgebase", "search_memory"}
+
+
+def decide_intent_from_tool_calls(
+    tool_dedup: Counter[tuple[str, str]],
+) -> tuple[str, bool]:
+    """根据本轮实际工具调用决定 intent 和是否索引向量。
+
+    纯函数，可独立单元测试。检查 Counter 的 keys（tool_name, input_json）中
+    是否包含 RAG 工具名（search_knowledgebase / search_memory）。返回
+    ``(intent, used_rag)``，调用方据此决定传给 :func:`persist_turn` 的
+    ``intent`` / ``index_vector`` 参数，并仅在 ``used_rag=True`` 时触发
+    facts extraction。
+    """
+    used_rag = any(name in _RAG_TOOL_NAMES for (name, _) in tool_dedup)
+    intent = "rag" if used_rag else "direct"
+    return intent, used_rag
 
 
 async def _receive_with_idle_timeout(
@@ -104,48 +125,6 @@ async def _receive_with_idle_timeout(
             yield await asyncio.wait_for(response_gen.__anext__(), timeout=timeout)
         except StopAsyncIteration:
             return
-
-
-def _get_claude_session(settings: Settings, porto_session_id: str) -> str | None:
-    """Read porto→claude session mapping. Memory cache first, then sqlite."""
-    if porto_session_id in _claude_session_map:
-        return _claude_session_map[porto_session_id]
-    try:
-        with sqlite3.connect(str(settings.memory_db_path)) as conn:
-            row = conn.execute(
-                "SELECT claude_session_id FROM session_metadata WHERE session_id=?",
-                (porto_session_id,),
-            ).fetchone()
-            if row:
-                _claude_session_map[porto_session_id] = row[0]
-                return row[0]
-    except Exception:
-        pass
-    return None
-
-
-def _set_claude_session(settings: Settings, porto_session_id: str, claude_session_id: str) -> None:
-    """Persist porto→claude session mapping to memory cache + sqlite."""
-    _claude_session_map[porto_session_id] = claude_session_id
-    try:
-        with sqlite3.connect(str(settings.memory_db_path)) as conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS session_metadata ("
-                "  session_id TEXT PRIMARY KEY,"
-                "  claude_session_id TEXT,"
-                "  updated_at TEXT"
-                ")"
-            )
-            conn.execute(
-                "INSERT INTO session_metadata (session_id, claude_session_id, updated_at) "
-                "VALUES (?, ?, ?) "
-                "ON CONFLICT(session_id) DO UPDATE SET "
-                "  claude_session_id=excluded.claude_session_id, "
-                "  updated_at=excluded.updated_at",
-                (porto_session_id, claude_session_id, datetime.now(UTC).isoformat()),
-            )
-    except Exception:
-        pass
 
 
 class AgentSDKBackend:
@@ -285,7 +264,7 @@ class AgentSDKBackend:
     # ------------------------------------------------------------------ #
     def _capture_session(
         self,
-        settings: Settings,
+        sessions: SessionStore,
         porto_sid: str,
         returned_sid: str | None,
         expected_sid: str | None,
@@ -306,7 +285,7 @@ class AgentSDKBackend:
                 "conversation context may be lost",
                 porto_sid, expected_sid, returned_sid,
             )
-        _set_claude_session(settings, porto_sid, returned_sid)
+        sessions.save_claude_session(porto_sid, returned_sid)
         self.logger.info(
             "agent_sdk session captured porto=%s claude=%s",
             porto_sid, returned_sid,
@@ -324,17 +303,18 @@ class AgentSDKBackend:
         at init to detect silent resume failures (see ``_capture_session``).
 
         The Stop hook closure reads ``state['answer_text']`` to persist the full
-        conversation turn to :class:`MemoryStore` and trigger facts extraction.
+        conversation turn to :class:`SessionStore` + :class:`ConversationMemory`
+        via :func:`persist_turn` and trigger facts extraction when RAG was used.
 
         No intent routing — Claude decides autonomously via the registered
         MCP tools (search_knowledgebase, search_memory, get_session_facts…).
         """
-        from ..api.deps import get_file_service, get_memory, get_store
+        from ..api.deps import get_file_service, get_store
         from ..llm import LLMClient
-        from ..memory import SessionFactsStore, trigger_facts_extraction_sync
 
         store = get_store(settings)
-        memory = get_memory(settings)
+        sessions = SessionStore(settings)
+        conv_memory = ConversationMemory(settings)
         facts_store = SessionFactsStore(settings)
         store.ensure_index()
 
@@ -346,9 +326,10 @@ class AgentSDKBackend:
         ctx = AgentToolContext(
             state={},
             vector_store=store,
-            memory_store=memory,
+            memory_store=conv_memory,  # ConversationMemory (has .search with required session_id)
             facts_store=facts_store,
             file_service=file_service,
+            session_id=req.session_id,  # NEW: inject for search_memory tool
         )
         sdk_tools = build_sdk_tools(ctx, tool_timeout=settings.agent_tool_timeout)
         server = create_sdk_mcp_server(
@@ -363,27 +344,37 @@ class AgentSDKBackend:
         async def on_stop(input_data, tool_use_id, context):  # noqa: ANN001
             """Stop hook: persist user+assistant turn, then trigger facts extraction.
 
+            检测本轮是否实际调用了 RAG 工具（search_knowledgebase / search_memory），
+            只在实际查库时索引向量（``index_vector=used_rag``），且仅在此时触发
+            facts extraction——DIRECT 对话不需要结构化事实抽取。
             Fail-open — any exception is logged but never propagated, so a
             memory/facts hiccup cannot crash the chat response.
             """
             try:
-                memory.add(
-                    session_id=req.session_id, role="user", content=req.message,
-                )
-                if state["answer_text"]:
-                    memory.add(
-                        session_id=req.session_id,
-                        role="assistant",
-                        content=state["answer_text"],
-                    )
-                trigger_facts_extraction_sync(
-                    store=facts_store,
-                    llm=LLMClient(settings),
+                intent, used_rag = decide_intent_from_tool_calls(_tool_dedup)
+
+                persist_turn(
+                    sessions=sessions,
+                    memory=conv_memory,
                     session_id=req.session_id,
-                    new_message=req.message,
-                    recent_turns=[],
-                    settings=settings,
+                    user_content=req.message,
+                    assistant_content=state["answer_text"],
+                    intent=intent,
+                    index_vector=used_rag,
                 )
+                maybe_generate_title(
+                    sessions, LLMClient(settings), req.session_id, req.message,
+                )
+
+                if used_rag:
+                    trigger_facts_extraction_sync(
+                        store=facts_store,
+                        llm=LLMClient(settings),
+                        session_id=req.session_id,
+                        new_message=req.message,
+                        recent_turns=[],
+                        settings=settings,
+                    )
             except Exception:
                 self.logger.exception(
                     "stop hook failed session=%s", req.session_id,
@@ -482,7 +473,7 @@ class AgentSDKBackend:
         # Session resume: if we have a Claude Code session_id for this Porto
         # session, pass it as `resume` so the CLI restores full conversation
         # context (including auto-compaction) from its session store.
-        existing_claude_sid = _get_claude_session(settings, req.session_id)
+        existing_claude_sid = sessions.get_claude_session(req.session_id)
         if existing_claude_sid:
             options_kwargs["resume"] = existing_claude_sid
             self.logger.info(
@@ -519,7 +510,7 @@ class AgentSDKBackend:
                 if SystemMessage is not None and isinstance(msg, SystemMessage):
                     if msg.subtype == ClaudeMsgSubtype.INIT:
                         self._capture_session(
-                            settings, req.session_id,
+                            SessionStore(settings), req.session_id,
                             msg.data.get("session_id"), expected_sid,
                         )
                 elif isinstance(msg, AssistantMessage):
@@ -713,7 +704,7 @@ class AgentSDKBackend:
                 if SystemMessage is not None and isinstance(msg, SystemMessage):
                     if msg.subtype == ClaudeMsgSubtype.INIT:
                         self._capture_session(
-                            settings, req.session_id,
+                            SessionStore(settings), req.session_id,
                             msg.data.get("session_id"), expected_sid,
                         )
                 # Token-level streaming: StreamEvent carries content_block_delta

@@ -6,7 +6,7 @@ import type {
   HealthSnapshot,
   IndexJobStatus,
   KbStats,
-  MemoryRecord,
+  MessageRecord,
   Paginated,
   RagChatConfig,
   RagConfig,
@@ -221,11 +221,14 @@ export async function deleteWorkflow(id: string) {
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function listMemory(sessionId: string) {
-  return parseJson<{ session_id: string; items: MemoryRecord[] }>(
-    await fetch(`/api/memory/${encodeURIComponent(sessionId)}`),
+export async function listMessages(sessionId: string) {
+  return parseJson<{ session_id: string; items: MessageRecord[] }>(
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages`),
   );
 }
+
+// Backward-compat alias
+export const listMemory = listMessages;
 
 export async function searchMemory(query: string, sessionId: string) {
   return parseJson<{ query: string; results: SourceChunk[] }>(

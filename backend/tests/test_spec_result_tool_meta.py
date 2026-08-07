@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from porto_chatbot.models import SpecResult
 
 
