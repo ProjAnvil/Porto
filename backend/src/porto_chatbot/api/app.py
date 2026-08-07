@@ -14,7 +14,7 @@ from .deps import get_health_monitor, get_index_supervisor, get_workflow_executo
 from .routes import (
     chat,
     knowledge,
-    memory,
+    sessions,
     workflow,
 )
 from .routes import (
@@ -97,7 +97,7 @@ app.include_router(settings_routes.router)
 app.include_router(knowledge.router)
 app.include_router(chat.router)
 app.include_router(workflow.router)
-app.include_router(memory.router)
+app.include_router(sessions.router)
 app.include_router(eval_routes.router)
 
 # 捆绑部署：若前端静态导出产物存在（`npm run build:static` 后拷贝到 static_dir），
