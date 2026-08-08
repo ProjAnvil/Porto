@@ -41,3 +41,27 @@ def test_settings_save_rag_chat(client):
     assert resp.json()["rag_chat"]["intent_routing_mode"] == "adaptive"
     # 持久化
     assert client.get("/api/settings").json()["rag_chat"]["query_transform_strategy"] == "hyde"
+
+
+def test_settings_save_rag_with_new_fields(client):
+    resp = client.put(
+        "/api/settings",
+        json={
+            "rag": {
+                "embedding_provider": "openai_compatible",
+                "embedding_api_key": "sk-test-123",
+                "rerank_type": "cross_encoder",
+                "rerank_base_url": "https://api.jina.ai/v1",
+                "rerank_api_key": "jina-key",
+            }
+        },
+    )
+    assert resp.status_code == 200
+    rag = resp.json()["rag"]
+    assert rag["embedding_provider"] == "openai_compatible"
+    assert rag["embedding_api_key"] == "sk-test-123"
+    assert rag["rerank_type"] == "cross_encoder"
+    assert rag["rerank_base_url"] == "https://api.jina.ai/v1"
+    # 持久化验证
+    persisted = client.get("/api/settings").json()["rag"]
+    assert persisted["rerank_type"] == "cross_encoder"

@@ -10,6 +10,7 @@ from .enums import (
     LLMProvider,
     LocalParser,
     QueryTransformStrategy,
+    RerankType,
     RetrievalMethod,
 )
 
@@ -30,6 +31,10 @@ class RagSettingsPayload(BaseModel):
     rerank_provider: LLMProvider | None = None
     rerank_model: str | None = None
     rerank_choice_batch_size: int | None = Field(default=None, ge=1, le=20)
+    embedding_api_key: str | None = None
+    rerank_type: RerankType | None = None
+    rerank_api_key: str | None = None
+    rerank_base_url: str | None = None
 
 
 class AgentSettingsPayload(BaseModel):

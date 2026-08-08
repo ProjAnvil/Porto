@@ -19,6 +19,7 @@ RAG_SETTING_KEYS = {
     "embedding_provider",
     "embedding_model",
     "embedding_base_url",
+    "embedding_api_key",
     "chunk_size",
     "chunk_overlap",
     "top_k",
@@ -31,6 +32,9 @@ RAG_SETTING_KEYS = {
     "rerank_provider",
     "rerank_model",
     "rerank_choice_batch_size",
+    "rerank_type",
+    "rerank_api_key",
+    "rerank_base_url",
 }
 
 AGENT_SETTING_KEYS = {
@@ -83,7 +87,7 @@ RAG_WORKFLOW_SETTING_KEYS = {
     "multi_query_count",
 }
 
-SENSITIVE_SETTING_KEYS = {"agent_api_key", "critic_api_key"}
+SENSITIVE_SETTING_KEYS = {"agent_api_key", "critic_api_key", "embedding_api_key", "rerank_api_key"}
 
 
 class ConfigStore:

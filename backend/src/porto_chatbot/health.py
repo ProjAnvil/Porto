@@ -103,6 +103,28 @@ class HealthMonitor:
             return DependencyHealth(
                 name=name, status=DependencyStatus.OK, detail="local", checked_at=_now_iso()
             )
+        if settings.embedding_provider == EmbeddingProvider.OPENAI_COMPATIBLE:
+            try:
+                latency = self._executor.submit(
+                    self._openai_compatible_embed_ping,
+                    settings.embedding_base_url,
+                    settings.embedding_api_key,
+                    settings.embedding_model,
+                ).result(timeout=settings.health_probe_timeout)
+                return DependencyHealth(
+                    name=name, status=DependencyStatus.OK, latency_ms=latency,
+                    detail=f"{settings.embedding_model}@{settings.embedding_base_url}",
+                    checked_at=_now_iso(),
+                )
+            except FutureTimeout:
+                return DependencyHealth(
+                    name=name, status=DependencyStatus.DOWN,
+                    detail=f"timeout >{settings.health_probe_timeout}s", checked_at=_now_iso(),
+                )
+            except Exception as exc:
+                return DependencyHealth(
+                    name=name, status=DependencyStatus.DOWN, detail=_short(exc), checked_at=_now_iso()
+                )
         try:
             latency = self._executor.submit(
                 self._ollama_ping, settings.embedding_base_url, settings.embedding_model
@@ -164,6 +186,15 @@ class HealthMonitor:
         client = ollama.Client(host=base_url)
         t0 = time.perf_counter()
         client.embed(model=model, input="ping")
+        return round((time.perf_counter() - t0) * 1000, 1)
+
+    @staticmethod
+    def _openai_compatible_embed_ping(base_url: str, api_key: str, model: str) -> float:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        t0 = time.perf_counter()
+        client.embeddings.create(model=model, input="ping")
         return round((time.perf_counter() - t0) * 1000, 1)
 
     @staticmethod

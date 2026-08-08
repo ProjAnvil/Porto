@@ -61,6 +61,10 @@ def default_rag_settings() -> RagSettingsPayload:
         rerank_provider=settings.rerank_provider,
         rerank_model=settings.rerank_model,
         rerank_choice_batch_size=settings.rerank_choice_batch_size,
+        embedding_api_key=settings.embedding_api_key,
+        rerank_type=settings.rerank_type,
+        rerank_api_key=settings.rerank_api_key,
+        rerank_base_url=settings.rerank_base_url,
     )
 
 
