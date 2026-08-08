@@ -459,7 +459,17 @@ class EmbeddingClient:
             self.settings.embedding_model,
             len(texts),
         )
-        return self._backend.embed_documents(texts)
+        try:
+            return self._backend.embed_documents(texts)
+        except Exception:
+            self.logger.exception(
+                "embedding failed provider=%s model=%s base_url=%s count=%s",
+                self.settings.embedding_provider,
+                self.settings.embedding_model,
+                self.settings.embedding_base_url,
+                len(texts),
+            )
+            raise
 
     def embed_query(self, text: str) -> list[float]:
         self.logger.info(
@@ -854,13 +864,17 @@ class CrossEncoderReranker:
             return chunks
         try:
             top_n = min(self._top_n, len(chunks))
+            # Voyage API 要求 documents 为 [str]，Jina/Cohere 要求 [{text}]。
+            # 按 base_url host 判断发送格式。
+            is_voyage = "voyageai.com" in (self._base_url or "")
+            documents = [c.text for c in chunks] if is_voyage else [{"text": c.text} for c in chunks]
             resp = httpx.post(
                 f"{self._base_url}/rerank",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 json={
                     "model": self._model,
                     "query": query,
-                    "documents": [{"text": c.text} for c in chunks],
+                    "documents": documents,
                     "top_n": top_n,
                 },
                 timeout=self._timeout,
@@ -1099,7 +1113,7 @@ def test_settings_save_rag_with_new_fields(client):
     assert persisted["rerank_type"] == "cross_encoder"
 ```
 
-注意：API key 是否回显取决于 `SENSITIVE_SETTING_KEYS` 设计。上面的测试假设 key 可以回显（因为 `embedding_api_key` 和 `rerank_api_key` 不在 `SENSITIVE_SETTING_KEYS` 中，当前只有 `agent_api_key` 和 `critic_api_key` 在里面）。如果决定加入 sensitive，则去掉回显断言。
+注意：`SENSITIVE_SETTING_KEYS` 仅控制 `config_store.py` 日志脱敏（区分 safe_keys/redacted_keys），**不影响** db 写入和 GET 响应回显。API key 会正常持久化与返回（与现有 `agent_api_key` 行为一致）。上面的 `assert rag["embedding_api_key"] == "sk-test-123"` 断言是正确的。
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1266,7 +1280,9 @@ def test_probe_openai_compatible_down(tmp_path):
         rag_available=lambda: (True, None),
         rag_status=lambda: None,
     )
-    health = monitor._probe_embedding(settings)
+    with patch("openai.OpenAI") as mock_cls:
+        mock_cls.return_value.embeddings.create.side_effect = Exception("401 Unauthorized")
+        health = monitor._probe_embedding(settings)
     assert health.name == DependencyName.EMBEDDING
     assert health.status == DependencyStatus.DOWN
 
