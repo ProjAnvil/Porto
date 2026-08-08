@@ -12,7 +12,7 @@ from .bm25_index import Bm25Index
 from .bm25_index import _tokenize_text as _tokenize_query
 from .logging_utils import get_component_logger
 from .models import SourceChunk
-from .models.enums import LLMProvider
+from .rerankers import RERANKER_BACKENDS
 from .settings import Settings
 
 logger = get_component_logger("retrieval")
@@ -125,98 +125,20 @@ def hybrid_fusion_search(
     return fusion.retrieve(QueryBundle(query_str=query_text))
 
 
-def _build_rerank_llm(settings: Settings):
-    """按 rerank_* 配置（缺省回退到 agent_*）构建 llama-index LLM，供 LLMRerank 使用。
-
-    ``agent_base_url`` 非空时视为 openai-compatible 第三方端点（如 DeepSeek/Moonshot 等）；
-    此时改用 ``OpenAILike`` 并显式声明 ``is_chat_model`` / ``context_window``，绕开
-    ``llama-index-llms-openai`` 对官方模型名单的强校验（否则未知模型名会在访问
-    ``llm.metadata`` 时抛 ``ValueError``）。
-    """
-    provider = settings.rerank_provider or settings.agent_provider
-    model = settings.rerank_model or settings.agent_model
-    api_key = settings.agent_api_key
-    if not api_key:
-        return None
-    try:
-        if provider == LLMProvider.OPENAI:
-            if settings.agent_base_url:
-                from llama_index.llms.openai_like import OpenAILike
-
-                return OpenAILike(
-                    model=model,
-                    api_key=api_key,
-                    api_base=settings.agent_base_url,
-                    is_chat_model=True,
-                    is_function_calling_model=False,
-                    context_window=max(settings.agent_max_tokens * 4, 4096),
-                    temperature=0.0,
-                )
-            from llama_index.llms.openai import OpenAI
-
-            return OpenAI(model=model, api_key=api_key, temperature=0.0)
-        if provider == LLMProvider.ANTHROPIC:
-            from llama_index.llms.anthropic import Anthropic
-
-            return Anthropic(
-                model=model,
-                api_key=api_key,
-                base_url=settings.agent_base_url or None,
-            )
-    except Exception:
-        logger.exception("rerank llm build failed provider=%s model=%s", provider, model)
-        return None
-    logger.warning("rerank llm unsupported provider=%s", provider)
-    return None
-
-
 def rerank_chunks(chunks: list[SourceChunk], query: str, settings: Settings) -> list[SourceChunk]:
-    """用 llama-index ``LLMRerank`` 对候选 chunk 做二次精排。
+    """按 ``settings.rerank_type`` 选择 reranker 后端做二次精排。
 
-    未启用 / 未配置可用 LLM / 执行异常时均原样降级返回 ``chunks``（fail-open，不影响主检索链路）。
+    未启用 / 未配置 / 执行异常时均原样降级返回 ``chunks``（fail-open）。
     """
     if not settings.rerank_enabled or not chunks:
         return chunks
-    llm = _build_rerank_llm(settings)
-    if llm is None:
-        logger.info("rerank skipped reason=llm_unavailable")
+    backend_cls = RERANKER_BACKENDS.get(settings.rerank_type)
+    if backend_cls is None:
+        logger.warning("rerank skipped reason=unknown_type type=%s", settings.rerank_type)
         return chunks
     try:
-        from llama_index.core.postprocessor import LLMRerank
-
-        nodes = [
-            NodeWithScore(
-                node=TextNode(text=c.text, id_=c.id, metadata=c.metadata),
-                score=c.score,
-            )
-            for c in chunks
-        ]
-        top_n = min(settings.rerank_top_n, len(nodes))
-        reranker = LLMRerank(
-            llm=llm,
-            top_n=top_n,
-            choice_batch_size=settings.rerank_choice_batch_size,
-        )
-        reranked = reranker.postprocess_nodes(nodes, query_bundle=QueryBundle(query_str=query))
+        backend = backend_cls(settings)
+        return backend.rerank(chunks, query)
     except Exception:
         logger.exception("rerank failed query_chars=%s candidates=%s", len(query), len(chunks))
         return chunks
-
-    by_id = {c.id: c for c in chunks}
-    result: list[SourceChunk] = []
-    for node_with_score in reranked:
-        original = by_id.get(node_with_score.node.id_)
-        if original is None:
-            continue
-        result.append(
-            SourceChunk(
-                id=original.id,
-                path=original.path,
-                title=original.title,
-                text=original.text,
-                score=round(float(node_with_score.score or 0.0), 4),
-                metadata=original.metadata,
-            )
-        )
-    logger.info("rerank finish candidates=%s kept=%s", len(chunks), len(result))
-    return result or chunks
