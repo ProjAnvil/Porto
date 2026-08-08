@@ -13,6 +13,7 @@ from .models.enums import (
     LLMProvider,
     LocalParser,
     QueryTransformStrategy,
+    RerankType,
     RetrievalMethod,
 )
 
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     embedding_provider: EmbeddingProvider = EmbeddingProvider.LOCAL
     embedding_model: str = "qwen3-embedding:0.6b"
     embedding_base_url: str = "http://127.0.0.1:11434"
+    embedding_api_key: str | None = None
     vector_backend: str = "chroma"
     vector_collection: str = "porto_kb"
     memory_collection: str = "porto_memory"
@@ -142,6 +144,9 @@ class Settings(BaseSettings):
     rerank_provider: LLMProvider | None = None
     rerank_model: str | None = None
     rerank_choice_batch_size: int = Field(default=5, ge=1, le=20)
+    rerank_type: RerankType = RerankType.LLM
+    rerank_api_key: str | None = None
+    rerank_base_url: str | None = None
 
     # --- RAG 检索优化（场景分离）---
     chat_intent_routing_mode: IntentRoutingMode = IntentRoutingMode.BINARY

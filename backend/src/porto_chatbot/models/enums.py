@@ -16,9 +16,16 @@ class LLMProvider(StrEnum):
     ANTHROPIC = "anthropic"
 
 
+# ── Reranker 类型（LLM 提示重排 vs 专用 cross-encoder）──
+class RerankType(StrEnum):
+    LLM = "llm"
+    CROSS_ENCODER = "cross_encoder"
+
+
 class EmbeddingProvider(StrEnum):
     LOCAL = "local"
     OLLAMA = "ollama"
+    OPENAI_COMPATIBLE = "openai_compatible"
 
 
 # ── 检索 ──
