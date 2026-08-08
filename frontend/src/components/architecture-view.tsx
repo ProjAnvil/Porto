@@ -104,6 +104,33 @@ const FILE_SERVICE = `flowchart TB
     AGENT --> READ
     READ -.读取.-> DISK`;
 
+// ── 图 8：检索优化管线（query transform → hybrid → rerank）──
+// 来源：backend/src/porto_chatbot/retrieval.py、query_transform.py、settings.py
+const RETRIEVAL_OPTIMIZATION = `flowchart TB
+    Q[用户 query] --> QT{query transform<br/>策略?}
+    QT -->|none| RAW[原 query 直接检索]
+    QT -->|hyde| HYDE[HyDE<br/>LLM 生成假设性答案<br/>用答案去检索]
+    QT -->|multi_query| MQ[Multi-Query<br/>改写 N 个变体<br/>各自检索后 RRF 融合]
+    QT -->|decomposition| DEC[Decomposition<br/>拆成子问题<br/>分别检索后合并去重]
+    QT -->|step_back| SB[Step-Back<br/>抽象成背景问题再检索]
+    HYDE --> FUSE
+    MQ --> FUSE
+    DEC --> FUSE
+    SB --> FUSE
+    RAW --> FUSE
+    subgraph FUSE["混合检索 hybrid fusion"]
+        V[向量检索<br/>Chroma 语义相似度]
+        K[BM25 关键词检索<br/>CJK 预分词]
+        V --> RRF[RRF 融合<br/>hybrid_vector_weight 调权]
+        K --> RRF
+    end
+    FUSE --> RR{rerank_enabled?}
+    RR -->|是| LR[LLM Rerank<br/>候选精排取 rerank_top_n]
+    RR -->|否| OUT[top_k 结果]
+    LR --> OUT
+    QT -. LLM 失败 .-> DEG[fail-open<br/>回退原 query 检索<br/>链路永不中断]
+    LR -. 异常 .-> DEG`;
+
 function DiagramSection({
   title,
   description,
@@ -162,6 +189,14 @@ export function ArchitectureView() {
         title="Prompt 拼装 + 预算截断"
         description="按固定顺序叠加：用户问题 → 会话摘要 → 近期原文 → 记忆检索 → RAG 片段。总字符超 context_char_budget 时从后向前截断检索片段。"
         chart={PROMPT_ASSEMBLY}
+      />
+
+      {/* 检索优化 */}
+      <h2 className="mb-4 text-base font-semibold">检索优化</h2>
+      <DiagramSection
+        title="检索优化管线：Query Transform → Hybrid Fusion → Rerank"
+        description="三级优化策略：① Query Transform 用 LLM 改写 query（HyDE 假设性答案 / Multi-Query 多变体 + RRF 融合 / Decomposition 子问题拆解合并 / Step-Back 背景抽象），chat 与 workflow 分别由 chat_query_transform_strategy、workflow_query_transform_strategy 配置，默认 none。② Hybrid Fusion 向量（Chroma 语义）+ BM25（CJK 预分词关键词）双路候选，RRF 融合并用 hybrid_vector_weight 调权。③ Rerank 用 LLMRerank 对候选精排取 rerank_top_n（rerank_enabled 控制，默认关）。所有 LLM 步骤均 fail-open：失败即回退原 query 检索，链路永不中断。"
+        chart={RETRIEVAL_OPTIMIZATION}
       />
 
       {/* 文件服务（Memory Pointer）*/}

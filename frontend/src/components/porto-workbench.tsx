@@ -1535,14 +1535,17 @@ function SettingsPage({
           <RagOptimizationSettingsForm
             key={`${JSON.stringify(ragChatConfig)}|${JSON.stringify(
               ragWorkflowConfig,
-            )}`}
+            )}|${JSON.stringify(ragConfig)}`}
             busy={busy}
             ragChatConfig={ragChatConfig}
             ragWorkflowConfig={ragWorkflowConfig}
+            ragConfig={ragConfig}
             onSavedChat={() => markSaved("Chat 场景检索优化已保存")}
             onSavedWorkflow={() => markSaved("Workflow 场景检索优化已保存")}
+            onSavedRerank={() => markSaved("重排序设置已保存")}
             onSaveRagChat={onSaveRagChat}
             onSaveRagWorkflow={onSaveRagWorkflow}
+            onSaveRerank={onSaveRag}
           />
         ) : null}
 
@@ -1832,76 +1835,6 @@ function RagSettingsForm({
             }
           />
         </label>
-      </div>
-
-      <div className="mt-6 border-t border-zinc-200 pt-4">
-        <label className="flex items-center gap-2">
-          <input
-            checked={ragDraft.rerank_enabled}
-            type="checkbox"
-            onChange={(event) => updateRag("rerank_enabled", event.target.checked)}
-          />
-          <span className="text-sm font-medium text-zinc-700">
-            启用重排序（LlamaIndex LLMRerank，检索候选后二次精排）
-          </span>
-        </label>
-        <p className="mt-1 text-xs text-zinc-400">
-          缺省复用 Agent 设置里的 Provider / Model / API Key；下方可单独覆盖。未配置可用 LLM 时自动降级为不重排。
-        </p>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
-          <label className="block">
-            <span className="text-xs text-zinc-500">重排序保留数量（Top N）</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={1}
-              disabled={!ragDraft.rerank_enabled}
-              value={ragDraft.rerank_top_n}
-              onChange={(event) => updateRag("rerank_top_n", Number(event.target.value))}
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">重排序批大小（choice_batch_size）</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={1}
-              disabled={!ragDraft.rerank_enabled}
-              value={ragDraft.rerank_choice_batch_size}
-              onChange={(event) =>
-                updateRag("rerank_choice_batch_size", Number(event.target.value))
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">重排序 Provider（留空复用 Agent）</span>
-            <select
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              disabled={!ragDraft.rerank_enabled}
-              value={ragDraft.rerank_provider ?? ""}
-              onChange={(event) =>
-                updateRag(
-                  "rerank_provider",
-                  (event.target.value || null) as RagConfig["rerank_provider"],
-                )
-              }
-            >
-              <option value="">（复用 Agent 设置）</option>
-              <option value="openai">openai</option>
-              <option value="anthropic">anthropic</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">重排序 Model（留空复用 Agent）</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              disabled={!ragDraft.rerank_enabled}
-              placeholder="可选"
-              value={ragDraft.rerank_model ?? ""}
-              onChange={(event) => updateRag("rerank_model", event.target.value || null)}
-            />
-          </label>
-        </div>
       </div>
 
       <div className="mt-4 flex items-center gap-3">
@@ -2676,26 +2609,48 @@ function StrategyCardGroup({
   );
 }
 
+type RerankConfig = Pick<
+  RagConfig,
+  | "rerank_enabled"
+  | "rerank_top_n"
+  | "rerank_choice_batch_size"
+  | "rerank_provider"
+  | "rerank_model"
+>;
+
 function RagOptimizationSettingsForm({
   busy,
   ragChatConfig,
   ragWorkflowConfig,
+  ragConfig,
   onSavedChat,
   onSavedWorkflow,
+  onSavedRerank,
   onSaveRagChat,
   onSaveRagWorkflow,
+  onSaveRerank,
 }: {
   busy: boolean;
   ragChatConfig: RagChatConfig;
   ragWorkflowConfig: RagWorkflowConfig;
+  ragConfig: RagConfig;
   onSavedChat: () => void;
   onSavedWorkflow: () => void;
+  onSavedRerank: () => void;
   onSaveRagChat: (config: RagChatConfig) => Promise<boolean>;
   onSaveRagWorkflow: (config: RagWorkflowConfig) => Promise<boolean>;
+  onSaveRerank: (config: RagConfig) => Promise<RagConfig | null>;
 }) {
   const [chatDraft, setChatDraft] = useState<RagChatConfig>(ragChatConfig);
   const [workflowDraft, setWorkflowDraft] =
     useState<RagWorkflowConfig>(ragWorkflowConfig);
+  const [rerankDraft, setRerankDraft] = useState<RerankConfig>(() => ({
+    rerank_enabled: ragConfig.rerank_enabled,
+    rerank_top_n: ragConfig.rerank_top_n,
+    rerank_choice_batch_size: ragConfig.rerank_choice_batch_size,
+    rerank_provider: ragConfig.rerank_provider,
+    rerank_model: ragConfig.rerank_model,
+  }));
 
   const updateChat = <K extends keyof RagChatConfig>(
     key: K,
@@ -2711,6 +2666,13 @@ function RagOptimizationSettingsForm({
     setWorkflowDraft((current) => ({ ...current, [key]: value }));
   };
 
+  const updateRerank = <K extends keyof RerankConfig>(
+    key: K,
+    value: RerankConfig[K],
+  ) => {
+    setRerankDraft((current) => ({ ...current, [key]: value }));
+  };
+
   async function saveChat() {
     const ok = await onSaveRagChat(chatDraft);
     if (ok) onSavedChat();
@@ -2719,6 +2681,11 @@ function RagOptimizationSettingsForm({
   async function saveWorkflow() {
     const ok = await onSaveRagWorkflow(workflowDraft);
     if (ok) onSavedWorkflow();
+  }
+
+  async function saveRerank() {
+    const saved = await onSaveRerank({ ...ragConfig, ...rerankDraft });
+    if (saved) onSavedRerank();
   }
 
   return (
@@ -2839,6 +2806,100 @@ function RagOptimizationSettingsForm({
               />
             </label>
           ) : null}
+        </div>
+      </SettingsCard>
+
+      {/* 重排序专项 */}
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存重排序设置"
+        title="重排序（Rerank）"
+        onSave={saveRerank}
+      >
+        <div className="space-y-3">
+          <label className="flex items-center gap-2">
+            <input
+              checked={rerankDraft.rerank_enabled}
+              type="checkbox"
+              onChange={(event) =>
+                updateRerank("rerank_enabled", event.target.checked)
+              }
+            />
+            <span className="text-sm font-medium text-zinc-700">
+              启用重排序（LlamaIndex LLMRerank，检索候选后二次精排）
+            </span>
+          </label>
+          <p className="text-xs text-zinc-500">
+            对 Chat 与 Workflow 两个场景同时生效。缺省复用 Agent 设置里的 Provider /
+            Model / API Key，下方可单独覆盖；未配置可用 LLM 时自动降级为不重排。
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block">
+              <span className="text-xs text-zinc-500">重排序保留数量（Top N）</span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                type="number"
+                min={1}
+                disabled={!rerankDraft.rerank_enabled}
+                value={rerankDraft.rerank_top_n}
+                onChange={(event) =>
+                  updateRerank("rerank_top_n", Number(event.target.value))
+                }
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-zinc-500">
+                重排序批大小（choice_batch_size）
+              </span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                type="number"
+                min={1}
+                disabled={!rerankDraft.rerank_enabled}
+                value={rerankDraft.rerank_choice_batch_size}
+                onChange={(event) =>
+                  updateRerank(
+                    "rerank_choice_batch_size",
+                    Number(event.target.value),
+                  )
+                }
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-zinc-500">
+                重排序 Provider（留空复用 Agent）
+              </span>
+              <select
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                disabled={!rerankDraft.rerank_enabled}
+                value={rerankDraft.rerank_provider ?? ""}
+                onChange={(event) =>
+                  updateRerank(
+                    "rerank_provider",
+                    (event.target.value || null) as RerankConfig["rerank_provider"],
+                  )
+                }
+              >
+                <option value="">（复用 Agent 设置）</option>
+                <option value="openai">openai</option>
+                <option value="anthropic">anthropic</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs text-zinc-500">
+                重排序 Model（留空复用 Agent）
+              </span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                disabled={!rerankDraft.rerank_enabled}
+                placeholder="可选"
+                value={rerankDraft.rerank_model ?? ""}
+                onChange={(event) =>
+                  updateRerank("rerank_model", event.target.value || null)
+                }
+              />
+            </label>
+          </div>
         </div>
       </SettingsCard>
     </div>
