@@ -43,9 +43,10 @@ export type ChatResponse = {
 };
 
 export type RagConfig = {
-  embedding_provider: "local" | "ollama";
+  embedding_provider: "local" | "ollama" | "openai_compatible";
   embedding_model: string;
   embedding_base_url: string;
+  embedding_api_key: string | null;
   chunk_size: number;
   chunk_overlap: number;
   top_k: number;
@@ -54,12 +55,15 @@ export type RagConfig = {
   bm25_top_k: number;
   // hybrid 融合时向量检索的权重（llama-index QueryFusionRetriever RRF），BM25 权重 = 1 - 该值
   hybrid_vector_weight: number;
-  // 重排序（llama-index LLMRerank）
+  // 重排序（LLMRerank 或 Cross-Encoder）
+  rerank_type: "llm" | "cross_encoder";
   rerank_enabled: boolean;
   rerank_top_n: number;
   rerank_provider: "openai" | "anthropic" | null;
   rerank_model: string | null;
   rerank_choice_batch_size: number;
+  rerank_api_key: string | null;
+  rerank_base_url: string | null;
 };
 
 export type AgentConfig = {

@@ -242,6 +242,7 @@ export const defaultRagConfig: RagConfig = {
   embedding_provider: "ollama",
   embedding_model: "qwen3-embedding:0.6b",
   embedding_base_url: "http://127.0.0.1:11434",
+  embedding_api_key: null,
   chunk_size: 1400,
   chunk_overlap: 180,
   top_k: 6,
@@ -249,11 +250,14 @@ export const defaultRagConfig: RagConfig = {
   retrieval_method: "hybrid",
   bm25_top_k: 20,
   hybrid_vector_weight: 0.5,
+  rerank_type: "llm",
   rerank_enabled: false,
   rerank_top_n: 5,
   rerank_provider: null,
   rerank_model: null,
   rerank_choice_batch_size: 5,
+  rerank_api_key: null,
+  rerank_base_url: null,
 };
 
 export const defaultAgentConfig: AgentConfig = {

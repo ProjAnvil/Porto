@@ -1737,6 +1737,7 @@ function RagSettingsForm({
           >
             <option value="ollama">ollama</option>
             <option value="local">local</option>
+            <option value="openai_compatible">openai_compatible（OpenAI / Jina / Fireworks 等）</option>
           </select>
         </label>
         <label className="block">
@@ -1759,6 +1760,20 @@ function RagSettingsForm({
             }
           />
         </label>
+        {ragDraft.embedding_provider === "openai_compatible" ? (
+          <label className="block md:col-span-2">
+            <span className="text-xs text-zinc-500">Embedding API Key</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="password"
+              placeholder="sk-..."
+              value={ragDraft.embedding_api_key ?? ""}
+              onChange={(event) =>
+                updateRag("embedding_api_key", event.target.value || null)
+              }
+            />
+          </label>
+        ) : null}
         <label className="block">
           <span className="text-xs text-zinc-500">Chunk Size</span>
           <input
@@ -2616,6 +2631,9 @@ type RerankConfig = Pick<
   | "rerank_choice_batch_size"
   | "rerank_provider"
   | "rerank_model"
+  | "rerank_type"
+  | "rerank_api_key"
+  | "rerank_base_url"
 >;
 
 function RagOptimizationSettingsForm({
@@ -2650,6 +2668,9 @@ function RagOptimizationSettingsForm({
     rerank_choice_batch_size: ragConfig.rerank_choice_batch_size,
     rerank_provider: ragConfig.rerank_provider,
     rerank_model: ragConfig.rerank_model,
+    rerank_type: ragConfig.rerank_type,
+    rerank_api_key: ragConfig.rerank_api_key,
+    rerank_base_url: ragConfig.rerank_base_url,
   }));
 
   const updateChat = <K extends keyof RagChatConfig>(
@@ -2826,13 +2847,30 @@ function RagOptimizationSettingsForm({
               }
             />
             <span className="text-sm font-medium text-zinc-700">
-              启用重排序（LlamaIndex LLMRerank，检索候选后二次精排）
+              启用重排序（检索候选后二次精排）
             </span>
           </label>
           <p className="text-xs text-zinc-500">
-            对 Chat 与 Workflow 两个场景同时生效。缺省复用 Agent 设置里的 Provider /
-            Model / API Key，下方可单独覆盖；未配置可用 LLM 时自动降级为不重排。
+            对 Chat 与 Workflow 两个场景同时生效。LLM 模式缺省复用 Agent 设置，未配置可用 LLM 时自动降级为不重排。
+            Cross-Encoder 模式调用专用 reranker API（Jina / Cohere / Voyage），更快更准。
           </p>
+          <label className="block">
+            <span className="text-xs text-zinc-500">重排序类型</span>
+            <select
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              disabled={!rerankDraft.rerank_enabled}
+              value={rerankDraft.rerank_type}
+              onChange={(event) =>
+                updateRerank(
+                  "rerank_type",
+                  event.target.value as RerankConfig["rerank_type"],
+                )
+              }
+            >
+              <option value="llm">LLM 提示重排（现有）</option>
+              <option value="cross_encoder">Cross-Encoder 专用 Reranker（Jina / Cohere / Voyage）</option>
+            </select>
+          </label>
           <div className="grid gap-4 md:grid-cols-2">
             <label className="block">
               <span className="text-xs text-zinc-500">重排序保留数量（Top N）</span>
@@ -2847,58 +2885,102 @@ function RagOptimizationSettingsForm({
                 }
               />
             </label>
-            <label className="block">
-              <span className="text-xs text-zinc-500">
-                重排序批大小（choice_batch_size）
-              </span>
-              <input
-                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                type="number"
-                min={1}
-                disabled={!rerankDraft.rerank_enabled}
-                value={rerankDraft.rerank_choice_batch_size}
-                onChange={(event) =>
-                  updateRerank(
-                    "rerank_choice_batch_size",
-                    Number(event.target.value),
-                  )
-                }
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs text-zinc-500">
-                重排序 Provider（留空复用 Agent）
-              </span>
-              <select
-                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                disabled={!rerankDraft.rerank_enabled}
-                value={rerankDraft.rerank_provider ?? ""}
-                onChange={(event) =>
-                  updateRerank(
-                    "rerank_provider",
-                    (event.target.value || null) as RerankConfig["rerank_provider"],
-                  )
-                }
-              >
-                <option value="">（复用 Agent 设置）</option>
-                <option value="openai">openai</option>
-                <option value="anthropic">anthropic</option>
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-xs text-zinc-500">
-                重排序 Model（留空复用 Agent）
-              </span>
-              <input
-                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                disabled={!rerankDraft.rerank_enabled}
-                placeholder="可选"
-                value={rerankDraft.rerank_model ?? ""}
-                onChange={(event) =>
-                  updateRerank("rerank_model", event.target.value || null)
-                }
-              />
-            </label>
+            {rerankDraft.rerank_type === "llm" ? (
+              <>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">
+                    重排序批大小（choice_batch_size）
+                  </span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    type="number"
+                    min={1}
+                    disabled={!rerankDraft.rerank_enabled}
+                    value={rerankDraft.rerank_choice_batch_size}
+                    onChange={(event) =>
+                      updateRerank(
+                        "rerank_choice_batch_size",
+                        Number(event.target.value),
+                      )
+                    }
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">
+                    重排序 Provider（留空复用 Agent）
+                  </span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!rerankDraft.rerank_enabled}
+                    value={rerankDraft.rerank_provider ?? ""}
+                    onChange={(event) =>
+                      updateRerank(
+                        "rerank_provider",
+                        (event.target.value || null) as RerankConfig["rerank_provider"],
+                      )
+                    }
+                  >
+                    <option value="">（复用 Agent 设置）</option>
+                    <option value="openai">openai</option>
+                    <option value="anthropic">anthropic</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">
+                    重排序 Model（留空复用 Agent）
+                  </span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!rerankDraft.rerank_enabled}
+                    placeholder="可选"
+                    value={rerankDraft.rerank_model ?? ""}
+                    onChange={(event) =>
+                      updateRerank("rerank_model", event.target.value || null)
+                    }
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">Reranker Model</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!rerankDraft.rerank_enabled}
+                    placeholder="jina-reranker-v2-base-multilingual"
+                    value={rerankDraft.rerank_model ?? ""}
+                    onChange={(event) =>
+                      updateRerank("rerank_model", event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="text-xs text-zinc-500">Reranker Base URL</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!rerankDraft.rerank_enabled}
+                    placeholder="https://api.jina.ai/v1"
+                    value={rerankDraft.rerank_base_url ?? ""}
+                    onChange={(event) =>
+                      updateRerank("rerank_base_url", event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="text-xs text-zinc-500">Reranker API Key</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    type="password"
+                    disabled={!rerankDraft.rerank_enabled}
+                    placeholder="jina-..."
+                    value={rerankDraft.rerank_api_key ?? ""}
+                    onChange={(event) =>
+                      updateRerank("rerank_api_key", event.target.value || null)
+                    }
+                  />
+                </label>
+              </>
+            )}
           </div>
         </div>
       </SettingsCard>
