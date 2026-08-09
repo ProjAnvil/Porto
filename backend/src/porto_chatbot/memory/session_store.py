@@ -64,7 +64,8 @@ class SessionStore:
 
     def _init_db(self) -> None:
         with self._conn() as conn:
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     id              TEXT PRIMARY KEY,
                     title           TEXT,
@@ -106,6 +107,10 @@ class SessionStore:
                     updated_at        TEXT
                 );
             """)
+            # Create vector delivery tracking tables
+            from .vector_delivery import VectorDeliveryStore
+
+            VectorDeliveryStore(self.settings).init_tables(conn)
             conn.commit()
 
     @staticmethod
@@ -212,8 +217,13 @@ class SessionStore:
     def add_message(
         self, *, session_id: str, role: str, content: str,
         intent: str | None = None, indexed: bool = False,
+        create_vector_intent: bool = False,
     ) -> MessageRecord:
-        """写 messages 表。内部先 ensure_session + touch。"""
+        """写 messages 表。内部先 ensure_session + touch。
+
+        When ``create_vector_intent`` is True, also insert a row into
+        ``vector_index_intents`` in the same transaction.
+        """
         self.ensure_session(session_id)
         msg = MessageRecord(
             id=str(uuid.uuid4()),
@@ -231,6 +241,11 @@ class SessionStore:
                 (msg.id, msg.session_id, msg.role, msg.content, msg.intent,
                  int(msg.indexed), msg.created_at),
             )
+            if create_vector_intent:
+                conn.execute(
+                    "INSERT INTO vector_index_intents (record_id) VALUES (?)",
+                    (msg.id,),
+                )
             conn.execute(
                 "UPDATE sessions SET last_active_at=? WHERE id=?",
                 (msg.created_at, session_id),

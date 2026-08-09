@@ -1,7 +1,7 @@
 """共享编排函数——消除 DIRECT/agent_sdk/RAG 路径的消息持久化重复。
 
 persist_turn：写 user + assistant 两条消息，可选索引向量。
-index_and_mark：批量索引 + 回填 indexed flag（persist_turn 和 RAG 路径共用）。
+index_and_mark：批量索引 + 回填 indexed flag + 写 delivery receipt。
 maybe_generate_title：异步 fire-and-forget 生成 session 标题。
 """
 from __future__ import annotations
@@ -12,25 +12,40 @@ from ..logging_utils import get_component_logger
 from ..models import MessageRecord
 from .conversation_memory import ConversationMemory
 from .session_store import SessionStore
+from .vector_delivery import VectorDeliveryStore
 
 logger = get_component_logger("persist")
+
+
+def _active_profile_id(settings) -> str:
+    """Get the active vector profile ID (defaults to 'default')."""
+    try:
+        from ..vector_profiles import VectorProfileStore
+
+        store = VectorProfileStore(settings)
+        active = store.active()
+        return active.id if active else "default"
+    except Exception:
+        return "default"
 
 
 def index_and_mark(
     sessions: SessionStore, memory: ConversationMemory, records: list[MessageRecord],
 ) -> None:
-    """批量 embedding + 写 ChromaDB + 回填 indexed flag。
+    """批量 embedding + 写向量库 + 回填 indexed flag + 写 delivery receipt。
 
     index 失败时只记日志——消息已在 SQLite（历史可见），只是不会被向量检索（优雅降级）。
-    ChromaDB batch add 是原子的：如果它抛异常，两条消息都不会被写入向量库，
-    所以跳过 mark_indexed 不会让 flag 与 ChromaDB 状态不同步。
     """
     if not records:
         return
     try:
         memory.index(records)
         sessions.mark_indexed([r.id for r in records])
-        # 回填内存对象，让调用方拿到的 MessageRecord.indexed 与 DB/ChromaDB 状态一致。
+        # Record delivery receipt for the active profile
+        profile_id = _active_profile_id(sessions.settings)
+        delivery = VectorDeliveryStore(sessions.settings)
+        delivery.mark_delivered([r.id for r in records], profile_id)
+        # 回填内存对象，让调用方拿到的 MessageRecord.indexed 与 DB 状态一致。
         for r in records:
             r.indexed = True
     except Exception:
@@ -57,10 +72,12 @@ def persist_turn(
     user_msg = sessions.add_message(
         session_id=session_id, role="user",
         content=user_content, intent=intent, indexed=False,
+        create_vector_intent=index_vector,
     )
     asst_msg = sessions.add_message(
         session_id=session_id, role="assistant",
         content=assistant_content, intent=intent, indexed=False,
+        create_vector_intent=index_vector,
     )
     if index_vector:
         index_and_mark(sessions, memory, [user_msg, asst_msg])
