@@ -1,7 +1,6 @@
 """Tests for finalization barrier and atomic activation (Plan 3 Task 4)."""
 from __future__ import annotations
 
-import threading
 import time
 
 import pytest
