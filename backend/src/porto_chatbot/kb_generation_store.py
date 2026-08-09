@@ -43,7 +43,7 @@ class KbGenerationStore:
 
     def _init_db(self) -> None:
         with self._conn() as conn:
-            conn.executescript("""
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS kb_generations (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile_id      TEXT NOT NULL DEFAULT 'default',
@@ -51,9 +51,18 @@ class KbGenerationStore:
                     bm25_path       TEXT NOT NULL,
                     status          TEXT NOT NULL DEFAULT 'building',
                     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_kb_gen_profile ON kb_generations(profile_id);
+                )
             """)
+            # Migration: add profile_id to pre-existing tables
+            try:
+                conn.execute("SELECT profile_id FROM kb_generations LIMIT 0")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE kb_generations ADD COLUMN profile_id TEXT NOT NULL DEFAULT 'default'",
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_kb_gen_profile ON kb_generations(profile_id)",
+            )
             conn.commit()
 
     # ── naming ──

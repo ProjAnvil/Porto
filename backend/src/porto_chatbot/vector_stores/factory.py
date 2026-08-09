@@ -1,8 +1,8 @@
 """Compatibility factory for vector repository lifecycle.
 
-Before profiles exist, repository clients are cached by ``data_dir`` only.
-All runtime construction must go through this factory so that shutdown can
-clean up all open clients in one place.
+The factory resolves the **active** vector profile and returns the matching
+backend (Chroma or Milvus).  In Plan 2 the active profile is always Chroma;
+Plan 3 introduces activation of Milvus profiles.
 """
 from __future__ import annotations
 
@@ -11,16 +11,36 @@ import threading
 from ..settings import Settings
 from .base import VectorRepository
 from .chroma import ChromaVectorRepository
+from .milvus import MilvusVectorRepository
 
 _lock = threading.Lock()
 _cache: dict[str, VectorRepository] = {}
 
 
 class VectorRepositoryFactory:
-    """Process-wide cache of VectorRepository instances keyed by data_dir."""
+    """Process-wide cache of VectorRepository instances keyed by profile."""
 
     @staticmethod
     def get(settings: Settings) -> VectorRepository:
+        active = None
+        try:
+            from ..vector_profiles import VectorProfileStore
+
+            profile_store = VectorProfileStore(settings)
+            active = profile_store.bootstrap() or profile_store.active()
+        except Exception:
+            pass  # Fall back to Chroma default
+
+        if active and active.backend == "milvus":
+            key = f"milvus:{active.uri}:{active.id}"
+            with _lock:
+                repo = _cache.get(key)
+                if repo is None:
+                    repo = MilvusVectorRepository.from_profile(active)
+                    _cache[key] = repo
+                return repo
+
+        # Default / Chroma
         key = str(settings.chroma_dir)
         with _lock:
             repo = _cache.get(key)
