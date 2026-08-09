@@ -14,6 +14,7 @@ from .base import (
     VectorStoreHealth,
 )
 from .chroma import ChromaVectorRepository
+from .factory import VectorRepositoryFactory
 
 __all__ = [
     "CollectionInfo",
@@ -23,6 +24,7 @@ __all__ = [
     "DistanceMetric",
     "VectorRecord",
     "VectorRepository",
+    "VectorRepositoryFactory",
     "VectorSearchHit",
     "VectorSearchRequest",
     "VectorStoreConnectionError",

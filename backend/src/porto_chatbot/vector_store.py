@@ -23,7 +23,12 @@ from .models import IndexStats, SourceChunk
 from .models.enums import EmbeddingProvider, RetrievalMethod
 from .retrieval import hybrid_fusion_search, rerank_chunks
 from .settings import Settings
-from .vector_stores import ChromaVectorRepository, VectorRecord, VectorSearchRequest
+from .vector_stores import (
+    ChromaVectorRepository,
+    VectorRecord,
+    VectorRepository,
+    VectorSearchRequest,
+)
 
 COLLECTION_METADATA_KEYS = {
     "embedding_provider",
@@ -50,12 +55,12 @@ def cosine(a: list[float], b: list[float]) -> float:
 class ChromaVectorStore:
     _build_lock = threading.Lock()
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, repo: VectorRepository | None = None):
         self.settings = settings
         self.logger = get_component_logger("vector_store", settings)
         self.settings.chroma_dir.mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=str(self.settings.chroma_dir))
-        self._repo = ChromaVectorRepository(self.settings.chroma_dir)
+        self._repo = repo or ChromaVectorRepository(self.settings.chroma_dir)
         self.embeddings = EmbeddingClient(settings)
         self.logger.info(
             "vector store ready backend=chroma collection=%s chroma_dir=%s",

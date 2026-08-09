@@ -42,7 +42,11 @@ class PortoAgent:
         """
         self.settings = settings
         self.logger = get_component_logger("agent", settings)
-        self.vector_store = vector_store or LocalVectorStore(settings)
+        from ..vector_stores import VectorRepositoryFactory
+
+        self.vector_store = vector_store or LocalVectorStore(
+            settings, repo=VectorRepositoryFactory.get(settings),
+        )
         self.llm = llm or LLMClient(settings)
         self.file_service = file_service
         self.critic_llm = self._build_critic_llm()

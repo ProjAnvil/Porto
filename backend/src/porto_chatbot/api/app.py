@@ -54,6 +54,9 @@ async def lifespan(app: FastAPI):
     finally:
         supervisor.stop()
         health.stop()
+        from ..vector_stores import VectorRepositoryFactory
+
+        VectorRepositoryFactory.close_all()
         logger.info("lifespan shutdown: index supervisor + health monitor stopped")
 
 

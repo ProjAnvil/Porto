@@ -314,7 +314,13 @@ class AgentSDKBackend:
 
         store = get_store(settings)
         sessions = SessionStore(settings)
-        conv_memory = ConversationMemory(settings)
+        from ..vector_stores import VectorRepositoryFactory
+
+        conv_memory = ConversationMemory(
+            settings,
+            repo=VectorRepositoryFactory.get(settings),
+            session_store=sessions,
+        )
         facts_store = SessionFactsStore(settings)
         store.ensure_index()
 

@@ -28,6 +28,7 @@ from .logging_utils import get_component_logger
 from .models.enums import WorkflowRunState
 from .settings import Settings
 from .vector_store import LocalVectorStore
+from .vector_stores import VectorRepositoryFactory
 from .workflow_store import WorkflowStore
 
 logger = get_component_logger("workflow_executor")
@@ -163,7 +164,7 @@ class WorkflowExecutor:
         # (upload 路径);text 路径下 ``prd_file_id`` 实为原始文本,helper 自动回退。
         return PortoAgent(
             runtime,
-            LocalVectorStore(runtime),
+            LocalVectorStore(runtime, repo=VectorRepositoryFactory.get(runtime)),
             LLMClient(runtime),
             file_service=FileService(runtime),
         )

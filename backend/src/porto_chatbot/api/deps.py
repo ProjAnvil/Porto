@@ -17,6 +17,7 @@ from ..models import (
     RagWorkflowSettingsPayload,
 )
 from ..vector_store import LocalVectorStore
+from ..vector_stores import VectorRepositoryFactory
 
 if TYPE_CHECKING:
     from ..files.service import FileService
@@ -215,7 +216,8 @@ def apply_rag_settings(
 
 
 def get_store(runtime_settings=None) -> LocalVectorStore:
-    return LocalVectorStore(runtime_settings or current_settings())
+    settings = runtime_settings or current_settings()
+    return LocalVectorStore(settings, repo=VectorRepositoryFactory.get(settings))
 
 
 def get_session_store(runtime_settings=None) -> SessionStore:
@@ -243,7 +245,12 @@ def get_conversation_memory(runtime_settings=None) -> ConversationMemory:
     key = "conv_memory"
     mem = entry.get(key)
     if mem is None:
-        mem = ConversationMemory(runtime_settings or current_settings())
+        _settings = runtime_settings or current_settings()
+        mem = ConversationMemory(
+            _settings,
+            repo=VectorRepositoryFactory.get(_settings),
+            session_store=get_session_store(_settings),
+        )
         entry[key] = mem
     return mem
 
@@ -263,7 +270,9 @@ def _ensure_rag_singletons() -> dict:
     lock_store = DbLockStore(settings)
     supervisor = IndexSupervisor(
         lock_store=lock_store,
-        store_factory=lambda s: LocalVectorStore(s),
+        store_factory=lambda s: LocalVectorStore(
+            s, repo=VectorRepositoryFactory.get(s),
+        ),
         # RAG 可用性判断必须用「实际生效」配置（db 覆盖 .env），否则 collection metadata
         # （按 db 配置 build）与 current_settings（.env）的 embedding_model 不匹配，
         # _is_collection_compatible 误判 → rag_available 恒返回 index_unavailable。
