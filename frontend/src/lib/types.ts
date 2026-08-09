@@ -274,3 +274,59 @@ export type Paginated<T> = {
   total: number;
   has_more: boolean;
 };
+
+// ── Vector Database Profiles ──
+
+export type VectorBackend = "chroma" | "milvus";
+export type DistanceMetric = "l2" | "cosine";
+export type AuthMode = "none" | "token" | "user_password";
+
+export type VectorProfileResponse = {
+  id: string;
+  name: string;
+  backend: VectorBackend;
+  metric: DistanceMetric;
+  uri: string | null;
+  database: string | null;
+  auth_mode: AuthMode;
+  tls: boolean;
+  timeout: number;
+  kb_collection_base: string;
+  memory_collection_base: string;
+  credential_configured: boolean;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VectorStoreStateResponse = {
+  active: VectorProfileResponse | null;
+  pending: VectorProfileResponse | null;
+  revision: number;
+};
+
+export type VectorProfileDraft = {
+  name: string;
+  backend: VectorBackend;
+  metric: DistanceMetric;
+  uri?: string | null;
+  database?: string | null;
+  auth_mode?: AuthMode;
+  token?: string | null;
+  username?: string | null;
+  password?: string | null;
+  tls?: boolean;
+  timeout?: number;
+  kb_collection_base: string;
+  memory_collection_base: string;
+};
+
+export type SaveVectorProfileResponse = {
+  profile: VectorProfileResponse;
+  migration_required: boolean;
+};
+
+export type TestConnectionResult = {
+  status: "ok" | "error";
+  detail: string;
+};

@@ -11,8 +11,12 @@ import type {
   RagChatConfig,
   RagConfig,
   RagWorkflowConfig,
+  SaveVectorProfileResponse,
   SessionItem,
   SourceChunk,
+  TestConnectionResult,
+  VectorProfileDraft,
+  VectorStoreStateResponse,
   WorkflowDetail,
   WorkflowListItem,
   WorkflowStepName,
@@ -311,3 +315,39 @@ export const defaultRagWorkflowConfig: RagWorkflowConfig = {
   query_transform_strategy: "none",
   multi_query_count: 4,
 };
+
+// ── Vector Database Profiles ──
+
+export async function fetchVectorDatabases(): Promise<VectorStoreStateResponse> {
+  const resp = await fetch("/api/vector-databases");
+  return parseJson(resp);
+}
+
+export async function testVectorConnection(
+  draft: VectorProfileDraft,
+): Promise<TestConnectionResult> {
+  const resp = await fetch("/api/vector-databases/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  return parseJson(resp);
+}
+
+export async function saveVectorProfile(
+  draft: VectorProfileDraft,
+): Promise<SaveVectorProfileResponse> {
+  const resp = await fetch("/api/vector-databases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  return parseJson(resp);
+}
+
+export async function deleteVectorProfile(profileId: string): Promise<void> {
+  const resp = await fetch(`/api/vector-databases/${profileId}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+}
