@@ -258,6 +258,12 @@ class ChromaVectorRepository:
         except Exception as exc:
             return VectorStoreHealth(healthy=False, detail=str(exc))
 
+    def list_collections(self) -> list[str]:
+        try:
+            return [c.name for c in self._client.list_collections()]
+        except Exception:
+            return []
+
     def close(self) -> None:
         """ChromaDB PersistentClient has no explicit close."""
         pass

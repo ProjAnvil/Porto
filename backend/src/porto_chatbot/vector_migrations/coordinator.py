@@ -172,10 +172,9 @@ class VectorMigrationCoordinator:
             gen = gen_store.current()  # backward compat
 
         source_collection = gen.collection_name if gen else source_profile.kb_collection_base
-        target_collection = self._target_kb_collection(target_profile)
+        target_collection = target_profile.kb_collection_base
 
-        # Drop any stale target from a previous failed migration attempt so
-        # upsert doesn't double-count un-compacted duplicates.
+        # Drop any stale target from a previous failed migration attempt.
         if hasattr(target_repo, "drop_collection"):
             target_repo.drop_collection(target_collection)
 
@@ -198,12 +197,6 @@ class VectorMigrationCoordinator:
 
         logger.info("KB copy done source=%s target=%s copied=%s", source_collection, target_collection, copied)
 
-    def _target_kb_collection(self, target_profile: VectorProfile) -> str:
-        """Resolve the target KB collection name using the next revision."""
-        revision = self._profile_store.revision() + 1
-        from ..vector_stores.naming import resolve_kb_collection
-        return resolve_kb_collection(target_profile.kb_collection_base, revision, 1)
-
     def _kb_collection_spec(
         self, target_profile: VectorProfile, source_collection: str,
         source_repo: VectorRepository,
@@ -212,7 +205,7 @@ class VectorMigrationCoordinator:
         info = source_repo.collection_info(source_collection)
         metric = DistanceMetric.COSINE if target_profile.metric == "cosine" else DistanceMetric.L2
         return CollectionSpec(
-            name=self._target_kb_collection(target_profile),
+            name=target_profile.kb_collection_base,
             dimension=info.dimension or self._settings.embedding_dimensions,
             metric=metric,
             metadata={"kind": "kb"},
@@ -226,8 +219,8 @@ class VectorMigrationCoordinator:
         source_profile: VectorProfile, target_profile: VectorProfile,
     ) -> None:
         """Copy Memory vectors from source to target."""
-        source_collection = self._source_memory_collection(source_profile)
-        target_collection = self._target_memory_collection(target_profile)
+        source_collection = source_profile.memory_collection_base
+        target_collection = target_profile.memory_collection_base
 
         # Drop any stale target from a previous failed migration attempt.
         if hasattr(target_repo, "drop_collection"):
@@ -263,21 +256,6 @@ class VectorMigrationCoordinator:
         logger.info("memory copy done source=%s target=%s copied=%s seq=%s",
                      source_collection, target_collection, copied, max_seq)
 
-    def _target_memory_collection(self, target_profile: VectorProfile) -> str:
-        revision = self._profile_store.revision() + 1
-        from ..vector_stores.naming import resolve_memory_collection
-        return resolve_memory_collection(target_profile.memory_collection_base, revision)
-
-    def _source_memory_collection(self, source_profile: VectorProfile) -> str:
-        """Resolve the source memory collection name using the current revision.
-
-        Before activation, ``revision()`` is the source profile's revision.
-        Revision 1 → unsuffixed base name (backward compat); 2+ → ``__r<rev>``.
-        """
-        from ..vector_stores.naming import resolve_memory_collection
-        revision = self._profile_store.revision()
-        return resolve_memory_collection(source_profile.memory_collection_base, revision)
-
     # ── catch-up (pre-barrier) ──
 
     def _catchup_memory(
@@ -293,8 +271,8 @@ class VectorMigrationCoordinator:
             logger.info("memory catch-up: no pending records")
             return
 
-        source_collection = self._source_memory_collection(source_profile)
-        target_collection = self._target_memory_collection(target_profile)
+        source_collection = source_profile.memory_collection_base
+        target_collection = target_profile.memory_collection_base
 
         records = source_repo.fetch(source_collection, pending)
         if records:
@@ -338,7 +316,7 @@ class VectorMigrationCoordinator:
             # Point the KB generation to the migrated collection name so
             # post-activation queries resolve to the correct collection.
             gen_store = KbGenerationStore(self._settings)
-            gen_store.redirect_active(self._target_kb_collection(target_profile))
+            gen_store.redirect_active(target_profile.kb_collection_base)
             VectorRepositoryFactory.invalidate()
             logger.info("factory invalidated after activation revision=%s", new_revision)
 
@@ -362,10 +340,9 @@ class VectorMigrationCoordinator:
             logger.info("final catch-up: no pending records")
             return
 
-        source_collection = self._source_memory_collection(source_profile)
-        target_collection = self._target_memory_collection(
-            self._profile_store.get(mig.target_profile_id),  # type: ignore[arg-type]
-        )
+        source_collection = source_profile.memory_collection_base
+        target_profile = self._profile_store.get(mig.target_profile_id)  # type: ignore[assignment]
+        target_collection = target_profile.memory_collection_base
 
         records = source_repo.fetch(source_collection, pending)
         if records:
@@ -404,8 +381,8 @@ class VectorMigrationCoordinator:
         # Flush target collections so get_collection_stats reflects all
         # upserted data.  Without this, Milvus may report stale row counts
         # because segments are not yet compacted.
-        target_kb = self._target_kb_collection(target_profile)
-        target_mem = self._target_memory_collection(target_profile)
+        target_kb = target_profile.kb_collection_base
+        target_mem = target_profile.memory_collection_base
         if hasattr(target_repo, "flush"):
             target_repo.flush(target_kb)
             target_repo.flush(target_mem)
@@ -416,7 +393,7 @@ class VectorMigrationCoordinator:
         gen_store = KbGenerationStore(self._settings)
         gen = gen_store.current() or gen_store.current(profile_id=source_profile.id)
         source_kb = gen.collection_name if gen else source_profile.kb_collection_base
-        target_kb = self._target_kb_collection(target_profile)
+        target_kb = target_profile.kb_collection_base
         source_kb_count = source_repo.count(source_kb)
         target_kb_count = target_repo.count(target_kb)
         results["kb_count_match"] = source_kb_count == target_kb_count
@@ -424,8 +401,8 @@ class VectorMigrationCoordinator:
         results["kb_target_count"] = target_kb_count
 
         # Memory count check
-        source_mem = self._source_memory_collection(source_profile)
-        target_mem = self._target_memory_collection(target_profile)
+        source_mem = source_profile.memory_collection_base
+        target_mem = target_profile.memory_collection_base
         source_mem_count = source_repo.count(source_mem)
         target_mem_count = target_repo.count(target_mem)
         results["memory_count_match"] = source_mem_count == target_mem_count
@@ -463,13 +440,8 @@ class VectorMigrationCoordinator:
             return
 
         # Fetch from the now-active target repo (post-activation).
-        # After activation revision() reflects the new revision, so
-        # resolve_memory_collection(base, revision()) gives the target name.
-        from ..vector_stores.naming import resolve_memory_collection
         repo = VectorRepositoryFactory.get(self._settings)
-        target_collection = resolve_memory_collection(
-            target_profile.memory_collection_base, self._profile_store.revision(),
-        )
+        target_collection = target_profile.memory_collection_base
 
         try:
             records = repo.fetch(target_collection, missing)

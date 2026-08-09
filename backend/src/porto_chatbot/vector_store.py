@@ -362,15 +362,17 @@ class ChromaVectorStore:
             return None
 
     def is_rag_ready(self) -> bool:
-        """索引是否可用于检索：collection 非空且维度匹配当前 embedding 配置。"""
+        """索引是否可用于检索：collection 存在且非空。
+
+        维度检查不在这里做——``settings.embedding_dimensions`` 是静态默认值，
+        不反映实际模型的输出维度。真正的维度匹配在 ``_search_raw`` 搜索时检查。
+        """
         name = self._active_collection_name()
         try:
             info = self._repo.collection_info(name)
         except Exception:
             return False
         if info.count == 0:
-            return False
-        if info.dimension is not None and info.dimension != self.settings.embedding_dimensions:
             return False
         if self.settings.retrieval_method in (RetrievalMethod.BM25, RetrievalMethod.HYBRID):
             bm = self._active_bm25()
