@@ -35,9 +35,27 @@ def index_and_mark(
     """批量 embedding + 写向量库 + 回填 indexed flag + 写 delivery receipt。
 
     index 失败时只记日志——消息已在 SQLite（历史可见），只是不会被向量检索（优雅降级）。
+
+    当迁移 finalization barrier 激活时，跳过向量写入但保留 intent——
+    消息和 intent 已经在 SQLite 中，activation 后 replay worker 会补写。
     """
     if not records:
         return
+    # During migration finalization barrier, skip vector writes.
+    # Messages + intents are already persisted in SQLite; the coordinator's
+    # post-activation replay will index them into the new target profile.
+    try:
+        from ..vector_migrations.barrier import is_active as barrier_active
+
+        if barrier_active():
+            logger.info(
+                "skipping vector write during migration barrier records=%s",
+                [r.id for r in records],
+            )
+            return
+    except Exception:
+        pass  # If barrier module is unavailable, proceed normally.
+
     try:
         memory.index(records)
         sessions.mark_indexed([r.id for r in records])

@@ -361,6 +361,60 @@ class VectorProfileStore:
             conn.commit()
         logger.info("inactive profile deleted id=%s", profile_id)
 
+    def activate_migration(
+        self,
+        *,
+        source_profile_id: str,
+        target_profile_id: str,
+    ) -> int:
+        """Atomically switch the active profile to the migration target.
+
+        One SQLite transaction:
+        1. Verify the active profile is still *source_profile_id*.
+        2. Verify the pending profile is still *target_profile_id*.
+        3. Set target active, clear pending, increment revision.
+
+        Returns the new revision.  Raises ``ValueError`` if the
+        preconditions are not met (e.g. another activation raced ahead).
+        """
+        now = _now()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT active_profile_id, pending_profile_id, revision "
+                "FROM vector_store_state WHERE id=1",
+            ).fetchone()
+            if row is None:
+                raise ValueError("vector_store_state row missing")
+            if row["active_profile_id"] != source_profile_id:
+                raise ValueError("source profile is no longer active")
+            if row["pending_profile_id"] != target_profile_id:
+                raise ValueError("target profile is no longer pending")
+
+            new_revision = row["revision"] + 1
+            conn.execute(
+                "UPDATE vector_store_state "
+                "SET active_profile_id=?, pending_profile_id=NULL, "
+                "    revision=? "
+                "WHERE id=1",
+                (target_profile_id, new_revision),
+            )
+            conn.execute(
+                "UPDATE vector_profiles SET status='active', updated_at=? "
+                "WHERE id=?",
+                (now, target_profile_id),
+            )
+            conn.execute(
+                "UPDATE vector_profiles SET status='inactive', updated_at=? "
+                "WHERE id=?",
+                (now, source_profile_id),
+            )
+            conn.commit()
+        logger.info(
+            "activation committed source=%s target=%s revision=%s",
+            source_profile_id, target_profile_id, new_revision,
+        )
+        return new_revision
+
     def clear_credential(self, profile_id: str, field: str) -> None:
         """Explicitly clear a credential field (set to NULL)."""
         if field not in ("token", "username", "password"):

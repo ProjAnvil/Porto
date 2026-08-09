@@ -77,7 +77,21 @@ class IndexSupervisor:
         reset: bool = True,
         source: str = "manual",
     ) -> IndexJobStatus:
-        """提交一次 reindex。worker 正忙时拒绝（返回当前 running 状态），不排队。"""
+        """提交一次 reindex。worker 正忙时拒绝（返回当前 running 状态），不排队。
+
+        迁移 finalization barrier 激活时也拒绝——barrier 持有
+        ``VECTOR_MIGRATION_LOCK``，锁序要求 migration-lock 先于 rag-index-lock。
+        """
+        # Reject if migration finalization barrier is active.
+        try:
+            from .vector_migrations.barrier import is_active as barrier_active
+
+            if barrier_active():
+                logger.info("submit rejected: migration barrier active source=%s", source)
+                return self._lock_store.get_status()
+        except Exception:
+            pass
+
         with self._submit_lock:
             if self._current is not None:
                 logger.info("submit rejected busy incoming_source=%s", source)

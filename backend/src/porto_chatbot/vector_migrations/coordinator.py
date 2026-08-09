@@ -3,8 +3,11 @@
 Runs in a background thread.  The coordinator:
 1. Copies KB snapshot + Memory records to the target profile.
 2. Catches up Memory records written during the copy.
-3. Verifies counts and samples.
-4. Hands off to the finalization barrier and atomic activation (Task 4).
+3. Raises a finalization barrier (blocks new vector writes).
+4. Performs a final catch-up under the barrier.
+5. Verifies counts and samples.
+6. Atomically activates the target profile.
+7. Releases the barrier and replays barrier-period intents to the target.
 """
 from __future__ import annotations
 
@@ -23,6 +26,8 @@ from ..vector_stores import (
     MilvusVectorRepository,
     VectorRepository,
 )
+from ..vector_stores.factory import VectorRepositoryFactory
+from .barrier import _BarrierGuard
 from .store import MigrationPhase, MigrationStatus, VectorMigration, VectorMigrationStore
 
 logger = get_component_logger("migration_coordinator")
@@ -31,6 +36,7 @@ _BATCH_SIZE = 500
 _SAMPLE_SIZE = 20
 _TOP_K = 10
 _OVERLAP_THRESHOLD = 0.80
+_BARRIER_TIMEOUT = 30.0
 
 
 def _create_repo(profile: VectorProfile, settings: Settings) -> VectorRepository:
@@ -131,17 +137,15 @@ class VectorMigrationCoordinator:
             # Phase 2: Copy Memory
             self._copy_memory(mig, source_repo, target_repo, source_profile, target_profile)
 
-            # Phase 3: Catch-up
+            # Phase 3: Catch-up (before barrier)
             self._mig_store.transition(mig.id, phase=MigrationPhase.CATCHING_UP)
             self._catchup_memory(mig, source_repo, target_repo, source_profile, target_profile)
 
-            # Phase 4: Verify
-            self._mig_store.transition(mig.id, phase=MigrationPhase.VERIFYING)
-            self._verify(mig, source_repo, target_repo, source_profile, target_profile)
-
-            # Phase 5: Activate
-            self._mig_store.transition(mig.id, phase=MigrationPhase.ACTIVATING)
-            self._activate(mig, target_profile)
+            # Phase 4: Finalize — raise barrier, final catch-up, verify, activate
+            self._mig_store.transition(mig.id, phase=MigrationPhase.FINALIZING)
+            self._finalize_and_activate(
+                mig, source_repo, target_repo, source_profile, target_profile,
+            )
 
             self._mig_store.transition(mig.id, status=MigrationStatus.SUCCEEDED)
             logger.info("migration succeeded id=%s", mig.id)
@@ -177,6 +181,7 @@ class VectorMigrationCoordinator:
         copied = 0
         total = source_repo.count(source_collection)
         self._mig_store.update_progress(mig.id, kb_total=total)
+        self._mig_store.update_progress(mig.id, kb_generation=gen.id if gen else 1)
 
         for batch in source_repo.export_batches(source_collection, _BATCH_SIZE):
             if self._stop.is_set():
@@ -254,7 +259,7 @@ class VectorMigrationCoordinator:
         from ..vector_stores.naming import resolve_memory_collection
         return resolve_memory_collection(target_profile.memory_collection_base, revision)
 
-    # ── catch-up ──
+    # ── catch-up (pre-barrier) ──
 
     def _catchup_memory(
         self, mig: VectorMigration,
@@ -280,6 +285,88 @@ class VectorMigrationCoordinator:
         # Update sequence
         new_max = delivery.max_seq()
         self._mig_store.update_progress(mig.id, memory_seq=new_max)
+
+    # ── finalize + activate ──
+
+    def _finalize_and_activate(
+        self, mig: VectorMigration,
+        source_repo: VectorRepository, target_repo: VectorRepository,
+        source_profile: VectorProfile, target_profile: VectorProfile,
+    ) -> None:
+        """Raise barrier, final catch-up, verify, activate, release, replay.
+
+        The barrier blocks new vector writes and KB rebuild submissions
+        for the duration of final catch-up + verification + activation.
+        On any failure the barrier is released and the source remains active.
+        """
+        with _BarrierGuard(timeout=_BARRIER_TIMEOUT):
+            # Final Memory catch-up under the barrier.
+            self._final_catchup(mig, source_repo, target_repo, source_profile)
+
+            # Confirm KB generation has not changed.
+            self._confirm_kb_generation(mig, source_profile)
+
+            # Verify (still under barrier).
+            self._mig_store.transition(mig.id, phase=MigrationPhase.VERIFYING)
+            self._verify(mig, source_repo, target_repo, source_profile, target_profile)
+
+            # Atomic activation (still under barrier).
+            self._mig_store.transition(mig.id, phase=MigrationPhase.ACTIVATING)
+            new_revision = self._profile_store.activate_migration(
+                source_profile_id=mig.source_profile_id,
+                target_profile_id=mig.target_profile_id,
+            )
+            VectorRepositoryFactory.invalidate()
+            logger.info("factory invalidated after activation revision=%s", new_revision)
+
+        # Post-activation replay: index barrier-period intents to target.
+        self._replay_barrier_intents(mig, target_profile)
+
+    def _final_catchup(
+        self, mig: VectorMigration,
+        source_repo: VectorRepository, target_repo: VectorRepository,
+        source_profile: VectorProfile,
+    ) -> None:
+        """Copy Memory records that arrived during the bulk copy phase.
+
+        Under the barrier, no new vector writes can occur, so this catch-up
+        captures the last source receipts through the current max seq.
+        """
+        delivery = VectorDeliveryStore(self._settings)
+        pending = delivery.pending_after(mig.memory_seq, source_profile.id)
+
+        if not pending:
+            logger.info("final catch-up: no pending records")
+            return
+
+        source_collection = source_profile.memory_collection_base
+        target_collection = self._target_memory_collection(
+            self._profile_store.get(mig.target_profile_id),  # type: ignore[arg-type]
+        )
+
+        records = source_repo.fetch(source_collection, pending)
+        if records:
+            target_repo.upsert(target_collection, records)
+            logger.info("final catch-up copied=%s", len(records))
+
+        new_max = delivery.max_seq()
+        self._mig_store.update_progress(mig.id, memory_seq=new_max)
+
+    def _confirm_kb_generation(
+        self, mig: VectorMigration, source_profile: VectorProfile,
+    ) -> None:
+        """Verify the source KB generation has not changed during migration."""
+        gen_store = KbGenerationStore(self._settings)
+        current_gen = gen_store.current(profile_id=source_profile.id)
+        if current_gen is None:
+            current_gen = gen_store.current()
+        current_gen_id = current_gen.id if current_gen else 1
+
+        if mig.kb_generation is not None and current_gen_id != mig.kb_generation:
+            raise RuntimeError(
+                f"kb_generation_unstable: expected {mig.kb_generation}, "
+                f"got {current_gen_id}",
+            )
 
     # ── verify ──
 
@@ -322,15 +409,38 @@ class VectorMigrationCoordinator:
 
         logger.info("verification passed: %s", json.dumps(results))
 
-    # ── activate ──
+    # ── post-activation replay ──
 
-    def _activate(self, mig: VectorMigration, target_profile: VectorProfile) -> None:
-        """Atomically activate the target profile."""
-        # This will be fully implemented in Task 4 with the finalization barrier.
-        # For now, update the profile status to active.
-        revision = self._profile_store.revision() + 1
-        self._profile_store.update(target_profile.id, status="active")
-        logger.info(
-            "profile activated id=%s revision=%s (placeholder — full activation in Task 4)",
-            target_profile.id, revision,
+    def _replay_barrier_intents(
+        self, mig: VectorMigration, target_profile: VectorProfile,
+    ) -> None:
+        """Index intents that arrived during the barrier into the target.
+
+        After activation, any messages whose intent was created during the
+        barrier (and therefore never received a source receipt for the
+        target profile) are replayed.  This is independent of the
+        migration's terminal status.
+        """
+        delivery = VectorDeliveryStore(self._settings)
+        # Find all intents lacking a receipt for the target profile.
+        missing = delivery.source_records_through(
+            delivery.max_seq(), target_profile.id,
         )
+        if not missing:
+            logger.info("barrier replay: no pending intents")
+            return
+
+        # Fetch from the now-active target repo (post-activation).
+        repo = VectorRepositoryFactory.get(self._settings)
+        target_collection = target_profile.memory_collection_base
+
+        try:
+            records = repo.fetch(target_collection, missing)
+            if records:
+                repo.upsert(target_collection, records)
+                delivery.mark_delivered(
+                    [r.id for r in records], target_profile.id,
+                )
+                logger.info("barrier replay indexed=%s", len(records))
+        except Exception:
+            logger.exception("barrier replay failed")

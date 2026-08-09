@@ -1,8 +1,10 @@
-"""Compatibility factory for vector repository lifecycle.
+"""Revision-aware factory for vector repository lifecycle.
 
 The factory resolves the **active** vector profile and returns the matching
-backend (Chroma or Milvus).  In Plan 2 the active profile is always Chroma;
-Plan 3 introduces activation of Milvus profiles.
+backend (Chroma or Milvus).  Cache keys include ``(data_dir, profile_id,
+revision)`` so that a successful activation — which increments the revision
+— causes stale clients to be evicted and the destination adapter to be
+constructed on the next request.
 """
 from __future__ import annotations
 
@@ -18,22 +20,25 @@ _cache: dict[str, VectorRepository] = {}
 
 
 class VectorRepositoryFactory:
-    """Process-wide cache of VectorRepository instances keyed by profile."""
+    """Process-wide cache of VectorRepository instances keyed by profile+revision."""
 
     @staticmethod
     def get(settings: Settings) -> VectorRepository:
         active = None
+        revision = 1
         try:
             from ..vector_profiles import VectorProfileStore
 
             profile_store = VectorProfileStore(settings)
             active = profile_store.bootstrap() or profile_store.active()
+            revision = profile_store.revision()
         except Exception:
             pass  # Fall back to Chroma default
 
         if active and active.backend == "milvus":
-            key = f"milvus:{active.uri}:{active.id}"
+            key = f"milvus:{active.uri}:{active.id}:r{revision}"
             with _lock:
+                _evict_stale(key)
                 repo = _cache.get(key)
                 if repo is None:
                     repo = MilvusVectorRepository.from_profile(active)
@@ -41,8 +46,9 @@ class VectorRepositoryFactory:
                 return repo
 
         # Default / Chroma
-        key = str(settings.chroma_dir)
+        key = f"chroma:{settings.chroma_dir}:r{revision}"
         with _lock:
+            _evict_stale(key)
             repo = _cache.get(key)
             if repo is None:
                 repo = ChromaVectorRepository(settings.chroma_dir)
@@ -62,3 +68,41 @@ class VectorRepositoryFactory:
         """Test-only: drop the cache without closing clients."""
         with _lock:
             _cache.clear()
+
+    @staticmethod
+    def invalidate() -> None:
+        """Close and evict stale entries after a profile activation.
+
+        Called by the migration coordinator right after the atomic
+        ``activate_migration`` transaction increments the revision.
+        """
+        with _lock:
+            for repo in _cache.values():
+                try:
+                    repo.close()
+                except Exception:
+                    pass
+            _cache.clear()
+
+
+def _evict_stale(new_key: str) -> None:
+    """If the cache has entries for a different revision of the same backend,
+    close and remove them so only the new revision's adapter is cached.
+
+    Must be called under ``_lock``.
+    """
+    # Extract backend prefix (everything before :r)
+    if ":r" in new_key:
+        prefix = new_key.rsplit(":r", 1)[0]
+    else:
+        return
+    stale_keys = [
+        k for k in _cache
+        if k.startswith(prefix + ":r") and k != new_key
+    ]
+    for k in stale_keys:
+        try:
+            _cache[k].close()
+        except Exception:
+            pass
+        del _cache[k]
