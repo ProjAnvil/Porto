@@ -5,8 +5,6 @@ from llama_index.core.llms import MockLLM
 from llama_index.core.retrievers import BaseRetriever, QueryFusionRetriever
 from llama_index.core.retrievers.fusion_retriever import FUSION_MODES
 from llama_index.core.schema import NodeWithScore, TextNode
-from llama_index.core.vector_stores.types import VectorStoreQuery
-from llama_index.vector_stores.chroma import ChromaVectorStore as LlamaChromaVectorStore
 
 from .bm25_index import Bm25Index
 from .bm25_index import _tokenize_text as _tokenize_query
@@ -14,66 +12,59 @@ from .logging_utils import get_component_logger
 from .models import SourceChunk
 from .rerankers import RERANKER_BACKENDS
 from .settings import Settings
+from .vector_stores import VectorRepository, VectorSearchRequest
 
 logger = get_component_logger("retrieval")
 
 
-def _fetch_texts(collection, ids: list[str]) -> dict[str, tuple[str, dict]]:
-    if not ids:
-        return {}
-    fetched = collection.get(ids=ids, include=["documents", "metadatas"])
-    return {
-        cid: (doc or "", dict(meta or {}))
-        for cid, doc, meta in zip(
-            fetched.get("ids", []),
-            fetched.get("documents", []),
-            fetched.get("metadatas", []),
-            strict=False,
-        )
-    }
-
-
-def vector_search(collection, query_embedding: list[float], top_k: int) -> list[NodeWithScore]:
-    """向量检索：完全委托给 llama-index 的 Chroma 集成做「距离 -> 相似度」换算。
-
-    llama-index 内部对 chroma 返回的 distance 用 ``exp(-distance)`` 转成相似度分数，
-    我们不再自己手写任何 distance/score 公式。
-    """
-    vector_store = LlamaChromaVectorStore(chroma_collection=collection)
-    result = vector_store.query(
-        VectorStoreQuery(query_embedding=query_embedding, similarity_top_k=top_k)
-    )
-    similarities = result.similarities or [0.0] * len(result.nodes)
-    return [
-        NodeWithScore(node=node, score=float(score))
-        for node, score in zip(result.nodes, similarities, strict=False)
-    ]
-
-
 class _VectorNodeRetriever(BaseRetriever):
-    """把 :func:`vector_search`（llama-index Chroma 集成）包装为 BaseRetriever，供
-    ``QueryFusionRetriever`` 使用。"""
+    """Wrap :meth:`VectorRepository.search` as a ``BaseRetriever`` for RRF fusion."""
 
-    def __init__(self, collection, query_embedding: list[float], top_k: int):
+    def __init__(
+        self,
+        repo: VectorRepository,
+        collection: str,
+        query_embedding: list[float],
+        top_k: int,
+    ):
+        self._repo = repo
         self._collection = collection
         self._query_embedding = query_embedding
         self._top_k = top_k
         super().__init__()
 
     def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
-        return vector_search(self._collection, self._query_embedding, self._top_k)
+        hits = self._repo.search(
+            self._collection,
+            VectorSearchRequest(
+                query_embedding=self._query_embedding, top_k=self._top_k,
+            ),
+        )
+        return [
+            NodeWithScore(
+                node=TextNode(text=h.document, id_=h.id, metadata=dict(h.metadata)),
+                score=h.score,
+            )
+            for h in hits
+        ]
 
 
 class _Bm25NodeRetriever(BaseRetriever):
-    """把 llama-index ``BM25Retriever`` 包装为 BaseRetriever，供 ``QueryFusionRetriever`` 使用。
+    """Wrap BM25 + repository fetch as a ``BaseRetriever`` for RRF fusion.
 
-    query 需要用与 corpus 相同的 CJK 预分词（见 bm25_index.py）后再交给底层
-    BM25Retriever；命中的文本/metadata 统一从 chroma 回填（BM25 语料内部存的是预分词后
-    的乱码文本，仅供 BM25 打分使用），确保与向量侧命中同一 chunk 时 node 内容（进而
-    node.hash）一致，RRF 才能正确去重合并分数。
+    query needs CJK pre-tokenisation (same as corpus); hit text/metadata is
+    hydrated from the repository so that node content (and thus node.hash)
+    matches the vector side, allowing RRF to correctly de-duplicate.
     """
 
-    def __init__(self, collection, bm25_index: Bm25Index | None, top_k: int):
+    def __init__(
+        self,
+        repo: VectorRepository,
+        collection: str,
+        bm25_index: Bm25Index | None,
+        top_k: int,
+    ):
+        self._repo = repo
         self._collection = collection
         self._bm25 = bm25_index
         self._top_k = top_k
@@ -86,19 +77,26 @@ class _Bm25NodeRetriever(BaseRetriever):
         hits = retriever.retrieve(_tokenize_query(query_bundle.query_str))
         if not hits:
             return []
-        fetched = _fetch_texts(self._collection, [hit.node.node_id for hit in hits])
+        ids = [hit.node.node_id for hit in hits]
+        records = self._repo.fetch(self._collection, ids)
+        record_map = {r.id: r for r in records}
         nodes: list[NodeWithScore] = []
         for hit in hits:
             cid = hit.node.node_id
-            text, metadata = fetched.get(cid, ("", dict(hit.node.metadata or {})))
-            node = TextNode(text=text, id_=cid, metadata=metadata)
+            record = record_map.get(cid)
+            if record is None:
+                continue
+            node = TextNode(
+                text=record.document, id_=cid, metadata=dict(record.metadata),
+            )
             nodes.append(NodeWithScore(node=node, score=float(hit.score or 0.0)))
         return nodes
 
 
 def hybrid_fusion_search(
     *,
-    collection,
+    repo: VectorRepository,
+    collection: str,
     query_embedding: list[float],
     query_text: str,
     bm25_index: Bm25Index | None,
@@ -106,11 +104,12 @@ def hybrid_fusion_search(
     candidate_k: int,
     vector_weight: float,
 ) -> list[NodeWithScore]:
-    """用 llama-index ``QueryFusionRetriever``（reciprocal_rerank/RRF）融合向量 + BM25 候选。"""
+    """Use llama-index ``QueryFusionRetriever`` (reciprocal_rerank/RRF) to fuse
+    vector + BM25 candidates sourced entirely from the repository protocol."""
     vector_weight = min(max(vector_weight, 0.0), 1.0)
     retrievers: list[BaseRetriever] = [
-        _VectorNodeRetriever(collection, query_embedding, candidate_k),
-        _Bm25NodeRetriever(collection, bm25_index, candidate_k),
+        _VectorNodeRetriever(repo, collection, query_embedding, candidate_k),
+        _Bm25NodeRetriever(repo, collection, bm25_index, candidate_k),
     ]
     fusion = QueryFusionRetriever(
         retrievers,

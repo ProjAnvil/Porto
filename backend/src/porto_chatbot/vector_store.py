@@ -21,8 +21,9 @@ from .embeddings import EmbeddingClient
 from .logging_utils import get_component_logger
 from .models import IndexStats, SourceChunk
 from .models.enums import EmbeddingProvider, RetrievalMethod
-from .retrieval import hybrid_fusion_search, rerank_chunks, vector_search
+from .retrieval import hybrid_fusion_search, rerank_chunks
 from .settings import Settings
+from .vector_stores import ChromaVectorRepository, VectorRecord, VectorSearchRequest
 
 COLLECTION_METADATA_KEYS = {
     "embedding_provider",
@@ -54,6 +55,7 @@ class ChromaVectorStore:
         self.logger = get_component_logger("vector_store", settings)
         self.settings.chroma_dir.mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=str(self.settings.chroma_dir))
+        self._repo = ChromaVectorRepository(self.settings.chroma_dir)
         self.embeddings = EmbeddingClient(settings)
         self.logger.info(
             "vector store ready backend=chroma collection=%s chroma_dir=%s",
@@ -200,11 +202,12 @@ class ChromaVectorStore:
             )
             return []
         method = self.settings.retrieval_method
+        collection_name = self.settings.vector_collection
         if method == RetrievalMethod.VECTOR:
-            return self._vector_search(collection, query_embedding, top_k)
+            return self._vector_search(collection_name, query_embedding, top_k)
         if method == RetrievalMethod.BM25:
-            return self._bm25_search(collection, query, top_k)
-        return self._hybrid_search(collection, query_embedding, query, top_k)
+            return self._bm25_search(collection_name, query, top_k)
+        return self._hybrid_search(collection_name, query_embedding, query, top_k)
 
     def search(self, query: str, top_k: int | None = None) -> list[SourceChunk]:
         resolved_top_k = top_k or self.settings.top_k
@@ -218,20 +221,6 @@ class ChromaVectorStore:
         self.logger.info("search finish method=%s results=%s", method, len(rows))
         return rows
 
-    def _fetch_chunks(self, collection, ids: list[str]) -> dict[str, tuple[str, dict]]:
-        if not ids:
-            return {}
-        fetched = collection.get(ids=ids, include=["documents", "metadatas"])
-        return {
-            cid: (doc or "", dict(meta or {}))
-            for cid, doc, meta in zip(
-                fetched.get("ids", []),
-                fetched.get("documents", []),
-                fetched.get("metadatas", []),
-                strict=False,
-            )
-        }
-
     def _to_source(self, cid: str, text: str, metadata: dict, score: float) -> SourceChunk:
         return SourceChunk(
             id=cid,
@@ -242,16 +231,18 @@ class ChromaVectorStore:
             metadata=metadata,
         )
 
-    def _vector_search(self, collection, query_embedding, top_k: int) -> list[SourceChunk]:
-        nodes = vector_search(collection, query_embedding, top_k)
+    def _vector_search(
+        self, collection_name: str, query_embedding: list[float], top_k: int,
+    ) -> list[SourceChunk]:
+        hits = self._repo.search(
+            collection_name,
+            VectorSearchRequest(query_embedding=query_embedding, top_k=top_k),
+        )
         return [
-            self._to_source(
-                n.node.id_, n.node.text or "", dict(n.node.metadata or {}), float(n.score or 0.0)
-            )
-            for n in nodes
+            self._to_source(h.id, h.document, h.metadata, h.score) for h in hits
         ]
 
-    def _bm25_search(self, collection, query: str, top_k: int) -> list[SourceChunk]:
+    def _bm25_search(self, collection_name: str, query: str, top_k: int) -> list[SourceChunk]:
         bm = Bm25Registry.get(self.settings)
         if bm is None:
             self.logger.info("bm25 search skipped index absent")
@@ -259,19 +250,24 @@ class ChromaVectorStore:
         candidates = bm.query(query, top_k)  # [(chroma_id, metadata, score)]
         if not candidates:
             return []
-        fetched = self._fetch_chunks(collection, [c[0] for c in candidates])
+        records = self._repo.fetch(collection_name, [c[0] for c in candidates])
+        record_map = {r.id: r for r in records}
         rows: list[SourceChunk] = []
         for cid, meta, _score in candidates:
-            text, metadata = fetched.get(cid, ("", meta))
-            rows.append(self._to_source(cid, text, metadata, 0.0))
+            record = record_map.get(cid)
+            if record is not None:
+                rows.append(self._to_source(cid, record.document, record.metadata, 0.0))
+            else:
+                rows.append(self._to_source(cid, "", meta, 0.0))
         return rows
 
     def _hybrid_search(
-        self, collection, query_embedding, query: str, top_k: int
+        self, collection_name: str, query_embedding, query: str, top_k: int,
     ) -> list[SourceChunk]:
         bm = Bm25Registry.get(self.settings)
         nodes = hybrid_fusion_search(
-            collection=collection,
+            repo=self._repo,
+            collection=collection_name,
             query_embedding=query_embedding,
             query_text=query,
             bm25_index=bm,
@@ -304,12 +300,11 @@ class ChromaVectorStore:
         if embeddings:
             dimensions = len(embeddings[0])
             self._set_collection_metadata(collection, embedding_dimensions=dimensions)
-        collection.add(
-            ids=ids,
-            documents=texts,
-            metadatas=metadata,
-            embeddings=embeddings,
-        )
+        records = [
+            VectorRecord(id=rid, embedding=list(emb), document=text, metadata=dict(meta))
+            for rid, emb, text, meta in zip(ids, embeddings, texts, metadata, strict=False)
+        ]
+        self._repo.upsert(self.settings.vector_collection, records)
 
     def _reset_collection(self, name: str) -> None:
         try:
