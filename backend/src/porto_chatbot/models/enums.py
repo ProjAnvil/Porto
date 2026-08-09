@@ -162,6 +162,12 @@ class FactAction(StrEnum):
     RETRACT = "retract"
 
 
+# ── Vector Backend ──
+class VectorBackend(StrEnum):
+    CHROMA = "chroma"
+    MILVUS = "milvus"
+
+
 # ── 截断原因 ──
 class TruncationReason(StrEnum):
     TOOL_LOOP_TRUNCATED = "tool_loop_truncated"

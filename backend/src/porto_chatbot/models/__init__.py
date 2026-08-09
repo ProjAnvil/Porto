@@ -36,6 +36,7 @@ from .enums import (
     StepStatus,
     SubsystemType,
     TruncationReason,
+    VectorBackend,
     WorkflowRunState,
 )
 from .evaluation import (
@@ -122,5 +123,6 @@ __all__ = [
     "StepStatus",
     "SubsystemType",
     "TruncationReason",
+    "VectorBackend",
     "WorkflowRunState",
 ]
