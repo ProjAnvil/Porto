@@ -7,6 +7,7 @@ import type {
   IndexJobStatus,
   KbStats,
   MessageRecord,
+  MigrationStatusResponse,
   Paginated,
   RagChatConfig,
   RagConfig,
@@ -350,4 +351,30 @@ export async function deleteVectorProfile(profileId: string): Promise<void> {
     method: "DELETE",
   });
   if (!resp.ok) throw new Error(await resp.text());
+}
+
+// ── Vector Migration ──
+
+export async function startMigration(): Promise<MigrationStatusResponse> {
+  return parseJson<MigrationStatusResponse>(
+    await fetch("/api/vector-databases/migrate", { method: "POST" }),
+  );
+}
+
+export async function getMigrationStatus(): Promise<MigrationStatusResponse> {
+  return parseJson<MigrationStatusResponse>(
+    await fetch("/api/vector-databases/migrate"),
+  );
+}
+
+export async function retryMigration(): Promise<MigrationStatusResponse> {
+  return parseJson<MigrationStatusResponse>(
+    await fetch("/api/vector-databases/migrate/retry", { method: "POST" }),
+  );
+}
+
+export async function cancelMigration(): Promise<MigrationStatusResponse> {
+  return parseJson<MigrationStatusResponse>(
+    await fetch("/api/vector-databases/migrate/cancel", { method: "POST" }),
+  );
 }

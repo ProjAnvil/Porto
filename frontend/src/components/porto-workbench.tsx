@@ -47,12 +47,16 @@ import {
   getAppSettings,
   getHealth,
   getKbStats,
+  getMigrationStatus,
   getWorkflow,
   indexKnowledgeBase,
   listMessages,
   rerunStep,
   saveAppSettings,
   saveStepOutput,
+  startMigration,
+  retryMigration,
+  cancelMigration,
   updateWorkflowSpec,
   uploadChatFile,
   deleteVectorProfile,
@@ -68,6 +72,9 @@ import type {
   InspectorState,
   KbStats,
   MessageRecord,
+  MigrationPhase,
+  MigrationStatus,
+  MigrationStatusResponse,
   RagChatConfig,
   RagConfig,
   RagWorkflowConfig,
@@ -82,6 +89,7 @@ import type {
   WorkflowOutputEntry,
   WorkflowStepName,
 } from "@/lib/types";
+import { MIGRATION_PHASE_LABELS } from "@/lib/types";
 import { ArchitectureView } from "@/components/architecture-view";
 import { SessionList } from "@/components/session-list";
 import { WorkflowList } from "@/components/workflow-list";
@@ -4090,6 +4098,9 @@ function VectorDatabaseSettings() {
   const [memBase, setMemBase] = useState("porto_memory");
   const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
   const [saveMsg, setSaveMsg] = useState("");
+  const [showMigrateModal, setShowMigrateModal] = useState(false);
+  const [migration, setMigration] = useState<MigrationStatusResponse | null>(null);
+  const [migrating, setMigrating] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -4101,9 +4112,34 @@ function VectorDatabaseSettings() {
     setLoading(false);
   }
 
+  async function refreshMigration() {
+    try {
+      const mig = await getMigrationStatus();
+      setMigration(mig);
+      if (mig.status === "running") {
+        setMigrating(true);
+      } else {
+        setMigrating(false);
+        if (mig.status === "succeeded") {
+          await refresh();
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   useEffect(() => {
     refresh();
+    refreshMigration();
   }, []);
+
+  // Poll migration status while running
+  useEffect(() => {
+    if (!migrating) return;
+    const interval = setInterval(refreshMigration, 2000);
+    return () => clearInterval(interval);
+  }, [migrating]);
 
   async function handleTest() {
     setTestResult(null);
@@ -4147,13 +4183,50 @@ function VectorDatabaseSettings() {
         memory_collection_base: memBase,
       });
       if (resp.migration_required) {
-        setSaveMsg("已保存为 pending。迁移支持将在后续版本中启用。");
+        setShowMigrateModal(true);
       } else {
         setSaveMsg("已保存。存储标识未变化，无需迁移。");
       }
       await refresh();
     } catch {
       setSaveMsg("保存失败");
+    }
+  }
+
+  async function handleMigrateNow() {
+    setShowMigrateModal(false);
+    setMigrating(true);
+    try {
+      await startMigration();
+      await refreshMigration();
+    } catch {
+      setMigrating(false);
+      setSaveMsg("启动迁移失败");
+    }
+  }
+
+  async function handleMigrateLater() {
+    setShowMigrateModal(false);
+    setSaveMsg("已保存。可稍后点击「开始迁移」执行。");
+  }
+
+  async function handleRetry() {
+    setMigrating(true);
+    try {
+      await retryMigration();
+      await refreshMigration();
+    } catch {
+      setMigrating(false);
+      setSaveMsg("重试失败");
+    }
+  }
+
+  async function handleCancel() {
+    try {
+      await cancelMigration();
+      await refreshMigration();
+    } catch {
+      setSaveMsg("取消失败");
     }
   }
 
@@ -4166,6 +4239,14 @@ function VectorDatabaseSettings() {
       setSaveMsg("删除失败");
     }
   }
+
+  const isRunning = migration?.status === "running";
+  const canRetry =
+    migration?.status === "failed" ||
+    migration?.status === "interrupted" ||
+    migration?.status === "cancelled";
+  const canCancel =
+    isRunning && migration?.phase !== "activating";
 
   return (
     <div className="space-y-4">
@@ -4204,13 +4285,56 @@ function VectorDatabaseSettings() {
               删除
             </button>
           </div>
-          {saveMsg.includes("pending") && (
-            <p className="mt-1 text-xs text-amber-600">{saveMsg}</p>
+          {!isRunning && !canRetry && (
+            <button
+              onClick={handleMigrateNow}
+              className="mt-2 rounded-md bg-amber-600 px-3 py-1 text-xs text-white hover:bg-amber-700"
+            >
+              开始迁移
+            </button>
           )}
         </div>
       )}
       {saveMsg && !state?.pending && (
         <p className="text-xs text-zinc-500">{saveMsg}</p>
+      )}
+
+      {/* Migration progress */}
+      {migration && migration.status && (
+        <MigrationProgress
+          migration={migration}
+          onRetry={handleRetry}
+          onCancel={handleCancel}
+          canRetry={canRetry}
+          canCancel={canCancel}
+        />
+      )}
+
+      {/* Migrate-now / Migrate-later modal */}
+      {showMigrateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-96 rounded-lg bg-white p-6 shadow-xl">
+            <h4 className="mb-2 text-base font-semibold">需要数据迁移</h4>
+            <p className="mb-4 text-sm text-zinc-600">
+              向量数据库配置已保存。现有的知识库和对话记忆数据需要迁移后才能切换到新数据库。
+              迁移期间当前数据库继续正常服务。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={handleMigrateLater}
+                className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
+              >
+                稍后迁移
+              </button>
+              <button
+                onClick={handleMigrateNow}
+                className="rounded-md bg-zinc-950 px-4 py-2 text-sm text-white hover:bg-zinc-800"
+              >
+                立即迁移
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Configuration form */}
@@ -4354,6 +4478,125 @@ function VectorDatabaseSettings() {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+function MigrationProgress({
+  migration,
+  onRetry,
+  onCancel,
+  canRetry,
+  canCancel,
+}: {
+  migration: MigrationStatusResponse;
+  onRetry: () => void;
+  onCancel: () => void;
+  canRetry: boolean;
+  canCancel: boolean;
+}) {
+  const phase = migration.phase as MigrationPhase | null;
+  const status = migration.status as MigrationStatus | null;
+  const kbPct =
+    migration.kb_total > 0
+      ? Math.round((migration.kb_copied / migration.kb_total) * 100)
+      : 0;
+  const memPct =
+    migration.memory_total > 0
+      ? Math.round((migration.memory_copied / migration.memory_total) * 100)
+      : 0;
+
+  const statusColor =
+    status === "succeeded"
+      ? "bg-green-600"
+      : status === "failed" || status === "interrupted"
+        ? "bg-red-500"
+        : status === "cancelled"
+          ? "bg-zinc-400"
+          : "bg-blue-500";
+
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <span className={`rounded ${statusColor} px-2 py-0.5 text-xs text-white`}>
+          {status === "running" && phase
+            ? MIGRATION_PHASE_LABELS[phase]
+            : status}
+        </span>
+        {status === "running" && (
+          <Loader2 size={14} className="animate-spin text-zinc-400" />
+        )}
+      </div>
+
+      {/* Progress bars */}
+      {(migration.kb_total > 0 || migration.memory_total > 0) && (
+        <div className="mb-3 space-y-2">
+          {migration.kb_total > 0 && (
+            <div>
+              <div className="mb-0.5 flex justify-between text-xs text-zinc-500">
+                <span>知识库</span>
+                <span>
+                  {migration.kb_copied} / {migration.kb_total}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200">
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-all"
+                  style={{ width: `${kbPct}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {migration.memory_total > 0 && (
+            <div>
+              <div className="mb-0.5 flex justify-between text-xs text-zinc-500">
+                <span>对话记忆</span>
+                <span>
+                  {migration.memory_copied} / {migration.memory_total}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200">
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-all"
+                  style={{ width: `${memPct}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Error display */}
+      {migration.error && (
+        <p className="mb-2 text-xs text-red-500">⚠ {migration.error}</p>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-2">
+        {canRetry && (
+          <button
+            onClick={onRetry}
+            className="rounded-md bg-zinc-950 px-3 py-1 text-xs text-white hover:bg-zinc-800"
+          >
+            重试
+          </button>
+        )}
+        {canCancel && (
+          <button
+            onClick={onCancel}
+            className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-50"
+          >
+            取消
+          </button>
+        )}
+      </div>
+
+      {/* Heartbeat */}
+      {migration.heartbeat_at && status === "running" && (
+        <p className="mt-1 text-xs text-zinc-400">
+          心跳: {new Date(migration.heartbeat_at).toLocaleTimeString()}
+        </p>
+      )}
     </div>
   );
 }

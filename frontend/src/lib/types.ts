@@ -330,3 +330,43 @@ export type TestConnectionResult = {
   status: "ok" | "error";
   detail: string;
 };
+
+// ── Vector Migration ──
+
+export type MigrationStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "interrupted"
+  | "cancelled";
+
+export type MigrationPhase =
+  | "copying"
+  | "catching_up"
+  | "finalizing"
+  | "verifying"
+  | "activating";
+
+export type MigrationStatusResponse = {
+  id: string | null;
+  source_profile_id: string | null;
+  target_profile_id: string | null;
+  status: MigrationStatus | null;
+  phase: MigrationPhase | null;
+  kb_total: number;
+  kb_copied: number;
+  memory_total: number;
+  memory_copied: number;
+  heartbeat_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+};
+
+export const MIGRATION_PHASE_LABELS: Record<MigrationPhase, string> = {
+  copying: "复制数据",
+  catching_up: "增量同步",
+  finalizing: "收尾屏障",
+  verifying: "验证一致性",
+  activating: "激活切换",
+};
