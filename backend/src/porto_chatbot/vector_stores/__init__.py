@@ -15,6 +15,7 @@ from .base import (
 )
 from .chroma import ChromaVectorRepository
 from .factory import VectorRepositoryFactory
+from .milvus import MilvusVectorRepository
 
 __all__ = [
     "CollectionInfo",
@@ -31,4 +32,5 @@ __all__ = [
     "VectorStoreError",
     "VectorStoreHealth",
     "ChromaVectorRepository",
+    "MilvusVectorRepository",
 ]
