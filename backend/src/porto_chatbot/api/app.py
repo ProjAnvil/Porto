@@ -16,6 +16,7 @@ from .routes import (
     knowledge,
     sessions,
     vector_databases,
+    vector_migrations,
     workflow,
 )
 from .routes import (
@@ -44,6 +45,10 @@ async def lifespan(app: FastAPI):
     deploy_skills(settings.data_dir)
     supervisor = get_index_supervisor()
     health = get_health_monitor()
+    # Interrupt stale vector migrations before starting services
+    from ..vector_migrations.store import VectorMigrationStore
+
+    VectorMigrationStore(settings).interrupt_stale()
     supervisor.start()
     health.start()
     n = get_workflow_executor().recover_on_startup()
@@ -100,6 +105,7 @@ async def log_requests(request: Request, call_next):
 app.include_router(settings_routes.router)
 app.include_router(knowledge.router)
 app.include_router(vector_databases.router)
+app.include_router(vector_migrations.router)
 app.include_router(chat.router)
 app.include_router(workflow.router)
 app.include_router(sessions.router)
