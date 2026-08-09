@@ -446,8 +446,6 @@ class MilvusVectorRepository:
     # ── Milvus-specific (not part of the protocol) ──
 
     def drop_collection(self, name: str) -> None:
-        import traceback
-        logger.warning("DROP_COLLECTION caller stack for %s:\n%s", name, "".join(traceback.format_stack()))
         try:
             self._client.drop_collection(name)
         except Exception:

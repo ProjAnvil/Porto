@@ -101,57 +101,11 @@ uv run pytest
 
 ---
 
-## 4. AI Foundation 本地数据基建
-
-独立的 `compose.ai-foundation.yml` 提供 PostgreSQL + pgvector、ChromaDB 和 Milvus Standalone，不会构建或启动 Porto 前后端。Docker Desktop（macOS）需为 Milvus 分配至少 8 GB 内存；命令要求 Docker Compose V2。
-
-```bash
-make ai-foundation-up       # 启动
-make ai-foundation-status   # 查看状态
-make ai-foundation-logs     # 持续查看日志，Ctrl-C 退出
-make ai-foundation-down     # 停止并删除容器，保留本地数据
-```
-
-也可以直接运行 `docker compose -f compose.ai-foundation.yml <command>`。容器在 Docker Desktop 中归入 `ai-foundation` 项目组，三个宿主机入口都只绑定到本机回环地址：
-
-| 基础设施 | 本地入口 | 默认连接信息 |
-|---|---|---|
-| PostgreSQL + pgvector | `127.0.0.1:25432` | 数据库 `porto`，用户 `porto`，密码 `porto-local-dev` |
-| ChromaDB | `http://127.0.0.1:28000` | 无认证，本地开发使用 |
-| Milvus | `127.0.0.1:29530` | Standalone gRPC/SDK 入口 |
-
-PostgreSQL 的默认连接信息可以在启动命令前覆盖：
-
-```bash
-AI_FOUNDATION_POSTGRES_DB=mydb \
-AI_FOUNDATION_POSTGRES_USER=myuser \
-AI_FOUNDATION_POSTGRES_PASSWORD='replace-me' \
-make ai-foundation-up
-```
-
-首次初始化 PostgreSQL 时会自动执行 `CREATE EXTENSION IF NOT EXISTS vector`。环境变量仅在空数据目录首次初始化时决定数据库和账号；已有数据不会因修改变量而自动迁移。
-
-所有状态使用 bind mount 写入仓库本地并按服务分类：
-
-```text
-data/ai-foundation/
-├── postgres/
-├── chroma/
-└── milvus/
-    ├── etcd/
-    ├── minio/
-    └── data/
-```
-
-`make ai-foundation-down` 不会删除这些目录。手动删除 `data/ai-foundation/` 会不可恢复地清空数据库，本项目故意不提供自动清理命令。
-
----
-
-## 5. 向量数据库迁移运维
+## 4. 向量数据库迁移运维
 
 当用户在 Settings → Vector Database 中保存一个与当前 active profile 存储标识不同的新配置时，后端将其记录为 pending 并返回 `migration_required: true`。前端弹出「立即迁移 / 稍后迁移」模态框。
 
-### 5.1 迁移阶段
+### 4.1 迁移阶段
 
 迁移在后台线程中执行，全程不阻塞前端。Source profile（通常是 Chroma）在迁移完成前继续正常服务所有读写。
 
@@ -165,21 +119,21 @@ data/ai-foundation/
 
 成功后前端自动刷新 active/pending 状态。
 
-### 5.2 稍后迁移
+### 4.2 稍后迁移
 
 选择「稍后迁移」会关闭模态框，pending profile 保留在 Settings 中并显示琥珀色 Pending 横幅。横幅上有「开始迁移」按钮，随时可以发起迁移。刷新或离开页面不会丢失状态——迁移记录持久化在 SQLite 中。
 
-### 5.3 重试
+### 4.3 重试
 
 迁移在 `failed`、`interrupted`、`cancelled` 状态下可以重试。重试利用已持久化的 receipt 和幂等 upsert 从上次中断处恢复，不会重复复制已成功写入的记录。
 
-### 5.4 取消 vs 清理
+### 4.4 取消 vs 清理
 
 **取消**（Cancel）只在 `activating` 阶段之前可用。取消只是停止当前工作——已写入目标库的数据不会被删除，source profile 继续服务。
 
 **清理**是独立操作：在 Settings 中删除 pending profile 时触发。系统会删除该 profile 的物理 collection。只有 inactive 的 profile 可以被删除，active profile 无法删除。
 
-### 5.5 Source 保留
+### 4.5 Source 保留
 
 迁移成功后，原 source profile 标记为 `inactive` 但其物理 collection 不会被自动删除。这支持以下场景：
 
@@ -187,11 +141,11 @@ data/ai-foundation/
 - **审计**：检查迁移前后数据一致性
 - **清理**：确认无误后通过 Settings 界面删除 inactive profile
 
-### 5.6 凭据轮换
+### 4.6 凭据轮换
 
 修改 profile 的 timeout、token、username 或 password 不需要迁移——这些字段的变更不会改变 storage identity。凭据是 write-only 的：API 响应和日志中永远不会返回凭据值。
 
-### 5.7 中断恢复
+### 4.7 中断恢复
 
 进程崩溃或重启时：
 1. 启动时自动将残留的 `running` 迁移标记为 `interrupted`
@@ -200,11 +154,11 @@ data/ai-foundation/
 
 ---
 
-## 6. 生产部署
+## 5. 生产部署
 
 两种打包方式，任选其一。
 
-### 6.1 捆绑部署（单进程 / 单端口，推荐单机一键启动）
+### 5.1 捆绑部署（单进程 / 单端口，推荐单机一键启动）
 
 前端 `next build --output export` 产出纯静态文件，由后端 FastAPI 同源托管（`/` 返回页面，`/api/*` 走接口），只需一个进程、一个端口。
 
@@ -214,7 +168,7 @@ make bundle-start          # 本地：构建静态前端 + 启动单一 uvicorn 
 make docker-run-bundled    # 单镜像单容器，端口 8100，挂载 porto-chatbot-data 卷
 ```
 
-### 6.2 前后端分离部署（各自独立扩缩容 / 发布）
+### 5.2 前后端分离部署（各自独立扩缩容 / 发布）
 
 后端 `uvicorn` 与前端 `next start`（自带 Node 服务，通过 rewrites 代理 `/api/*` 到 `PORTO_API_BASE_URL`）分别运行，可部署到不同主机 / 容器。
 
@@ -228,7 +182,7 @@ docker build -t porto-chatbot-frontend -f frontend/Dockerfile frontend
 
 ---
 
-## 7. Makefile 命令速查
+## 6. Makefile 命令速查
 
 | 命令 | 作用 |
 |------|------|
@@ -238,7 +192,5 @@ docker build -t porto-chatbot-frontend -f frontend/Dockerfile frontend
 | `make status` / `make logs` / `make logs-follow` | 查看运行状态 / 日志 |
 | `make bundle-start` | 捆绑单进程启动（先构建静态前端） |
 | `make compose-up` / `make compose-down` | docker compose 起 / 停双容器 |
-| `make ai-foundation-up` / `make ai-foundation-down` | 启动 / 停止本地数据基建（保留数据） |
-| `make ai-foundation-status` / `make ai-foundation-logs` | 查看数据基建状态 / 持续日志 |
 | `make docker-run-bundled` | 单镜像捆绑容器 |
 | `make clean` | 停止所有进程 |
