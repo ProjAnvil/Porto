@@ -1,107 +1,122 @@
-"""ConversationMemory — 纯 ChromaDB 向量操作层。
+"""ConversationMemory — vector repository operations with SQLite hydration.
 
-只做 index/search/count/reset，不碰 SQLite。session_id 在 search 中必填。
+Uses a :class:`VectorRepository` for indexing/search and :class:`SessionStore`
+for canonical text hydration.  Dimension mismatches degrade gracefully without
+auto-reset.
 """
 from __future__ import annotations
-
-import chromadb
 
 from ..embeddings import EmbeddingClient
 from ..logging_utils import get_component_logger
 from ..models import MessageRecord, SourceChunk
 from ..settings import Settings
+from ..vector_stores import (
+    ChromaVectorRepository,
+    CollectionSpec,
+    DimensionMismatchError,
+    DistanceMetric,
+    VectorRecord,
+    VectorRepository,
+    VectorSearchRequest,
+)
+from .session_store import SessionStore
 
 
 class ConversationMemory:
-    """ChromaDB 层：会话向量的索引与检索。"""
+    """Vector indexing and retrieval backed by a VectorRepository."""
 
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        repo: VectorRepository | None = None,
+        session_store: SessionStore | None = None,
+    ):
         self.settings = settings
         self.logger = get_component_logger("conv_memory", settings)
-        self.settings.chroma_dir.mkdir(parents=True, exist_ok=True)
+        self._session_store = session_store or SessionStore(settings)
+        self._repo = repo or ChromaVectorRepository(settings.chroma_dir)
+        self._collection_name = settings.memory_collection
+        self._spec = CollectionSpec(
+            name=settings.memory_collection,
+            dimension=settings.embedding_dimensions,
+            metric=DistanceMetric.L2,
+            metadata={"kind": "memory"},
+        )
+        self._repo.ensure_collection(self._spec)
         self.embeddings = EmbeddingClient(settings)
-        self.client = chromadb.PersistentClient(path=str(settings.chroma_dir))
-        self.collection = self.client.get_or_create_collection(settings.memory_collection)
         self.logger.info(
             "conversation memory ready collection=%s", settings.memory_collection,
         )
 
     def index(self, records: list[MessageRecord]) -> None:
-        """批量 embedding + 写入 ChromaDB。metadata 含 session_id/role/intent/created_at/message_id。
+        """Batch embedding + repository upsert.
 
-        失败时抛异常（维度不匹配则自动 reset 重试），由调用方决定降级策略。
+        Raises :class:`DimensionMismatchError` on dimension conflict — the
+        caller decides the degradation strategy.  Never auto-resets.
         """
         if not records:
             return
         embeddings = self.embeddings.embed_documents([r.content for r in records])
-        ids = [r.id for r in records]
-        documents = [r.content for r in records]
-        metadatas = [
-            {
-                "session_id": r.session_id,
-                "role": r.role,
-                "intent": r.intent or "",
-                "created_at": r.created_at,
-                "message_id": r.id,
-            }
-            for r in records
+        vector_records = [
+            VectorRecord(
+                id=r.id,
+                embedding=list(emb),
+                document=r.content,
+                metadata={
+                    "session_id": r.session_id,
+                    "role": r.role,
+                    "intent": r.intent or "",
+                    "created_at": r.created_at,
+                    "message_id": r.id,
+                },
+            )
+            for r, emb in zip(records, embeddings, strict=False)
         ]
-        try:
-            self.collection.add(
-                ids=ids,
-                documents=documents,
-                metadatas=metadatas,
-                embeddings=embeddings,
-            )
-        except Exception as exc:
-            if "dimension" not in str(exc).lower():
-                raise
-            self.logger.warning("memory collection dim mismatch on index, rebuilding: %s", exc)
-            self.reset()
-            self.collection.add(
-                ids=ids,
-                documents=documents,
-                metadatas=metadatas,
-                embeddings=embeddings,
-            )
+        self._repo.upsert(self._collection_name, vector_records)
         self.logger.info("memory indexed records=%s", len(records))
 
     def search(
         self, query: str, *, session_id: str, top_k: int = 5,
     ) -> list[SourceChunk]:
-        """session 隔离的向量检索。session_id 必填。"""
-        if self.collection.count() == 0:
+        """Session-isolated vector search with SQLite text hydration."""
+        if self._repo.count(self._collection_name) == 0:
             return []
         query_embedding = self.embeddings.embed_query(query)
         try:
-            result = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k,
-                where={"session_id": session_id},
-                include=["documents", "metadatas", "distances"],
+            hits = self._repo.search(
+                self._collection_name,
+                VectorSearchRequest(
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                    where={"session_id": session_id},
+                ),
             )
-        except Exception as exc:
-            if "dimension" not in str(exc).lower():
-                raise
-            self.logger.warning("memory collection dim mismatch on search, rebuilding: %s", exc)
-            self.reset()
+        except DimensionMismatchError:
+            self.logger.warning(
+                "memory dimension mismatch on search, degrading to empty",
+            )
             return []
+
+        if not hits:
+            return []
+
+        # Hydrate canonical text from SQLite by message ID.
+        messages = self._session_store.get_messages_by_ids([h.id for h in hits])
+
         rows: list[SourceChunk] = []
-        for item_id, doc, metadata, distance in zip(
-            result.get("ids", [[]])[0],
-            result.get("documents", [[]])[0],
-            result.get("metadatas", [[]])[0],
-            result.get("distances", [[]])[0],
-            strict=False,
-        ):
+        for hit in hits:
+            msg = messages.get(hit.id)
+            if msg is None:
+                continue  # message deleted from SQLite — omit
             rows.append(
                 SourceChunk(
-                    id=item_id,
-                    path=f"memory:{metadata.get('session_id', '')}",
-                    title=str(metadata.get("role", "memory")),
-                    text=doc or "",
-                    score=round(1.0 / (1.0 + max(0.0, float(distance))), 4),
-                    metadata=dict(metadata),
+                    id=hit.id,
+                    path=f"memory:{msg.session_id}",
+                    title=str(msg.role),
+                    text=msg.content,
+                    score=round(hit.score, 4),
+                    metadata=dict(hit.metadata),
                 )
             )
         self.logger.info(
@@ -111,18 +126,21 @@ class ConversationMemory:
         return rows
 
     def count(self, session_id: str | None = None) -> int:
-        """向量数。可选按 session 过滤。"""
+        """Vector count, optionally filtered by session.
+
+        Without a session, delegates to the repository.  With a session,
+        counts indexed messages in SQLite for accuracy.
+        """
         if session_id is None:
-            return self.collection.count()
-        # ChromaDB count with where filter
-        result = self.collection.get(where={"session_id": session_id})
-        return len(result.get("ids", []))
+            return self._repo.count(self._collection_name)
+        return self._session_store.count_indexed(session_id)
 
     def reset(self) -> None:
-        """重建 collection（embedding 维度变化等场景）。注意：会清空向量记忆。"""
-        try:
-            self.client.delete_collection(self.settings.memory_collection)
-        except Exception:
-            self.logger.info("memory collection reset skipped (not existed)")
-        self.collection = self.client.get_or_create_collection(self.settings.memory_collection)
+        """Clear all vectors (dimension change, etc.).  Note: erases vector memory."""
+        if hasattr(self._repo, "drop_collection"):
+            self._repo.drop_collection(self._collection_name)
+        else:
+            for batch in self._repo.export_batches(self._collection_name, 500):
+                self._repo.delete(self._collection_name, [r.id for r in batch])
+        self._repo.ensure_collection(self._spec)
         self.logger.info("memory collection reset done")

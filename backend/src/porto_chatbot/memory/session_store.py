@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -275,6 +276,32 @@ class SessionStore:
                 [(mid,) for mid in message_ids],
             )
             conn.commit()
+
+    def get_messages_by_ids(self, ids: Sequence[str]) -> dict[str, MessageRecord]:
+        """Bulk-fetch messages by primary key in one parameterized query."""
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT id, session_id, role, content, intent, indexed, created_at "
+                f"FROM messages WHERE id IN ({placeholders})",
+                list(ids),
+            ).fetchall()
+        return {row[0]: self._row_to_msg(row) for row in rows}
+
+    def count_indexed(self, session_id: str | None = None) -> int:
+        """Count indexed messages, optionally filtered by session."""
+        if session_id is None:
+            with self._conn() as conn:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE indexed=1",
+                ).fetchone()[0]
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id=? AND indexed=1",
+                (session_id,),
+            ).fetchone()[0]
 
     @staticmethod
     def _row_to_msg(row: sqlite3.Row) -> MessageRecord:

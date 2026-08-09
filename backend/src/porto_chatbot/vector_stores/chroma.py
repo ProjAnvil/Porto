@@ -247,3 +247,13 @@ class ChromaVectorRepository:
     def close(self) -> None:
         """ChromaDB PersistentClient has no explicit close."""
         pass
+
+    # ── Chroma-specific (not part of the protocol) ──
+
+    def drop_collection(self, name: str) -> None:
+        """Drop a collection entirely.  Chroma-specific convenience."""
+        try:
+            self._client.delete_collection(name)
+        except Exception:
+            logger.info("collection drop skipped name=%s", name)
+        self._specs.pop(name, None)
