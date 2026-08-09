@@ -15,6 +15,7 @@ from .routes import (
     chat,
     knowledge,
     sessions,
+    vector_databases,
     workflow,
 )
 from .routes import (
@@ -98,6 +99,7 @@ async def log_requests(request: Request, call_next):
 
 app.include_router(settings_routes.router)
 app.include_router(knowledge.router)
+app.include_router(vector_databases.router)
 app.include_router(chat.router)
 app.include_router(workflow.router)
 app.include_router(sessions.router)
