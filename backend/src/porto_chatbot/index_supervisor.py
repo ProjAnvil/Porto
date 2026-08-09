@@ -135,7 +135,7 @@ class IndexSupervisor:
         gen_store = KbGenerationStore(req.settings)
 
         # Allocate an immutable generation for this build.
-        gen = gen_store.allocate()
+        gen = gen_store.allocate(profile_id="default")
 
         def progress_cb(done: int, total: int, chunks_done: int) -> None:
             self._lock_store.update_progress(
@@ -156,7 +156,7 @@ class IndexSupervisor:
                     f"build verification failed: expected {stats.chunks} chunks, "
                     f"got {actual}",
                 )
-            gen_store.activate(gen.id)
+            gen_store.activate(gen.id, profile_id="default")
         except Exception:
             gen_store.mark_failed(gen.id)
             raise

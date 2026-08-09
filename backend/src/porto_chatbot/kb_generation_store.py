@@ -46,11 +46,13 @@ class KbGenerationStore:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS kb_generations (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id      TEXT NOT NULL DEFAULT 'default',
                     collection_name TEXT NOT NULL UNIQUE,
                     bm25_path       TEXT NOT NULL,
                     status          TEXT NOT NULL DEFAULT 'building',
                     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
                 );
+                CREATE INDEX IF NOT EXISTS idx_kb_gen_profile ON kb_generations(profile_id);
             """)
             conn.commit()
 
@@ -69,46 +71,49 @@ class KbGenerationStore:
 
     # ── operations ──
 
-    def allocate(self) -> KbGeneration:
-        """Create a new generation in ``building`` state."""
+    def allocate(self, profile_id: str = "default") -> KbGeneration:
+        """Create a new generation in ``building`` state for *profile_id*."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT COALESCE(MAX(id), 0) FROM kb_generations",
+                "SELECT COALESCE(MAX(id), 0) FROM kb_generations WHERE profile_id=?",
+                (profile_id,),
             ).fetchone()
             next_id = row[0] + 1
             collection_name = self._collection_name_for(next_id)
             bm25_path = self._bm25_path_for(next_id)
             conn.execute(
-                "INSERT INTO kb_generations (id, collection_name, bm25_path, status) "
-                "VALUES (?, ?, ?, 'building')",
-                (next_id, collection_name, bm25_path),
+                "INSERT INTO kb_generations (id, profile_id, collection_name, bm25_path, status) "
+                "VALUES (?, ?, ?, ?, 'building')",
+                (next_id, profile_id, collection_name, bm25_path),
             )
             conn.commit()
-        logger.info("generation allocated id=%s collection=%s", next_id, collection_name)
+        logger.info("generation allocated id=%s profile=%s collection=%s", next_id, profile_id, collection_name)
         return KbGeneration(
             id=next_id, collection_name=collection_name,
             bm25_path=bm25_path, status="building",
         )
 
-    def activate(self, gen_id: int) -> None:
-        """Atomically mark *gen_id* active and all others inactive."""
+    def activate(self, gen_id: int, profile_id: str = "default") -> None:
+        """Atomically mark *gen_id* active and others inactive for *profile_id*."""
         with self._conn() as conn:
             conn.execute(
-                "UPDATE kb_generations SET status='inactive' WHERE status='active'",
+                "UPDATE kb_generations SET status='inactive' WHERE status='active' AND profile_id=?",
+                (profile_id,),
             )
             conn.execute(
-                "UPDATE kb_generations SET status='active' WHERE id=?",
-                (gen_id,),
+                "UPDATE kb_generations SET status='active' WHERE id=? AND profile_id=?",
+                (gen_id, profile_id),
             )
             conn.commit()
-        logger.info("generation activated id=%s", gen_id)
+        logger.info("generation activated id=%s profile=%s", gen_id, profile_id)
 
-    def current(self) -> KbGeneration | None:
-        """Return the active generation or ``None`` if not yet bootstrapped."""
+    def current(self, profile_id: str = "default") -> KbGeneration | None:
+        """Return the active generation for *profile_id* or ``None``."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT id, collection_name, bm25_path, status "
-                "FROM kb_generations WHERE status='active'",
+                "FROM kb_generations WHERE status='active' AND profile_id=?",
+                (profile_id,),
             ).fetchone()
         if row is None:
             return None
