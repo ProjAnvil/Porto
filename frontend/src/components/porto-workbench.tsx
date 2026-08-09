@@ -55,6 +55,10 @@ import {
   saveStepOutput,
   updateWorkflowSpec,
   uploadChatFile,
+  deleteVectorProfile,
+  fetchVectorDatabases,
+  saveVectorProfile,
+  testVectorConnection,
 } from "@/lib/api";
 import type {
   AgentConfig,
@@ -69,7 +73,11 @@ import type {
   RagWorkflowConfig,
   SourceChunk,
   Subsystem,
+  TestConnectionResult,
   ToolMeta,
+  VectorBackend,
+  VectorStoreStateResponse,
+  AuthMode,
   WorkflowDetail,
   WorkflowOutputEntry,
   WorkflowStepName,
@@ -93,7 +101,8 @@ type SettingsSection =
   | "document"
   | "knowledge"
   | "architecture"
-  | "retrieval_optimization";
+  | "retrieval_optimization"
+  | "vector_database";
 
 type ChatAttachmentStatus = "uploading" | "done" | "error";
 type ChatAttachment = {
@@ -1463,6 +1472,12 @@ function SettingsPage({
                 icon: <Network size={15} />,
                 child: false,
               },
+              {
+                id: "vector_database",
+                label: "向量数据库",
+                icon: <Database size={15} />,
+                child: false,
+              },
             ] as {
               id: SettingsSection;
               label: string;
@@ -1686,6 +1701,8 @@ function SettingsPage({
         ) : null}
 
         {section === "architecture" ? <ArchitectureView /> : null}
+
+        {section === "vector_database" ? <VectorDatabaseSettings /> : null}
       </section>
     </div>
   );
@@ -4055,4 +4072,303 @@ function ChunkList({
 
 function EmptyText({ text }: { text: string }) {
   return <p className="text-sm text-zinc-400">{text}</p>;
+}
+
+function VectorDatabaseSettings() {
+  const [state, setState] = useState<VectorStoreStateResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [backend, setBackend] = useState<VectorBackend>("chroma");
+  const [name, setName] = useState("");
+  const [uri, setUri] = useState("");
+  const [authMode, setAuthMode] = useState<AuthMode>("none");
+  const [token, setToken] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [tls, setTls] = useState(false);
+  const [database, setDatabase] = useState("");
+  const [kbBase, setKbBase] = useState("porto_kb");
+  const [memBase, setMemBase] = useState("porto_memory");
+  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
+  const [saveMsg, setSaveMsg] = useState("");
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      setState(await fetchVectorDatabases());
+    } catch {
+      /* ignore */
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  async function handleTest() {
+    setTestResult(null);
+    try {
+      setTestResult(
+        await testVectorConnection({
+          name: name || "test",
+          backend,
+          metric: backend === "milvus" ? "cosine" : "l2",
+          uri: backend === "milvus" ? uri : null,
+          database: database || null,
+          auth_mode: authMode,
+          token: token || null,
+          username: username || null,
+          password: password || null,
+          tls,
+          kb_collection_base: kbBase,
+          memory_collection_base: memBase,
+        }),
+      );
+    } catch {
+      setTestResult({ status: "error", detail: "request failed" });
+    }
+  }
+
+  async function handleSave() {
+    setSaveMsg("");
+    try {
+      const resp = await saveVectorProfile({
+        name: name || (backend === "chroma" ? "Chroma" : "Milvus"),
+        backend,
+        metric: backend === "milvus" ? "cosine" : "l2",
+        uri: backend === "milvus" ? uri : null,
+        database: database || null,
+        auth_mode: authMode,
+        token: token || null,
+        username: username || null,
+        password: password || null,
+        tls,
+        kb_collection_base: kbBase,
+        memory_collection_base: memBase,
+      });
+      if (resp.migration_required) {
+        setSaveMsg("已保存为 pending。迁移支持将在后续版本中启用。");
+      } else {
+        setSaveMsg("已保存。存储标识未变化，无需迁移。");
+      }
+      await refresh();
+    } catch {
+      setSaveMsg("保存失败");
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      await deleteVectorProfile(id);
+      await refresh();
+      setSaveMsg("已删除 pending 配置");
+    } catch {
+      setSaveMsg("删除失败");
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <h3 className="text-lg font-semibold">向量数据库配置</h3>
+
+      {/* Active / Pending status */}
+      {state?.active && (
+        <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+          <div className="flex items-center gap-2">
+            <span className="rounded bg-green-600 px-2 py-0.5 text-xs text-white">
+              Active
+            </span>
+            <span className="text-sm font-medium">{state.active.name}</span>
+            <span className="text-xs text-zinc-500">
+              {state.active.backend} · {state.active.metric}
+            </span>
+          </div>
+        </div>
+      )}
+      {state?.pending && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-amber-500 px-2 py-0.5 text-xs text-white">
+                Pending
+              </span>
+              <span className="text-sm font-medium">{state.pending.name}</span>
+              <span className="text-xs text-zinc-500">
+                {state.pending.backend} · {state.pending.uri ?? "local"}
+              </span>
+            </div>
+            <button
+              onClick={() => handleDelete(state.pending!.id)}
+              className="text-xs text-red-500 hover:underline"
+            >
+              删除
+            </button>
+          </div>
+          {saveMsg.includes("pending") && (
+            <p className="mt-1 text-xs text-amber-600">{saveMsg}</p>
+          )}
+        </div>
+      )}
+      {saveMsg && !state?.pending && (
+        <p className="text-xs text-zinc-500">{saveMsg}</p>
+      )}
+
+      {/* Configuration form */}
+      <div className="space-y-3 rounded-lg border border-zinc-200 p-4">
+        <div className="flex gap-2">
+          {(["chroma", "milvus"] as VectorBackend[]).map((b) => (
+            <button
+              key={b}
+              onClick={() => setBackend(b)}
+              className={`rounded-md px-3 py-1.5 text-sm ${
+                backend === b
+                  ? "bg-zinc-950 text-white"
+                  : "bg-zinc-100 text-zinc-600"
+              }`}
+            >
+              {b === "chroma" ? "Chroma (本地)" : "Milvus (远程)"}
+            </button>
+          ))}
+        </div>
+
+        <Field label="名称">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="My Database"
+            className="input"
+          />
+        </Field>
+
+        {backend === "milvus" && (
+          <>
+            <Field label="URI">
+              <input
+                value={uri}
+                onChange={(e) => setUri(e.target.value)}
+                placeholder="http://localhost:19530"
+                className="input"
+              />
+            </Field>
+            <Field label="Database (可选)">
+              <input
+                value={database}
+                onChange={(e) => setDatabase(e.target.value)}
+                placeholder="default"
+                className="input"
+              />
+            </Field>
+            <Field label="认证方式">
+              <select
+                value={authMode}
+                onChange={(e) => setAuthMode(e.target.value as AuthMode)}
+                className="input"
+              >
+                <option value="none">无</option>
+                <option value="token">Token</option>
+                <option value="user_password">用户名/密码</option>
+              </select>
+            </Field>
+            {authMode === "token" && (
+              <Field label="Token">
+                <input
+                  type="password"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  className="input"
+                />
+              </Field>
+            )}
+            {authMode === "user_password" && (
+              <>
+                <Field label="用户名">
+                  <input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="input"
+                  />
+                </Field>
+                <Field label="密码">
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="input"
+                  />
+                </Field>
+              </>
+            )}
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={tls}
+                onChange={(e) => setTls(e.target.checked)}
+              />
+              启用 TLS
+            </label>
+          </>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="KB Collection Base">
+            <input
+              value={kbBase}
+              onChange={(e) => setKbBase(e.target.value)}
+              className="input"
+            />
+          </Field>
+          <Field label="Memory Collection Base">
+            <input
+              value={memBase}
+              onChange={(e) => setMemBase(e.target.value)}
+              className="input"
+            />
+          </Field>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={handleTest}
+            disabled={loading}
+            className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
+          >
+            测试连接
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={loading}
+            className="rounded-md bg-zinc-950 px-4 py-2 text-sm text-white hover:bg-zinc-800"
+          >
+            保存
+          </button>
+        </div>
+
+        {testResult && (
+          <p
+            className={`text-xs ${
+              testResult.status === "ok" ? "text-green-600" : "text-red-500"
+            }`}
+          >
+            {testResult.status === "ok" ? "✅ " : "❌ "}
+            {testResult.detail}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs text-zinc-500">{label}</label>
+      {children}
+    </div>
+  );
 }
