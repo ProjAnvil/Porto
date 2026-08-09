@@ -107,7 +107,9 @@ def test_supervisor_rejects_when_busy(sample_settings):
     release = threading.Event()
 
     class _BlockingStore:
-        def build(self, reset=True, progress_cb=None):
+        _repo = type("_R", (), {"count": staticmethod(lambda c: 0)})()
+
+        def build(self, reset=True, progress_cb=None, **kwargs):
             release.wait(timeout=5)
             return IndexStats(kb_path="x", documents=0, chunks=0, embedding_provider="local")
 
@@ -184,7 +186,9 @@ def test_supervisor_stop_joins_worker(sample_settings):
     release = threading.Event()
 
     class _BlockingStore:
-        def build(self, reset=True, progress_cb=None):
+        _repo = type("_R", (), {"count": staticmethod(lambda c: 0)})()
+
+        def build(self, reset=True, progress_cb=None, **kwargs):
             release.wait(timeout=5)
             return IndexStats(kb_path="x", documents=0, chunks=0, embedding_provider="local")
 
@@ -246,7 +250,9 @@ def test_health_marks_rag_unavailable_while_reindexing(sample_settings):
     lock = DbLockStore(sample_settings)
 
     class _BlockingStore:
-        def build(self, reset=True, progress_cb=None):
+        _repo = type("_R", (), {"count": staticmethod(lambda c: 0)})()
+
+        def build(self, reset=True, progress_cb=None, **kwargs):
             release.wait(timeout=5)
             return IndexStats(kb_path="x", documents=0, chunks=0, embedding_provider="local")
 

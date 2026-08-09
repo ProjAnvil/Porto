@@ -3,7 +3,9 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
+from .kb_generation_store import KbGenerationStore
 from .locking import RAG_INDEX_LOCK, DbLockStore
 from .logging_utils import get_component_logger
 from .models import IndexJobStatus
@@ -130,13 +132,35 @@ class IndexSupervisor:
 
     def _execute(self, req: _IndexRequest) -> None:
         store = self._store_factory(req.settings)
+        gen_store = KbGenerationStore(req.settings)
+
+        # Allocate an immutable generation for this build.
+        gen = gen_store.allocate()
 
         def progress_cb(done: int, total: int, chunks_done: int) -> None:
             self._lock_store.update_progress(
                 RAG_INDEX_LOCK, done=done, total=total, chunks_done=chunks_done
             )
 
-        stats = store.build(reset=req.reset, progress_cb=progress_cb)
+        try:
+            stats = store.build(
+                reset=True,
+                progress_cb=progress_cb,
+                target_collection=gen.collection_name,
+                target_bm25_path=Path(gen.bm25_path),
+            )
+            # Verify the build landed in the target collection.
+            actual = store._repo.count(gen.collection_name)
+            if actual != stats.chunks:
+                raise RuntimeError(
+                    f"build verification failed: expected {stats.chunks} chunks, "
+                    f"got {actual}",
+                )
+            gen_store.activate(gen.id)
+        except Exception:
+            gen_store.mark_failed(gen.id)
+            raise
+
         self._lock_store.mark_succeeded(RAG_INDEX_LOCK, stats=stats)
         logger.info(
             "index job done source=%s documents=%s chunks=%s",

@@ -107,7 +107,7 @@ class Bm25Index:
 
 
 class Bm25Registry:
-    """进程级 Bm25Index 缓存（按 data_dir）。"""
+    """进程级 Bm25Index 缓存（按 cache key — collection name 或 data_dir）。"""
 
     _cache: dict[str, Bm25Index] = {}
 
@@ -117,29 +117,49 @@ class Bm25Registry:
 
     @classmethod
     def get(cls, settings: Settings) -> Bm25Index | None:
-        key = str(settings.data_dir)
+        """Legacy: keyed by data_dir, loads from default path."""
+        return cls._load(str(settings.data_dir), cls._dir(settings))
+
+    @classmethod
+    def get_for_path(cls, key: str, path: Path) -> Bm25Index | None:
+        """Load from a specific path, keyed by an arbitrary string."""
+        return cls._load(key, path)
+
+    @classmethod
+    def _load(cls, key: str, path: Path) -> Bm25Index | None:
         if key in cls._cache:
             return cls._cache[key]
-        d = cls._dir(settings)
-        if not d.exists():
+        if not path.exists():
             return None
         try:
-            idx = Bm25Index.load(d)
+            idx = Bm25Index.load(path)
         except Exception:
-            logger.exception("bm25 load failed dir=%s", d)
+            logger.exception("bm25 load failed path=%s", path)
             return None
         cls._cache[key] = idx
         return idx
 
     @classmethod
     def build_and_save(cls, settings: Settings, chunks: list[ChunkRecord]) -> Bm25Index:
+        """Legacy: build and save to default path."""
+        return cls._build(str(settings.data_dir), cls._dir(settings), chunks)
+
+    @classmethod
+    def build_for_path(
+        cls, key: str, path: Path, chunks: list[ChunkRecord],
+    ) -> Bm25Index:
+        """Build and save to a specific path."""
+        return cls._build(key, path, chunks)
+
+    @classmethod
+    def _build(cls, key: str, path: Path, chunks: list[ChunkRecord]) -> Bm25Index:
         idx = Bm25Index()
         idx.build(chunks)
-        idx.save(cls._dir(settings))
-        cls._cache[str(settings.data_dir)] = idx
+        idx.save(path)
+        cls._cache[key] = idx
         return idx
 
     @classmethod
-    def invalidate(cls, data_dir: Path) -> None:
-        cls._cache.pop(str(data_dir), None)
+    def invalidate(cls, key: str | Path) -> None:
+        cls._cache.pop(str(key), None)
 

@@ -5,11 +5,12 @@ import math
 import shutil
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import chromadb
 
-from .bm25_index import Bm25Registry, ChunkRecord
+from .bm25_index import Bm25Index, Bm25Registry, ChunkRecord
 from .documents import (
     SPLITTER_VERSION,
     chunk_document,
@@ -18,6 +19,7 @@ from .documents import (
     read_document,
 )
 from .embeddings import EmbeddingClient
+from .kb_generation_store import KbGenerationStore
 from .logging_utils import get_component_logger
 from .models import IndexStats, SourceChunk
 from .models.enums import EmbeddingProvider, RetrievalMethod
@@ -61,6 +63,9 @@ class ChromaVectorStore:
         self.settings.chroma_dir.mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=str(self.settings.chroma_dir))
         self._repo = repo or ChromaVectorRepository(self.settings.chroma_dir)
+        self._gen_store = KbGenerationStore(settings)
+        self._gen_store.bootstrap()
+        self._building_gen = None
         self.embeddings = EmbeddingClient(settings)
         self.logger.info(
             "vector store ready backend=chroma collection=%s chroma_dir=%s",
@@ -72,14 +77,21 @@ class ChromaVectorStore:
         self,
         reset: bool = True,
         progress_cb: Callable[[int, int, int], None] | None = None,
+        *,
+        target_collection: str | None = None,
+        target_bm25_path: Path | None = None,
     ) -> IndexStats:
         with self._build_lock:
-            return self._build_impl(reset, progress_cb)
+            return self._build_impl(
+                reset, progress_cb, target_collection, target_bm25_path,
+            )
 
     def _build_impl(
         self,
         reset: bool = True,
         progress_cb: Callable[[int, int, int], None] | None = None,
+        target_collection: str | None = None,
+        target_bm25_path: Path | None = None,
     ) -> IndexStats:
         self.logger.info(
             "index build start kb_path=%s reset=%s provider=%s model=%s chunk_size=%s overlap=%s",
@@ -90,10 +102,15 @@ class ChromaVectorStore:
             self.settings.max_chunk_chars,
             self.settings.chunk_overlap,
         )
-        if reset:
-            self._reset_collection(self.settings.vector_collection)
+        # Resolve target collection: generation-suffixed or legacy.
+        collection_name = target_collection or self.settings.vector_collection
+        if target_collection is not None:
+            # Generation build: always start fresh.
+            self._reset_collection(collection_name)
+        elif reset:
+            self._reset_collection(collection_name)
         collection = self.client.get_or_create_collection(
-            self.settings.vector_collection,
+            collection_name,
             metadata=self._expected_collection_metadata(),
         )
 
@@ -142,19 +159,30 @@ class ChromaVectorStore:
                 all_chunks.append(ChunkRecord(chunk_id, chunk.text, metadata))
                 chunk_count += 1
                 if len(batch_ids) >= _EMBED_BATCH_SIZE:
-                    self._add_batch(collection, batch_ids, batch_texts, batch_metadata)
+                    self._add_batch(
+                        collection, batch_ids, batch_texts, batch_metadata,
+                        repo_collection=collection_name,
+                    )
                     self.logger.info("index batch added size=64")
                     batch_ids, batch_texts, batch_metadata = [], [], []
 
         if batch_ids:
-            self._add_batch(collection, batch_ids, batch_texts, batch_metadata)
+            self._add_batch(
+                collection, batch_ids, batch_texts, batch_metadata,
+                repo_collection=collection_name,
+            )
             self.logger.info("index batch added size=%s", len(batch_ids))
 
         if progress_cb is not None:
             progress_cb(total, total, chunk_count)
 
         # BM25 与 chroma 同源同序同生命周期：build 结束即构建并落盘
-        Bm25Registry.build_and_save(self.settings, all_chunks)
+        if target_bm25_path is not None:
+            Bm25Registry.build_for_path(
+                collection_name, target_bm25_path, all_chunks,
+            )
+        else:
+            Bm25Registry.build_and_save(self.settings, all_chunks)
 
         stats = IndexStats(
             kb_path=str(self.settings.kb_path),
@@ -207,7 +235,7 @@ class ChromaVectorStore:
             )
             return []
         method = self.settings.retrieval_method
-        collection_name = self.settings.vector_collection
+        collection_name = self._active_collection_name()
         if method == RetrievalMethod.VECTOR:
             return self._vector_search(collection_name, query_embedding, top_k)
         if method == RetrievalMethod.BM25:
@@ -236,6 +264,20 @@ class ChromaVectorStore:
             metadata=metadata,
         )
 
+    # ── generation-aware collection / BM25 resolution ──
+
+    def _active_collection_name(self) -> str:
+        gen = self._gen_store.current()
+        return gen.collection_name if gen else self.settings.vector_collection
+
+    def _active_bm25(self) -> Bm25Index | None:
+        gen = self._gen_store.current()
+        if gen is not None:
+            return Bm25Registry.get_for_path(
+                gen.collection_name, Path(gen.bm25_path),
+            )
+        return Bm25Registry.get(self.settings)
+
     def _vector_search(
         self, collection_name: str, query_embedding: list[float], top_k: int,
     ) -> list[SourceChunk]:
@@ -248,7 +290,7 @@ class ChromaVectorStore:
         ]
 
     def _bm25_search(self, collection_name: str, query: str, top_k: int) -> list[SourceChunk]:
-        bm = Bm25Registry.get(self.settings)
+        bm = self._active_bm25()
         if bm is None:
             self.logger.info("bm25 search skipped index absent")
             return []
@@ -269,7 +311,7 @@ class ChromaVectorStore:
     def _hybrid_search(
         self, collection_name: str, query_embedding, query: str, top_k: int,
     ) -> list[SourceChunk]:
-        bm = Bm25Registry.get(self.settings)
+        bm = self._active_bm25()
         nodes = hybrid_fusion_search(
             repo=self._repo,
             collection=collection_name,
@@ -298,18 +340,20 @@ class ChromaVectorStore:
         return self.stats()
 
     def _add_batch(
-        self, collection, ids: list[str], texts: list[str], metadata: list[dict[str, Any]]
+        self, collection, ids: list[str], texts: list[str], metadata: list[dict[str, Any]],
+        *, repo_collection: str | None = None,
     ):
         self.logger.info("embedding and adding batch size=%s", len(ids))
         embeddings = self.embeddings.embed_documents(texts)
         if embeddings:
             dimensions = len(embeddings[0])
             self._set_collection_metadata(collection, embedding_dimensions=dimensions)
+        target = repo_collection or self.settings.vector_collection
         records = [
             VectorRecord(id=rid, embedding=list(emb), document=text, metadata=dict(meta))
             for rid, emb, text, meta in zip(ids, embeddings, texts, metadata, strict=False)
         ]
-        self._repo.upsert(self.settings.vector_collection, records)
+        self._repo.upsert(target, records)
 
     def _reset_collection(self, name: str) -> None:
         try:
@@ -323,7 +367,7 @@ class ChromaVectorStore:
         """获取当前 collection（**不重建**）。重建由 IndexSupervisor 统一调度；
         search/stats 路径不再触发同步 build，从根上消除并发互删。"""
         return self.client.get_or_create_collection(
-            self.settings.vector_collection,
+            self._active_collection_name(),
             metadata=self._expected_collection_metadata(),
         )
 
@@ -350,7 +394,7 @@ class ChromaVectorStore:
         if not self._is_collection_compatible(collection) or collection.count() == 0:
             return False
         if self.settings.retrieval_method in (RetrievalMethod.BM25, RetrievalMethod.HYBRID):
-            bm = Bm25Registry.get(self.settings)
+            bm = self._active_bm25()
             if bm is None or len(bm) != collection.count():
                 return False
         return True
