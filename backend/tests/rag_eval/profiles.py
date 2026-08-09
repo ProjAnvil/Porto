@@ -16,7 +16,6 @@ from __future__ import annotations
 from porto_chatbot.models.enums import (
     EmbeddingProvider,
     QueryTransformStrategy,
-    RetrievalMethod,
 )
 
 from .schema import EvalProfile

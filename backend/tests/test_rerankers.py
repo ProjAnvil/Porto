@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from porto_chatbot.models import SourceChunk
 from porto_chatbot.models.enums import RerankType
-from porto_chatbot.rerankers import CrossEncoderReranker, LLMReranker, RERANKER_BACKENDS
+from porto_chatbot.rerankers import RERANKER_BACKENDS, CrossEncoderReranker, LLMReranker
 from porto_chatbot.retrieval import rerank_chunks
 from porto_chatbot.settings import Settings
 

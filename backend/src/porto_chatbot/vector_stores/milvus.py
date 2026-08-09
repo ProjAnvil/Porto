@@ -105,6 +105,18 @@ class MilvusVectorRepository:
 
     # ── internal helpers ──
 
+    def _discover_dimension(self, name: str) -> int | None:
+        """Get the vector field dimension of an existing Milvus collection."""
+        try:
+            info = self._client.describe_collection(name)
+            for f in info.get("fields", []):
+                dim = f.get("params", {}).get("dim")
+                if dim is not None:
+                    return int(dim)
+        except Exception:
+            pass
+        return None
+
     def _check_dimension(self, collection: str, records: Sequence[VectorRecord]) -> None:
         spec = self._specs.get(collection)
         if spec is None:
@@ -344,6 +356,11 @@ class MilvusVectorRepository:
 
     def collection_info(self, collection: str) -> CollectionInfo:
         spec = self._specs.get(collection)
+        dimension = spec.dimension if spec else None
+        # When _specs is empty (fresh repo during migration), discover the
+        # actual dimension from the collection schema.
+        if dimension is None:
+            dimension = self._discover_dimension(collection)
         try:
             stats = self._client.get_collection_stats(collection)
             count = int(stats.get("row_count", 0))
@@ -351,15 +368,14 @@ class MilvusVectorRepository:
             count = 0
         return CollectionInfo(
             name=collection,
-            dimension=spec.dimension if spec else None,
+            dimension=dimension,
             count=count,
             metric=spec.metric if spec else DistanceMetric.L2,
         )
 
     def health(self) -> VectorStoreHealth:
         try:
-            utility = __import__("pymilvus", fromlist=["utility"]).utility
-            ok = utility.get_server_version(using=self._client._using)
+            ok = self._client.get_server_version()
             return VectorStoreHealth(healthy=True, detail=f"Milvus {ok}")
         except Exception as exc:
             return VectorStoreHealth(healthy=False, detail=str(exc))

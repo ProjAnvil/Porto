@@ -22,6 +22,23 @@ from ..vector_stores import (
 from .session_store import SessionStore
 
 
+def _resolve_memory_collection(settings: Settings) -> str:
+    """Resolve the physical memory collection name for the active profile revision.
+
+    Revision 1 (default) uses the unsuffixed base name; migration to a new
+    backend bumps the revision and the collection gets a ``__r<rev>`` suffix.
+    """
+    from ..vector_stores.naming import resolve_memory_collection
+
+    try:
+        from ..vector_profiles import VectorProfileStore
+
+        revision = VectorProfileStore(settings).revision()
+    except Exception:
+        revision = 1
+    return resolve_memory_collection(settings.memory_collection, revision)
+
+
 class ConversationMemory:
     """Vector indexing and retrieval backed by a VectorRepository."""
 
@@ -36,9 +53,9 @@ class ConversationMemory:
         self.logger = get_component_logger("conv_memory", settings)
         self._session_store = session_store or SessionStore(settings)
         self._repo = repo or ChromaVectorRepository(settings.chroma_dir)
-        self._collection_name = settings.memory_collection
+        self._collection_name = _resolve_memory_collection(settings)
         self._spec = CollectionSpec(
-            name=settings.memory_collection,
+            name=self._collection_name,
             dimension=settings.embedding_dimensions,
             metric=DistanceMetric.L2,
             metadata={"kind": "memory"},
@@ -46,7 +63,7 @@ class ConversationMemory:
         self._repo.ensure_collection(self._spec)
         self.embeddings = EmbeddingClient(settings)
         self.logger.info(
-            "conversation memory ready collection=%s", settings.memory_collection,
+            "conversation memory ready collection=%s", self._collection_name,
         )
 
     def index(self, records: list[MessageRecord]) -> None:

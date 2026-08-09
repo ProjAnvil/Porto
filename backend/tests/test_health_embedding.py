@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from porto_chatbot.health import HealthMonitor
 from porto_chatbot.models import DependencyName, DependencyStatus
 from porto_chatbot.settings import Settings

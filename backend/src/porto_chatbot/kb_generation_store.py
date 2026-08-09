@@ -116,6 +116,32 @@ class KbGenerationStore:
             conn.commit()
         logger.info("generation activated id=%s profile=%s", gen_id, profile_id)
 
+    def redirect_active(self, collection_name: str) -> None:
+        """Update the active generation's collection name after a migration.
+
+        Called after the vector profile switches to a new backend so that
+        KB queries resolve to the migrated collection name.  The bm25_path
+        is unchanged — it indexes document text, not vectors, and survives
+        a backend switch.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM kb_generations WHERE status='active' AND profile_id='default'",
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO kb_generations (id, profile_id, collection_name, bm25_path, status) "
+                    "VALUES (1, 'default', ?, ?, 'active')",
+                    (collection_name, str(self._settings.data_dir / "bm25s_index")),
+                )
+            else:
+                conn.execute(
+                    "UPDATE kb_generations SET collection_name=? WHERE id=?",
+                    (collection_name, row[0]),
+                )
+            conn.commit()
+        logger.info("active generation redirected collection=%s", collection_name)
+
     def current(self, profile_id: str = "default") -> KbGeneration | None:
         """Return the active generation for *profile_id* or ``None``."""
         with self._conn() as conn:

@@ -1457,6 +1457,12 @@ function SettingsPage({
                 child: true,
               },
               {
+                id: "vector_database",
+                label: "向量数据库",
+                icon: <Database size={15} />,
+                child: true,
+              },
+              {
                 id: "agent",
                 label: "Agent",
                 icon: <Bot size={15} />,
@@ -1478,12 +1484,6 @@ function SettingsPage({
                 id: "architecture",
                 label: "架构",
                 icon: <Network size={15} />,
-                child: false,
-              },
-              {
-                id: "vector_database",
-                label: "向量数据库",
-                icon: <Database size={15} />,
                 child: false,
               },
             ] as {
@@ -4249,14 +4249,12 @@ function VectorDatabaseSettings() {
     isRunning && migration?.phase !== "activating";
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold">向量数据库配置</h3>
-
+    <>
       {/* Active / Pending status */}
       {state?.active && (
-        <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
           <div className="flex items-center gap-2">
-            <span className="rounded bg-green-600 px-2 py-0.5 text-xs text-white">
+            <span className="rounded bg-emerald-600 px-2 py-0.5 text-xs text-white">
               Active
             </span>
             <span className="text-sm font-medium">{state.active.name}</span>
@@ -4267,7 +4265,7 @@ function VectorDatabaseSettings() {
         </div>
       )}
       {state?.pending && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="rounded bg-amber-500 px-2 py-0.5 text-xs text-white">
@@ -4280,7 +4278,7 @@ function VectorDatabaseSettings() {
             </div>
             <button
               onClick={() => handleDelete(state.pending!.id)}
-              className="text-xs text-red-500 hover:underline"
+              className="text-xs text-rose-500 hover:underline"
             >
               删除
             </button>
@@ -4296,18 +4294,20 @@ function VectorDatabaseSettings() {
         </div>
       )}
       {saveMsg && !state?.pending && (
-        <p className="text-xs text-zinc-500">{saveMsg}</p>
+        <p className="mb-4 text-xs text-zinc-500">{saveMsg}</p>
       )}
 
       {/* Migration progress */}
       {migration && migration.status && (
-        <MigrationProgress
-          migration={migration}
-          onRetry={handleRetry}
-          onCancel={handleCancel}
-          canRetry={canRetry}
-          canCancel={canCancel}
-        />
+        <div className="mb-4">
+          <MigrationProgress
+            migration={migration}
+            onRetry={handleRetry}
+            onCancel={handleCancel}
+            canRetry={canRetry}
+            canCancel={canCancel}
+          />
+        </div>
       )}
 
       {/* Migrate-now / Migrate-later modal */}
@@ -4337,9 +4337,14 @@ function VectorDatabaseSettings() {
         </div>
       )}
 
-      {/* Configuration form */}
-      <div className="space-y-3 rounded-lg border border-zinc-200 p-4">
-        <div className="flex gap-2">
+      <SettingsCard
+        busy={loading}
+        saveLabel="保存"
+        title="向量数据库配置"
+        onSave={handleSave}
+      >
+        {/* Backend selector */}
+        <div className="mb-4 flex gap-2">
           {(["chroma", "milvus"] as VectorBackend[]).map((b) => (
             <button
               key={b}
@@ -4355,130 +4360,134 @@ function VectorDatabaseSettings() {
           ))}
         </div>
 
-        <Field label="名称">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="My Database"
-            className="input"
-          />
-        </Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="block">
+            <span className="text-xs text-zinc-500">名称</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="My Database"
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+            />
+          </label>
 
-        {backend === "milvus" && (
-          <>
-            <Field label="URI">
-              <input
-                value={uri}
-                onChange={(e) => setUri(e.target.value)}
-                placeholder="http://localhost:19530"
-                className="input"
-              />
-            </Field>
-            <Field label="Database (可选)">
-              <input
-                value={database}
-                onChange={(e) => setDatabase(e.target.value)}
-                placeholder="default"
-                className="input"
-              />
-            </Field>
-            <Field label="认证方式">
-              <select
-                value={authMode}
-                onChange={(e) => setAuthMode(e.target.value as AuthMode)}
-                className="input"
-              >
-                <option value="none">无</option>
-                <option value="token">Token</option>
-                <option value="user_password">用户名/密码</option>
-              </select>
-            </Field>
-            {authMode === "token" && (
-              <Field label="Token">
+          {backend === "milvus" && (
+            <>
+              <label className="block">
+                <span className="text-xs text-zinc-500">URI</span>
                 <input
-                  type="password"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  className="input"
+                  value={uri}
+                  onChange={(e) => setUri(e.target.value)}
+                  placeholder="http://localhost:19530"
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
                 />
-              </Field>
-            )}
-            {authMode === "user_password" && (
-              <>
-                <Field label="用户名">
-                  <input
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className="input"
-                  />
-                </Field>
-                <Field label="密码">
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">Database（可选）</span>
+                <input
+                  value={database}
+                  onChange={(e) => setDatabase(e.target.value)}
+                  placeholder="default"
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">认证方式</span>
+                <select
+                  value={authMode}
+                  onChange={(e) => setAuthMode(e.target.value as AuthMode)}
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                >
+                  <option value="none">无</option>
+                  <option value="token">Token</option>
+                  <option value="user_password">用户名/密码</option>
+                </select>
+              </label>
+              {authMode === "token" && (
+                <label className="block">
+                  <span className="text-xs text-zinc-500">Token</span>
                   <input
                     type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="input"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
                   />
-                </Field>
-              </>
-            )}
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={tls}
-                onChange={(e) => setTls(e.target.checked)}
-              />
-              启用 TLS
-            </label>
-          </>
-        )}
+                </label>
+              )}
+              {authMode === "user_password" && (
+                <>
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">用户名</span>
+                    <input
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">密码</span>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    />
+                  </label>
+                </>
+              )}
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={tls}
+                  onChange={(e) => setTls(e.target.checked)}
+                />
+                启用 TLS
+              </label>
+            </>
+          )}
 
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="KB Collection Base">
+          <label className="block">
+            <span className="text-xs text-zinc-500">KB Collection Base</span>
             <input
               value={kbBase}
               onChange={(e) => setKbBase(e.target.value)}
-              className="input"
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
             />
-          </Field>
-          <Field label="Memory Collection Base">
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Memory Collection Base</span>
             <input
               value={memBase}
               onChange={(e) => setMemBase(e.target.value)}
-              className="input"
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
             />
-          </Field>
+          </label>
         </div>
 
-        <div className="flex gap-2">
+        {/* Test connection */}
+        <div className="mt-4 flex items-center gap-3">
           <button
             onClick={handleTest}
             disabled={loading}
-            className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
+            className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
           >
             测试连接
           </button>
-          <button
-            onClick={handleSave}
-            disabled={loading}
-            className="rounded-md bg-zinc-950 px-4 py-2 text-sm text-white hover:bg-zinc-800"
-          >
-            保存
-          </button>
+          <span className="text-xs text-zinc-400">保存后如存储标识变更将提示迁移</span>
         </div>
 
         {testResult && (
           <p
-            className={`text-xs ${
-              testResult.status === "ok" ? "text-green-600" : "text-red-500"
+            className={`mt-2 text-xs ${
+              testResult.status === "ok" ? "text-emerald-600" : "text-rose-500"
             }`}
           >
             {testResult.status === "ok" ? "✅ " : "❌ "}
             {testResult.detail}
           </p>
         )}
-      </div>
-    </div>
+      </SettingsCard>
+    </>
   );
 }
 
@@ -4597,21 +4606,6 @@ function MigrationProgress({
           心跳: {new Date(migration.heartbeat_at).toLocaleTimeString()}
         </p>
       )}
-    </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <label className="mb-1 block text-xs text-zinc-500">{label}</label>
-      {children}
     </div>
   );
 }

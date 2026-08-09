@@ -5,9 +5,9 @@
 """
 from __future__ import annotations
 
-import httpx
 from typing import Protocol
 
+import httpx
 from llama_index.core import QueryBundle
 from llama_index.core.schema import NodeWithScore, TextNode
 

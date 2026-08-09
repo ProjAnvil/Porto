@@ -273,9 +273,9 @@ def _ensure_rag_singletons() -> dict:
         store_factory=lambda s: LocalVectorStore(
             s, repo=VectorRepositoryFactory.get(s),
         ),
-        # RAG 可用性判断必须用「实际生效」配置（db 覆盖 .env），否则 collection metadata
-        # （按 db 配置 build）与 current_settings（.env）的 embedding_model 不匹配，
-        # _is_collection_compatible 误判 → rag_available 恒返回 index_unavailable。
+        # RAG 可用性判断必须用「实际生效」配置（db 覆盖 .env），否则 collection
+        # 的 embedding 维度（按 db 配置 build）与 current_settings（.env）的维度
+        # 不匹配 → is_rag_ready 误判 → rag_available 恒返回 index_unavailable。
         settings_provider=apply_rag_settings,
     )
     health = HealthMonitor(

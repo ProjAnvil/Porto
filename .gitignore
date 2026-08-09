@@ -37,3 +37,6 @@ out/
 backend/tests/rag_eval/data/
 backend/tests/rag_eval/.last_report.json
 backend/tests/rag_eval/reports/
+
+# Local AI foundation database state
+/data/ai-foundation/

@@ -32,15 +32,6 @@ from .vector_stores import (
     VectorSearchRequest,
 )
 
-COLLECTION_METADATA_KEYS = {
-    "embedding_provider",
-    "embedding_model",
-    "embedding_base_url",
-    "chunk_size",
-    "chunk_overlap",
-    "splitter",
-}
-
 _CHUNK_ID_PREVIEW_LEN = 120
 _EMBED_BATCH_SIZE = 64
 
@@ -176,7 +167,7 @@ class ChromaVectorStore:
             backend="chroma",
             embedding_provider=self.settings.embedding_provider,
             embedding_model=self.settings.embedding_model,
-            embedding_dimensions=self._collection_embedding_dimensions(collection_name),
+            embedding_dimensions=self._safe_dimension(collection_name),
             chunk_size=self.settings.max_chunk_chars,
             chunk_overlap=self.settings.chunk_overlap,
         )
@@ -186,7 +177,7 @@ class ChromaVectorStore:
     def stats(self) -> IndexStats:
         name = self._active_collection_name()
         try:
-            dims = self._collection_embedding_dimensions(name)
+            dims = self._repo.collection_info(name).dimension
         except Exception:
             dims = None
         stats = IndexStats(
@@ -206,16 +197,19 @@ class ChromaVectorStore:
     def _search_raw(self, query: str, top_k: int) -> list[SourceChunk]:
         """基础检索（vector/bm25/hybrid），不含 rerank。供 query_transform 编排复用。"""
         collection_name = self._active_collection_name()
-        if not self._is_collection_compatible(collection_name) or self._safe_count(collection_name) == 0:
-            self.logger.info("search skipped index unavailable query_chars=%s", len(query))
+        try:
+            info = self._repo.collection_info(collection_name)
+        except Exception:
+            self.logger.info("search skipped collection_info failed query_chars=%s", len(query))
+            return []
+        if info.count == 0:
+            self.logger.info("search skipped empty collection query_chars=%s", len(query))
             return []
         query_embedding = self.embeddings.embed_query(query)
-        stored_dimensions = self._collection_embedding_dimensions(collection_name)
-        if stored_dimensions is not None and stored_dimensions != len(query_embedding):
+        if info.dimension is not None and info.dimension != len(query_embedding):
             self.logger.warning(
-                "embedding dimension mismatch detected stored=%s current=%s action=skip",
-                stored_dimensions,
-                len(query_embedding),
+                "embedding dimension mismatch stored=%s query=%s action=skip",
+                info.dimension, len(query_embedding),
             )
             return []
         method = self.settings.retrieval_method
@@ -360,34 +354,28 @@ class ChromaVectorStore:
             self.logger.info("collection count failed (likely concurrent reset) -> 0")
             return 0
 
+    def _safe_dimension(self, collection_name: str) -> int | None:
+        """Best-effort dimension read; None if unavailable."""
+        try:
+            return self._repo.collection_info(collection_name).dimension
+        except Exception:
+            return None
+
     def is_rag_ready(self) -> bool:
-        """索引是否可用于检索：collection 存在、元数据兼容、非空；含 bm25 时还要求 BM25 就绪。"""
+        """索引是否可用于检索：collection 非空且维度匹配当前 embedding 配置。"""
         name = self._active_collection_name()
         try:
-            count = self._repo.count(name)
+            info = self._repo.collection_info(name)
         except Exception:
             return False
-        if count == 0 or not self._is_collection_compatible(name):
+        if info.count == 0:
+            return False
+        if info.dimension is not None and info.dimension != self.settings.embedding_dimensions:
             return False
         if self.settings.retrieval_method in (RetrievalMethod.BM25, RetrievalMethod.HYBRID):
             bm = self._active_bm25()
-            if bm is None or len(bm) != count:
+            if bm is None or len(bm) != info.count:
                 return False
-        return True
-
-    def _is_collection_compatible(self, collection_name: str) -> bool:
-        try:
-            metadata = self._repo.get_metadata(collection_name) if hasattr(self._repo, "get_metadata") else {}
-        except Exception:
-            return False
-        expected = self._expected_collection_metadata()
-        for key in COLLECTION_METADATA_KEYS:
-            if metadata.get(key) != expected.get(key):
-                return False
-        if metadata.get("embedding_dimensions") is None:
-            return True
-        if self.settings.embedding_provider == EmbeddingProvider.LOCAL:
-            return metadata.get("embedding_dimensions") == self.settings.embedding_dimensions
         return True
 
     def _expected_collection_metadata(self) -> dict[str, str | int]:
@@ -410,17 +398,6 @@ class ChromaVectorStore:
                 {**self._expected_collection_metadata(), "embedding_dimensions": embedding_dimensions},
             )
             self.logger.info("collection metadata updated dim=%s", embedding_dimensions)
-
-    def _collection_embedding_dimensions(self, collection_name: str) -> int | None:
-        try:
-            if hasattr(self._repo, "get_metadata"):
-                metadata = self._repo.get_metadata(collection_name)
-            else:
-                return None
-        except Exception:
-            return None
-        value = metadata.get("embedding_dimensions")
-        return int(value) if value is not None else None
 
 
 class LocalVectorStore(ChromaVectorStore):

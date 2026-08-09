@@ -216,6 +216,23 @@ def test_collection_info(tmp_path):
     assert info.metric == DistanceMetric.COSINE
 
 
+def test_collection_info_detects_dimension_without_specs(tmp_path):
+    """A fresh repo (no ensure_collection call) must still report the real
+    dimension from stored data — critical for migration source detection
+    where a brand-new repo instance reads collections it didn't create."""
+    repo1 = ChromaVectorRepository(tmp_path / "chroma")
+    repo1.ensure_collection(
+        CollectionSpec(name="col", dimension=8, metric=DistanceMetric.L2),
+    )
+    repo1.upsert("col", [VectorRecord("a", [1.0] * 8, "a", {})])
+
+    # Fresh repo with empty _specs — must NOT fall back to a config default
+    repo2 = ChromaVectorRepository(tmp_path / "chroma")
+    info = repo2.collection_info("col")
+    assert info.dimension == 8
+    assert info.count == 1
+
+
 # ── protocol conformance ──
 
 

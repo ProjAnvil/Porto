@@ -230,9 +230,23 @@ class ChromaVectorRepository:
     def collection_info(self, collection: str) -> CollectionInfo:
         col = self._get_collection(collection)
         spec = self._specs.get(collection)
+        dimension = spec.dimension if spec else None
+        # When _specs is empty (e.g. a fresh repo during migration), determine
+        # the actual dimension from collection metadata, then from a sample
+        # record — never fall back to a config default that may not match.
+        if dimension is None:
+            meta = dict(col.metadata or {})
+            raw_dim = meta.get("embedding_dimensions")
+            if raw_dim is not None:
+                dimension = int(raw_dim)
+        if dimension is None and col.count() > 0:
+            sample = col.get(limit=1, include=["embeddings"])
+            embs = sample.get("embeddings")
+            if embs is not None and len(embs) > 0:
+                dimension = len(embs[0])
         return CollectionInfo(
             name=collection,
-            dimension=spec.dimension if spec else None,
+            dimension=dimension,
             count=col.count(),
             metric=spec.metric if spec else DistanceMetric.L2,
         )

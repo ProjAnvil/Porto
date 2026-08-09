@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from porto_chatbot.embeddings import (
     EMBEDDING_BACKENDS,
     EmbeddingClient,

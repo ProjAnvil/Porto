@@ -150,6 +150,25 @@ def test_count(repo, mock_client):
     assert repo.count("kb") == 42
 
 
+# ── collection_info ──
+
+
+def test_collection_info_discovers_dimension_without_specs(repo, mock_client):
+    """A fresh repo (no ensure_collection) must still report the real
+    dimension from the collection schema — critical for Milvus→Milvus
+    migration where the source repo has an empty _specs dict."""
+    mock_client.get_collection_stats.return_value = {"row_count": 100}
+    mock_client.describe_collection.return_value = {
+        "fields": [
+            {"name": "id", "params": {}},
+            {"name": "vector", "params": {"dim": 1024}},
+        ],
+    }
+    info = repo.collection_info("kb")
+    assert info.dimension == 1024
+    assert info.count == 100
+
+
 # ── delete ──
 
 
@@ -167,15 +186,14 @@ def test_delete_empty_is_noop(repo, mock_client):
 
 
 def test_health_ok(repo, mock_client):
-    with patch("pymilvus.utility") as mock_util:
-        mock_util.get_server_version.return_value = "2.6.0"
-        h = repo.health()
+    mock_client.get_server_version.return_value = "2.6.0"
+    h = repo.health()
     assert h.healthy
 
 
-def test_health_fail(repo):
-    with patch("pymilvus.utility.get_server_version", side_effect=Exception("unreachable")):
-        h = repo.health()
+def test_health_fail(repo, mock_client):
+    mock_client.get_server_version.side_effect = Exception("unreachable")
+    h = repo.health()
     assert not h.healthy
 
 

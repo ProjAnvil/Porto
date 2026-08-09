@@ -7,9 +7,12 @@ BACKEND_PID   := $(PID_DIR)/backend.pid
 FRONTEND_PID  := $(PID_DIR)/frontend.pid
 BACKEND_LOG   := $(RUN_DIR)/backend.log
 FRONTEND_LOG  := $(RUN_DIR)/frontend.log
+AI_FOUNDATION_COMPOSE := docker compose -f compose.ai-foundation.yml
 
 .PHONY: help install start stop restart status logs logs-follow backend-start backend-stop frontend-start frontend-stop backend-dev frontend-dev clean \
-        bundle-build bundle-start docker-build docker-build-bundled docker-run-bundled compose-up compose-down eval-install eval-dataset eval-test eval-run eval-sweep
+        bundle-build bundle-start docker-build docker-build-bundled docker-run-bundled compose-up compose-down \
+        ai-foundation-up ai-foundation-down ai-foundation-status ai-foundation-logs \
+        eval-install eval-dataset eval-test eval-run eval-sweep
 
 help:
 	@echo "Porto Chatbot process manager (pid dir: $(PID_DIR))"
@@ -28,6 +31,10 @@ help:
 	@echo "  make bundle-start    Bundled deploy: build static frontend + serve both via one uvicorn (same origin)"
 	@echo "  make compose-up      Split deploy: docker compose up frontend & backend in two containers"
 	@echo "  make docker-run-bundled  Bundled deploy: build & run a single Docker image"
+	@echo "  make ai-foundation-up    Start PostgreSQL/pgvector, ChromaDB, and Milvus"
+	@echo "  make ai-foundation-down  Stop the AI foundation containers (preserves data)"
+	@echo "  make ai-foundation-status Show AI foundation container status"
+	@echo "  make ai-foundation-logs  Follow AI foundation logs"
 	@echo ""
 	@echo "Override ports via env: make start FRONTEND_PORT=3001"
 	@echo "Current: BACKEND_PORT=$(BACKEND_PORT)  FRONTEND_PORT=$(FRONTEND_PORT)"
@@ -163,6 +170,18 @@ compose-up:
 
 compose-down:
 	docker compose down
+
+ai-foundation-up:
+	$(AI_FOUNDATION_COMPOSE) up -d
+
+ai-foundation-down:
+	$(AI_FOUNDATION_COMPOSE) down
+
+ai-foundation-status:
+	$(AI_FOUNDATION_COMPOSE) ps
+
+ai-foundation-logs:
+	$(AI_FOUNDATION_COMPOSE) logs -f
 
 docker-build-bundled:
 	docker build -t porto-chatbot -f Dockerfile .
