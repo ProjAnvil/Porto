@@ -23,14 +23,14 @@ def _chroma_profile(store: VectorProfileStore) -> VectorProfile:
 
 
 def _make_pending_profile(store: VectorProfileStore) -> VectorProfile:
-    """Create a pending profile (same Chroma identity to avoid real migration)."""
-    active = store.active()
+    """Create a pending Milvus profile (different storage identity from active)."""
     pending = VectorProfile(
         id="pending-1",
-        name="Pending Chroma",
-        backend="chroma",
-        kb_collection_base=active.kb_collection_base,
-        memory_collection_base=active.memory_collection_base,
+        name="Pending Milvus",
+        backend="milvus",
+        uri="http://127.0.0.1:29530",
+        kb_collection_base="porto_kb",
+        memory_collection_base="porto_memory",
     )
     store.save_pending(pending)
     return pending
@@ -84,3 +84,27 @@ def test_cancel_marks_cancelled(tmp_path):
     # Cancel before worker progresses
     coord.cancel()
     coord.stop_worker()
+
+
+def test_submit_rejects_same_storage_identity(tmp_path):
+    """Migration from a profile to itself (same backend+uri+collection) must
+    be rejected — drop_collection would destroy source data."""
+    s = _settings(tmp_path)
+    store = VectorProfileStore(s)
+    active = store.bootstrap()
+    assert active is not None
+    # Pending profile with identical storage identity
+    clone = VectorProfile(
+        id="clone-1",
+        name="Clone",
+        backend="chroma",
+        kb_collection_base=active.kb_collection_base,
+        memory_collection_base=active.memory_collection_base,
+    )
+    store.save_pending(clone)
+    coord = VectorMigrationCoordinator(s)
+    try:
+        coord.submit()
+        raise AssertionError("should have raised ValueError")
+    except ValueError as exc:
+        assert "same storage" in str(exc)

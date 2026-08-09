@@ -88,6 +88,12 @@ class VectorMigrationCoordinator:
             raise ValueError("no active profile")
         if pending is None:
             raise ValueError("no pending profile")
+        if active.storage_identity() == pending.storage_identity():
+            raise ValueError(
+                "source and target profiles share the same storage "
+                "(backend, uri, collection names) — migration would "
+                "destroy source data during target drop",
+            )
 
         mig = self._mig_store.create(
             source_profile_id=active.id,
@@ -124,6 +130,14 @@ class VectorMigrationCoordinator:
         if source_profile is None or target_profile is None:
             self._mig_store.transition(
                 mig.id, status=MigrationStatus.FAILED, error="profile not found",
+            )
+            return
+        if source_profile.storage_identity() == target_profile.storage_identity():
+            self._mig_store.transition(
+                mig.id,
+                status=MigrationStatus.FAILED,
+                error="source and target share the same storage — migration "
+                "would destroy source data",
             )
             return
 
@@ -313,6 +327,12 @@ class VectorMigrationCoordinator:
                 source_profile_id=mig.source_profile_id,
                 target_profile_id=mig.target_profile_id,
             )
+
+            # Probe the actual metric from the target collections and persist
+            # it to the profile so every consumer (factory → repo → search)
+            # uses the correct metric without runtime discovery.
+            self._probe_and_persist_metric(target_profile, target_repo)
+
             # Point the KB generation to the migrated collection name so
             # post-activation queries resolve to the correct collection.
             gen_store = KbGenerationStore(self._settings)
@@ -322,6 +342,27 @@ class VectorMigrationCoordinator:
 
         # Post-activation replay: index barrier-period intents to target.
         self._replay_barrier_intents(mig, target_profile)
+
+    def _probe_and_persist_metric(
+        self, target_profile: VectorProfile, target_repo: VectorRepository,
+    ) -> None:
+        """Probe the actual index metric from target collections and persist.
+
+        After activation, read the metric type directly from the Milvus index
+        and write it back to the profile.  This makes the profile the single
+        source of truth — the factory reads it, passes it to the repo as
+        ``default_metric``, and all searches/ensures use it consistently.
+        """
+        if not hasattr(target_repo, "_discover_metric"):
+            return
+        metric = target_repo._discover_metric(target_profile.kb_collection_base)
+        if metric is not None and metric.value != target_profile.metric:
+            self._profile_store.update(target_profile.id, metric=metric.value)
+            target_profile.metric = metric.value
+            logger.info(
+                "metric probed and persisted profile=%s metric=%s",
+                target_profile.id, metric.value,
+            )
 
     def _final_catchup(
         self, mig: VectorMigration,

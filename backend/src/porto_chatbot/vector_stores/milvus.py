@@ -67,9 +67,11 @@ class MilvusVectorRepository:
         database: str | None = None,
         tls: bool = False,
         timeout: int = 30,
+        default_metric: DistanceMetric = DistanceMetric.L2,
     ):
         self._timeout = timeout
         self._specs: dict[str, CollectionSpec] = {}
+        self._default_metric = default_metric
 
         connect_kwargs: dict[str, Any] = {"uri": uri, "timeout": timeout}
         if token:
@@ -88,11 +90,16 @@ class MilvusVectorRepository:
             raise VectorStoreConnectionError(
                 f"Failed to connect to Milvus at {uri}",
             ) from exc
-        logger.info("milvus repository connected uri=%s", uri)
+        logger.info("milvus repository connected uri=%s metric=%s", uri, default_metric.value)
 
     @classmethod
     def from_profile(cls, profile: Any) -> MilvusVectorRepository:
         """Construct from a :class:`VectorProfile`-like object."""
+        metric = (
+            DistanceMetric.COSINE
+            if getattr(profile, "metric", "l2") == "cosine"
+            else DistanceMetric.L2
+        )
         return cls(
             uri=profile.uri,
             token=getattr(profile, "_token", None),
@@ -101,6 +108,7 @@ class MilvusVectorRepository:
             database=profile.database,
             tls=profile.tls,
             timeout=profile.timeout,
+            default_metric=metric,
         )
 
     # ── internal helpers ──
@@ -113,6 +121,27 @@ class MilvusVectorRepository:
                 dim = f.get("params", {}).get("dim")
                 if dim is not None:
                     return int(dim)
+        except Exception:
+            pass
+        return None
+
+    def _discover_metric(self, name: str) -> DistanceMetric | None:
+        """Get the index metric type of an existing Milvus collection.
+
+        Needed when the repo was created by the factory (no ``ensure_collection``
+        call) so ``_specs`` is empty.  Without this, ``search`` defaults to L2
+        and fails with ``metric type not match`` on COSINE collections.
+        """
+        try:
+            indexes = self._client.list_indexes(name)
+            for idx_name in indexes:
+                desc = self._client.describe_index(name, idx_name)
+                metric_str = desc.get("metric_type") if isinstance(desc, dict) else None
+                if metric_str:
+                    mt = str(metric_str).upper()
+                    if mt == "COSINE":
+                        return DistanceMetric.COSINE
+                    return DistanceMetric.L2
         except Exception:
             pass
         return None
@@ -136,33 +165,55 @@ class MilvusVectorRepository:
                 f"Field {field!r} exceeds {_MAX_VARCHAR_LENGTH}-byte Milvus scalar limit",
             )
 
+    # Top-level fields in the Milvus collection schema.
+    # Everything else in a ``where`` clause is a metadata key stored
+    # inside the ``metadata`` JSON field and must be accessed as
+    # ``metadata["key"]`` (Chroma flattens metadata to top-level fields;
+    # Milvus keeps it in a single JSON column).
+    _SCHEMA_FIELDS = frozenset({"id", "vector", "document", "metadata"})
+
     def _build_filter(self, where: dict[str, Any] | None) -> str | None:
         """Convert a simple ``where`` dict to a Milvus filter expression."""
         if not where:
             return None
         parts: list[str] = []
         for key, val in where.items():
+            field = key if key in self._SCHEMA_FIELDS else f'metadata["{key}"]'
             if isinstance(val, str):
                 # Escape single quotes
                 escaped = val.replace("'", "\\'")
-                parts.append(f"{key} == '{escaped}'")
+                parts.append(f"{field} == '{escaped}'")
             elif isinstance(val, bool):
-                parts.append(f"{key} == {str(val).lower()}")
+                parts.append(f"{field} == {str(val).lower()}")
             elif isinstance(val, (int, float)):
-                parts.append(f"{key} == {val}")
+                parts.append(f"{field} == {val}")
             else:
-                parts.append(f"{key} == {val!r}")
+                parts.append(f"{field} == {val!r}")
         return " and ".join(parts) if parts else None
 
     # ── protocol implementation ──
 
     def ensure_collection(self, spec: CollectionSpec) -> None:
-        self._specs[spec.name] = spec
-
         # Check if collection already exists
         if self._client.has_collection(spec.name):
+            # The collection's actual metric is authoritative over the spec.
+            # Callers like ConversationMemory hardcode L2, but the collection
+            # may have been created with COSINE.  Prefer the repo's
+            # ``_default_metric`` (from the profile, persisted after switch),
+            # then fall back to runtime discovery.
+            actual_metric = self._default_metric
+            if actual_metric != spec.metric:
+                spec = CollectionSpec(
+                    name=spec.name,
+                    dimension=spec.dimension,
+                    metric=actual_metric,
+                    metadata=spec.metadata,
+                )
+            self._specs[spec.name] = spec
             self._client.load_collection(spec.name)
             return
+
+        self._specs[spec.name] = spec
 
         pk = FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=256)
         vector = FieldSchema(
@@ -224,7 +275,7 @@ class MilvusVectorRepository:
         self, collection: str, request: VectorSearchRequest,
     ) -> list[VectorSearchHit]:
         spec = self._specs.get(collection)
-        metric = spec.metric if spec else DistanceMetric.L2
+        metric = spec.metric if spec else self._default_metric
 
         search_params: dict[str, Any] = {
             "metric_type": _METRIC_MAP.get(metric, "L2"),
@@ -370,7 +421,7 @@ class MilvusVectorRepository:
             name=collection,
             dimension=dimension,
             count=count,
-            metric=spec.metric if spec else DistanceMetric.L2,
+            metric=spec.metric if spec else self._default_metric,
         )
 
     def health(self) -> VectorStoreHealth:
@@ -395,6 +446,8 @@ class MilvusVectorRepository:
     # ── Milvus-specific (not part of the protocol) ──
 
     def drop_collection(self, name: str) -> None:
+        import traceback
+        logger.warning("DROP_COLLECTION caller stack for %s:\n%s", name, "".join(traceback.format_stack()))
         try:
             self._client.drop_collection(name)
         except Exception:

@@ -8,16 +8,16 @@ from porto_chatbot.vector_profiles import VectorProfile, VectorProfileStore
 
 
 def _setup(sample_settings):
-    """Bootstrap profiles and create a pending profile."""
+    """Bootstrap profiles and create a pending Milvus profile (different storage)."""
     store = VectorProfileStore(sample_settings)
     store.bootstrap()
-    active = store.active()
     pending = VectorProfile(
         id="pending-test",
-        name="Pending Chroma",
-        backend="chroma",
-        kb_collection_base=active.kb_collection_base,
-        memory_collection_base=active.memory_collection_base,
+        name="Pending Milvus",
+        backend="milvus",
+        uri="http://127.0.0.1:29530",
+        kb_collection_base="porto_kb",
+        memory_collection_base="porto_memory",
     )
     store.save_pending(pending)
     return store
