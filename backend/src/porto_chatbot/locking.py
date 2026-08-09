@@ -12,6 +12,7 @@ from .settings import Settings
 logger = get_component_logger("locking")
 
 RAG_INDEX_LOCK = "rag_index"
+VECTOR_MIGRATION_LOCK = "vector_migration"
 
 
 def _now_iso() -> str:
