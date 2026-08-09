@@ -257,3 +257,15 @@ class ChromaVectorRepository:
         except Exception:
             logger.info("collection drop skipped name=%s", name)
         self._specs.pop(name, None)
+
+    def get_metadata(self, name: str) -> dict[str, Any]:
+        """Read a collection's full metadata dict (Chroma-specific)."""
+        col = self._get_collection(name)
+        return dict(col.metadata or {})
+
+    def update_metadata(self, name: str, metadata: dict[str, Any]) -> None:
+        """Merge *metadata* into a collection's existing metadata."""
+        col = self._get_collection(name)
+        merged = {**(col.metadata or {}), **metadata}
+        if (col.metadata or {}) != merged:
+            col.modify(metadata=merged)
