@@ -29,6 +29,10 @@ out/
 # ide
 .idea
 
+# Agent workspaces
+.worktrees/
+.superpowers/
+
 # RAG eval dataset (downloaded via make eval-dataset)
 backend/tests/rag_eval/data/
 backend/tests/rag_eval/.last_report.json
