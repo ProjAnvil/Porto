@@ -40,8 +40,22 @@ def current_settings():
     return _main.settings
 
 
+_config_store_cache: dict[str, ConfigStore] = {}
+
+
 def get_config_store() -> ConfigStore:
-    return ConfigStore(current_settings())
+    """按 data_dir 缓存的 ConfigStore 单例。
+
+    避免每次 API 请求都新建 ConfigStore → 反复 mkdir + CREATE TABLE + 开 SQLite
+    连接，与索引 worker 的 DbLockStore 写入竞争导致 "unable to open database file"。
+    """
+    settings = current_settings()
+    key = str(settings.data_dir)
+    store = _config_store_cache.get(key)
+    if store is None:
+        store = ConfigStore(settings)
+        _config_store_cache[key] = store
+    return store
 
 
 def default_rag_settings() -> RagSettingsPayload:
@@ -447,6 +461,7 @@ def reset_rag_singletons() -> None:
         except Exception as exc:
             logger.warning("session store close failed: %s", exc)
     _rag_singletons = {}
+    _config_store_cache.clear()
 
 
 def runtime_settings_from_snapshot(

@@ -135,3 +135,28 @@ class EmbeddingClient:
     def embed_query(self, text: str) -> list[float]:
         self.logger.info("embed query provider=%s chars=%s", self.settings.embedding_provider, len(text))
         return self.embed_documents([text])[0]
+
+    _probed_dim: int | None = None
+
+    def probe_dimension(self) -> int:
+        """Return the actual output dimension of the configured embedding model.
+
+        Embeds a short probe text and measures ``len(vector)``.  This avoids
+        relying on a hardcoded ``embedding_dimensions`` setting that may not
+        match the real model (e.g. Ollama *qwen3-embedding* outputs 1024, not
+        the 384 default).  For the LOCAL provider the probe naturally returns
+        ``embedding_dimensions`` because :func:`local_embed_text` uses it as
+        the hash-bucket count.
+
+        Result is cached per-instance.
+        """
+        if self._probed_dim is None:
+            vectors = self.embed_documents(["dimension probe"])
+            self._probed_dim = len(vectors[0])
+            self.logger.info(
+                "embedding dimension probed dim=%s provider=%s model=%s",
+                self._probed_dim,
+                self.settings.embedding_provider,
+                self.settings.embedding_model,
+            )
+        return self._probed_dim

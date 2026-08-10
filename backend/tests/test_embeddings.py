@@ -115,3 +115,53 @@ def test_client_dispatches_to_openai_compatible(tmp_path):
         client = EmbeddingClient(settings)
     vec = client.embed_query("test")
     assert vec == [0.1, 0.2]
+
+
+# ── probe_dimension ──
+
+def test_probe_dimension_local(tmp_path):
+    """LOCAL: probe 返回 embedding_dimensions（hash bucket 数）。"""
+    settings = _make_settings(tmp_path, embedding_provider="local", embedding_dimensions=256)
+    client = EmbeddingClient(settings)
+    assert client.probe_dimension() == 256
+
+
+def test_probe_dimension_ollama_uses_model_output(tmp_path):
+    """OLLAMA: probe 返回模型实际输出维度，不是 settings.embedding_dimensions。"""
+    settings = _make_settings(
+        tmp_path,
+        embedding_provider="ollama",
+        embedding_model="qwen3-embedding:0.6b",
+        embedding_base_url="http://localhost:11434",
+        embedding_dimensions=384,  # 故意设错——模拟旧默认值
+    )
+    backend = OllamaEmbeddingBackend(settings)
+    mock_client = MagicMock()
+    # qwen3-embedding:0.6b 实际输出 1024 维
+    mock_client.embed.return_value = {"embeddings": [[0.1] * 1024]}
+    backend._client = mock_client
+    client = EmbeddingClient(settings)
+    client._backend = backend  # 注入 mock backend
+    assert client.probe_dimension() == 1024  # 不是 384
+
+
+def test_probe_dimension_caches(tmp_path):
+    """probe_dimension 缓存结果，不重复请求。"""
+    settings = _make_settings(
+        tmp_path,
+        embedding_provider="ollama",
+        embedding_model="qwen3-embedding:0.6b",
+        embedding_base_url="http://localhost:11434",
+    )
+    backend = OllamaEmbeddingBackend(settings)
+    mock_client = MagicMock()
+    mock_client.embed.return_value = {"embeddings": [[0.1] * 1024]}
+    backend._client = mock_client
+    client = EmbeddingClient(settings)
+    client._backend = backend
+
+    dim1 = client.probe_dimension()
+    dim2 = client.probe_dimension()
+    assert dim1 == dim2 == 1024
+    # 第二次不应再调用 embed（缓存命中）
+    assert mock_client.embed.call_count == 1

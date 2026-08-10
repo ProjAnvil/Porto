@@ -146,7 +146,7 @@ def test_fetch_empty_ids(repo, mock_client):
 
 
 def test_count(repo, mock_client):
-    mock_client.get_collection_stats.return_value = {"row_count": 42}
+    mock_client.query.return_value = [{"count(*)": 42}]
     assert repo.count("kb") == 42
 
 
@@ -157,7 +157,7 @@ def test_collection_info_discovers_dimension_without_specs(repo, mock_client):
     """A fresh repo (no ensure_collection) must still report the real
     dimension from the collection schema — critical for Milvus→Milvus
     migration where the source repo has an empty _specs dict."""
-    mock_client.get_collection_stats.return_value = {"row_count": 100}
+    mock_client.query.return_value = [{"count(*)": 100}]
     mock_client.describe_collection.return_value = {
         "fields": [
             {"name": "id", "params": {}},

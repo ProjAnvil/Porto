@@ -98,6 +98,13 @@ class ConfigStore:
         self._init_db()
         self.logger.info("config store ready db=%s", self.settings.settings_db_path)
 
+    def _conn(self) -> sqlite3.Connection:
+        """Open a connection with WAL + busy_timeout for concurrent safety."""
+        conn = sqlite3.connect(self.settings.settings_db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
     def get_rag_settings(self) -> RagSettingsPayload:
         return RagSettingsPayload(**self._get_namespace("rag", RAG_SETTING_KEYS))
 
@@ -162,7 +169,7 @@ class ConfigStore:
 
     def _get_namespace(self, namespace: str, keys: set[str]) -> dict[str, Any]:
         values: dict[str, Any] = {}
-        with sqlite3.connect(self.settings.settings_db_path) as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT key, value
@@ -181,7 +188,7 @@ class ConfigStore:
         updated_at = datetime.now(UTC).isoformat()
         safe_keys = sorted(key for key in values if key not in SENSITIVE_SETTING_KEYS)
         redacted_keys = sorted(k for k in SENSITIVE_SETTING_KEYS if k in values)
-        with sqlite3.connect(self.settings.settings_db_path) as conn:
+        with self._conn() as conn:
             for key, value in values.items():
                 conn.execute(
                     """
@@ -200,7 +207,7 @@ class ConfigStore:
         )
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.settings.settings_db_path) as conn:
+        with self._conn() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS app_settings (

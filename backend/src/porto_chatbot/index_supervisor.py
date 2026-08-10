@@ -173,6 +173,15 @@ class IndexSupervisor:
             gen_store.activate(gen.id, profile_id="default")
         except Exception:
             gen_store.mark_failed(gen.id)
+            # Clean up the orphaned collection so failed attempts don't
+            # accumulate in Milvus (each carries a full copy of all chunks
+            # but is never queried or activated).
+            try:
+                if hasattr(store._repo, "drop_collection"):
+                    store._repo.drop_collection(gen.collection_name)
+                    logger.info("cleaned up failed generation collection=%s", gen.collection_name)
+            except Exception:
+                logger.warning("failed generation cleanup failed collection=%s", gen.collection_name)
             raise
 
         self._lock_store.mark_succeeded(RAG_INDEX_LOCK, stats=stats)

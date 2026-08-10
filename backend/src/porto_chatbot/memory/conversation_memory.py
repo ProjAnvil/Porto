@@ -37,16 +37,17 @@ class ConversationMemory:
         self._session_store = session_store or SessionStore(settings)
         self._repo = repo or ChromaVectorRepository(settings.chroma_dir)
         self._collection_name = settings.memory_collection
+        self.embeddings = EmbeddingClient(settings)
+        dim = self.embeddings.probe_dimension()
         self._spec = CollectionSpec(
             name=self._collection_name,
-            dimension=settings.embedding_dimensions,
+            dimension=dim,
             metric=DistanceMetric.L2,
             metadata={"kind": "memory"},
         )
         self._repo.ensure_collection(self._spec)
-        self.embeddings = EmbeddingClient(settings)
         self.logger.info(
-            "conversation memory ready collection=%s", self._collection_name,
+            "conversation memory ready collection=%s dim=%s", self._collection_name, dim,
         )
 
     def index(self, records: list[MessageRecord]) -> None:

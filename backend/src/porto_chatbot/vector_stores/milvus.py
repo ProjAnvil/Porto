@@ -387,10 +387,38 @@ class MilvusVectorRepository:
         for i in range(0, len(snapshot), batch_size):
             yield self.fetch(collection, snapshot[i : i + batch_size])
 
+    def _query_count(self, collection: str) -> int:
+        """Exact row count via the query engine (scans loaded segments).
+
+        ``get_collection_stats().row_count`` reads asynchronously-updated
+        segment metadata from root-coord and can lag immediately after a
+        bulk upsert — returning fewer rows than actually inserted.  This
+        caused build-verification to fail (expected 14028, got 10560) even
+        though all data was present.
+
+        ``query(count(*))`` scans sealed *and* growing segments of the
+        loaded collection directly, so it is both faster (~0.006 s vs
+        ~0.7 s for flush + stats) and always accurate.
+        """
+        result = self._client.query(
+            collection_name=collection,
+            filter="",
+            output_fields=["count(*)"],
+        )
+        if not result:
+            return 0
+        row = result[0]
+        # PyMilvus returns a dict; older wrappers may stringify it.
+        if isinstance(row, dict):
+            return int(row.get("count(*)", 0))
+        val = getattr(row, "get", None)
+        if callable(val):
+            return int(val("count(*)", 0))
+        return int(str(row).split("'count(*)': ")[1].split("}")[0])
+
     def count(self, collection: str) -> int:
         try:
-            stats = self._client.get_collection_stats(collection)
-            return int(stats.get("row_count", 0))
+            return self._query_count(collection)
         except Exception as exc:
             if "not found" in str(exc).lower():
                 raise CollectionNotReadyError(str(exc)) from exc
@@ -413,8 +441,7 @@ class MilvusVectorRepository:
         if dimension is None:
             dimension = self._discover_dimension(collection)
         try:
-            stats = self._client.get_collection_stats(collection)
-            count = int(stats.get("row_count", 0))
+            count = self._query_count(collection)
         except Exception:
             count = 0
         return CollectionInfo(

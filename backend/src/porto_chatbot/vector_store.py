@@ -337,10 +337,15 @@ class ChromaVectorStore:
 
     def _ensure_collection(self, name: str) -> None:
         """Create the collection with KB metadata if it doesn't exist."""
+        dim = self.embeddings.probe_dimension()
+        self.logger.info(
+            "ensure collection name=%s dim=%s (probed, not hardcoded)",
+            name, dim,
+        )
         self._repo.ensure_collection(
             CollectionSpec(
                 name=name,
-                dimension=self.settings.embedding_dimensions,
+                dimension=dim,
                 metric=DistanceMetric.L2,
                 metadata=self._expected_collection_metadata(),
             )
@@ -364,8 +369,8 @@ class ChromaVectorStore:
     def is_rag_ready(self) -> bool:
         """索引是否可用于检索：collection 存在且非空。
 
-        维度检查不在这里做——``settings.embedding_dimensions`` 是静态默认值，
-        不反映实际模型的输出维度。真正的维度匹配在 ``_search_raw`` 搜索时检查。
+        集合维度由 ``EmbeddingClient.probe_dimension()`` 在创建时探测，
+        不再依赖 ``settings.embedding_dimensions`` 静态默认值。
         """
         name = self._active_collection_name()
         try:
