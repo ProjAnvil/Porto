@@ -288,4 +288,8 @@ class ChromaVectorRepository:
         col = self._get_collection(name)
         merged = {**(col.metadata or {}), **metadata}
         if (col.metadata or {}) != merged:
+            # chromadb 禁止 modify 携带 "hnsw:space"（即使值未变也 raise）。本仓库
+            # chroma collection 恒以 L2 创建（见 vector_store._ensure_collection），
+            # 与 chromadb 默认一致，从 payload 剥离该键不影响距离语义。
+            merged.pop("hnsw:space", None)
             col.modify(metadata=merged)
