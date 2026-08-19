@@ -13,7 +13,7 @@ logger = get_component_logger("query_transform")
 
 @dataclass
 class TransformResult:
-    """retrieve_with_transform 的返回：检索结果 + 降级标记。
+    """retrieve_with_transform 的返回：检索结果 + 降级/改写标记。
 
     Attributes
     ----------
@@ -24,11 +24,17 @@ class TransformResult:
         NONE 策略恒为 False（与 today 行为完全一致）。
     degrade_reason:
         降级原因的短字符串（如 ``"llm_call_failed"``）；未降级时为空串。
+    condense_applied:
+        condense 门控节点判定「需要指代消解」且已改写检索查询。
+    condensed_query:
+        condense 改写后的实际检索查询（未改写时为空串）。
     """
 
     chunks: list[SourceChunk]
     degraded: bool = False
     degrade_reason: str = ""
+    condense_applied: bool = False
+    condensed_query: str = ""
 
 
 def _rrf_fuse(rankings: list[list[SourceChunk]], k: int = 60) -> list[SourceChunk]:
@@ -77,11 +83,16 @@ def retrieve_with_transform(
     settings: Settings,
     llm,
     top_k: int,
+    history: list[tuple[str, str]] | None = None,
 ) -> TransformResult:
-    """按 ``strategy`` 改写 query 后做基础检索，必要时融合 + rerank。
+    """condense 门控（可选）→ 按 ``strategy`` 改写 query → 检索 → 融合 + rerank。
 
     合约
     -----
+    - **condense 门控节点（管线第一段，可选）**：传入 ``history`` 且
+      ``settings.condense_enabled`` 时，先由 ``condense_with_gate`` 判断——
+      问题已可独立检索则**直通不改写**（零额外行为），含指代/省略才改写为
+      完整查询再进入后续策略/检索。门控 fail-open，永不阻塞检索。
     - ``strategy == NONE``：直接调用 ``store.search(query, top_k)``，**与 today
       行为零变化**（含其内部 rerank），返回 ``degraded=False``。
     - 其他策略：LLM 生成改写 query → ``store._search_raw`` 检索 → 按策略融合；
@@ -91,9 +102,25 @@ def retrieve_with_transform(
     - rerank 作为最后一步：仅在 ``settings.rerank_enabled`` 且非 NONE 路径时执行
       （NONE 路径的 rerank 由 ``store.search`` 内部负责，避免双次 rerank）。
     """
+    # ── condense 门控：检索前的指代消解（可独立于任意 strategy 组合）──
+    # 与策略族同样 fail-open：门控任何异常（LLM 网络/解析）都直通原查询，绝不阻塞检索
+    condense_applied, condensed = False, ""
+    if history and getattr(settings, "condense_enabled", False):
+        try:
+            gate = condense_with_gate(llm, query, history)
+            condense_applied = gate.needed
+            if gate.needed:
+                query, condensed = gate.query, gate.query
+        except Exception:
+            logger.exception("condense gate failed → pass-through original query")
+
     if strategy == QueryTransformStrategy.NONE:
         # 零行为变化：完全走 store.search 原路径（含其内部 rerank 逻辑）
-        return TransformResult(store.search(query, top_k))
+        return TransformResult(
+            store.search(query, top_k),
+            condense_applied=condense_applied,
+            condensed_query=condensed,
+        )
 
     try:
         if strategy == QueryTransformStrategy.HYDE:
@@ -114,14 +141,73 @@ def retrieve_with_transform(
         # fail-open：任何异常（LLM 调用、解析、NotImplementedError 桩）均回退
         logger.exception("transform failed strategy=%s → fallback raw", strategy)
         rows = store._search_raw(query, top_k)
-        return TransformResult(rows, degraded=True, degrade_reason="llm_call_failed")
+        return TransformResult(
+            rows, degraded=True, degrade_reason="llm_call_failed",
+            condense_applied=condense_applied, condensed_query=condensed,
+        )
 
     if settings.rerank_enabled:
         rows = rerank_chunks(rows, query, settings)
-    return TransformResult(rows)
+    return TransformResult(
+        rows, condense_applied=condense_applied, condensed_query=condensed,
+    )
 
 
-# --- 各策略 LLM 生成函数（Task 6 实现） ---
+# --- condense 门控节点（检索前指代消解）+ 各策略 LLM 生成函数（Task 6 实现）--- #
+
+_PASS_TOKEN = "PASS"
+
+
+@dataclass
+class CondenseResult:
+    """condense 门控节点的判定结果。
+
+    ``needed=False`` 表示问题已可独立检索（无历史 / LLM 判定无需改写 / 失败直通），
+    ``query`` 即原始问题——直接放行，不改写。
+    """
+
+    needed: bool
+    query: str
+    reason: str = ""
+
+
+def condense_with_gate(llm, question: str, history: list[tuple[str, str]]) -> CondenseResult:
+    """多轮指代消解**门控节点**：LLM 先判断是否需要，需要才改写，否则直通。
+
+    检索前优化手段之一：把「它成立于哪一年」这类含指代/省略的问题改写为
+    独立完整查询（还原代词与省略成分、保留实体全称），再交给检索/策略。
+
+    判定与改写合并为一次 LLM 调用（输出协议：已完整 → 只输出 ``PASS``；
+    需要改写 → 输出改写后的查询本身），避免「判断 + 改写」两次调用的延迟。
+
+    分级直通（零成本放行）：
+    1. 无对话历史 → 问题必然可独立检索，不调 LLM；
+    2. LLM 不可用/返回空 → fail-open 返回原问题（与策略族一致，绝不向上抛）。
+    """
+    if not history or llm is None:
+        return CondenseResult(False, question, reason="no_history_or_no_llm")
+    history_text = "\n".join(f"用户: {q}\n助手: {a[:200]}" for q, a in history[-6:])
+    out = llm.complete(
+        "判断「当前问题」脱离对话历史后是否仍能独立用于知识库检索——"
+        "若含指代代词（它/他/该/上述…）、省略主语或依赖前文才能确定检索对象，"
+        "把它改写为一个独立、完整、无指代的中文检索查询（还原代词与省略成分、"
+        "保留实体全称，不要添加原文没有的信息）；若问题已完整，只输出 PASS。"
+        "只输出 PASS 或改写后的查询本身，不要任何解释。",
+        f"对话历史:\n{history_text}\n\n当前问题: {question}",
+    )
+    cleaned = (out or "").strip().strip('"').strip("\u201c\u201d").strip("'")
+    if not cleaned:
+        return CondenseResult(False, question, reason="llm_empty_failopen")
+    if cleaned.upper().rstrip("。.!！") == _PASS_TOKEN or cleaned == question:
+        return CondenseResult(False, question, reason="already_standalone")
+    return CondenseResult(True, cleaned)
+
+
+def condense_question(llm, question: str, history: list[tuple[str, str]]) -> str:
+    """兼容包装：只要改写后的查询（等价 ``condense_with_gate(...).query``）。"""
+    return condense_with_gate(llm, question, history).query
+
+
 def _generate_hypothetical(llm, query: str) -> str:
     """HyDE：让 LLM 生成一个假设性答案文档，用它（而非原问题）去检索。"""
     return llm.complete(

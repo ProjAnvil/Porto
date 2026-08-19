@@ -160,6 +160,7 @@ def default_rag_chat_settings() -> RagChatSettingsPayload:
         query_transform_strategy=s.chat_query_transform_strategy,
         multi_query_count=s.multi_query_count,
         hyde_fallback_threshold=s.hyde_fallback_threshold,
+        condense_enabled=s.condense_enabled,
     )
 
 

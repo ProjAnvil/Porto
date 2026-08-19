@@ -157,18 +157,23 @@ async def _stream_rag_path(
     top_k = settings.top_k
 
     orch.kb_store.ensure_index()
+    # 历史读取上移到检索前：condense 门控需要对话历史（读 indexed 消息，纯读无副作用）
+    summary, recent = get_compacted_history(req.session_id, orch.sessions, llm)
+    condense_history = orch._history_pairs(recent) if orch._condense_enabled else None
     transform_degraded: str | None = None
+    condensed_query: str | None = None
     if decision.intent == ChatIntent.QUICK_RAG:
         sources = orch.kb_store.search(req.message, top_k=top_k)
     else:
         result = retrieve_with_transform(
             req.message, transform_strategy, orch.kb_store, settings, llm, top_k,
+            history=condense_history,
         )
         sources = result.chunks
         transform_degraded = result.degrade_reason if result.degraded else None
+        condensed_query = result.condensed_query or None
 
     memories = orch.memory.search(req.message, session_id=req.session_id, top_k=5)
-    summary, recent = get_compacted_history(req.session_id, orch.sessions, llm)
 
     # 流前写 user 消息（与 sync _handle_rag 一致）
     user_msg = orch.sessions.add_message(
@@ -308,6 +313,8 @@ async def _stream_rag_path(
     finish_meta: dict = {"evaluation": evaluation, "source_count": len(sources)}
     if transform_degraded is not None:
         finish_meta["transform_degraded"] = transform_degraded
+    if condensed_query is not None:
+        finish_meta["condensed_query"] = condensed_query
     yield _ai_sdk_sse(
         {
             "type": "finish",

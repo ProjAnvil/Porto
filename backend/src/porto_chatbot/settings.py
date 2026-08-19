@@ -154,6 +154,10 @@ class Settings(BaseSettings):
     workflow_query_transform_strategy: QueryTransformStrategy = QueryTransformStrategy.NONE
     multi_query_count: int = Field(default=4, ge=2, le=8)
     hyde_fallback_threshold: float = Field(default=0.3, ge=0.0, le=1.0)  # 占位，本次不实现逻辑
+    # condense 门控（检索前指代消解节点）：LLM 判断需要才改写，否则直通；
+    # 仅多轮场景有历史时生效，可与任意 query_transform_strategy 组合。
+    # 默认开启（2026-08 消融实证：单轮零影响、多轮 recall +0.24，fail-open 无风险）
+    condense_enabled: bool = Field(default=True)
 
     @field_validator("data_dir", "log_dir", "static_dir", mode="after")
     @classmethod

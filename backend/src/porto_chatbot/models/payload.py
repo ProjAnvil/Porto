@@ -92,6 +92,7 @@ class RagChatSettingsPayload(BaseModel):
     query_transform_strategy: QueryTransformStrategy | None = None
     multi_query_count: int | None = Field(default=None, ge=2, le=8)
     hyde_fallback_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    condense_enabled: bool | None = None
 
 
 class RagWorkflowSettingsPayload(BaseModel):

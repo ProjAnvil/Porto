@@ -95,6 +95,26 @@ class ChatOrchestrator:
         rag_chat = effective_rag_chat_settings()
         return rag_chat.query_transform_strategy or QueryTransformStrategy.NONE
 
+    @property
+    def _condense_enabled(self) -> bool:
+        """condense 门控（检索前指代消解）开关——设置面板 rag_chat.condense_enabled。"""
+        return bool(effective_rag_chat_settings().condense_enabled)
+
+    @staticmethod
+    def _history_pairs(recent) -> list[tuple[str, str]]:
+        """近期消息 → (用户问题, 助手回答) 对（condense 门控的输入，取最近 6 对）。"""
+        pairs: list[tuple[str, str]] = []
+        cur_q: str | None = None
+        for m in recent:
+            role = getattr(m, "role", None)
+            content = getattr(m, "content", "") or ""
+            if role == "user":
+                cur_q = content
+            elif role == "assistant" and cur_q is not None:
+                pairs.append((cur_q, content))
+                cur_q = None
+        return pairs[-6:]
+
     def _check_rag_available(self) -> tuple[bool, str | None]:
         return get_index_supervisor().rag_available()
 
@@ -202,17 +222,24 @@ class ChatOrchestrator:
         transform_degraded: str | None = None
 
         self.kb_store.ensure_index()
+        # 历史读取上移到检索前：condense 门控需要对话历史（读 indexed 消息，纯读无副作用）
+        summary, recent = get_compacted_history(req.session_id, self.sessions, llm)
+        condense_history = self._history_pairs(recent) if self._condense_enabled else None
         if decision.intent == ChatIntent.QUICK_RAG:
             sources = self.kb_store.search(req.message, top_k=top_k)
         else:
             result = retrieve_with_transform(
                 req.message, transform_strategy, self.kb_store, self.settings, llm, top_k,
+                history=condense_history,
             )
             sources = result.chunks
             transform_degraded = result.degrade_reason if result.degraded else None
+            if result.condense_applied:
+                logger.info(
+                    "condense applied session=%s query=%s", req.session_id, result.condensed_query
+                )
 
         memories = self.memory.search(req.message, session_id=req.session_id, top_k=5)
-        summary, recent = get_compacted_history(req.session_id, self.sessions, llm)
 
         # Write user message BEFORE LLM (for session history + future compaction)
         user_msg = self.sessions.add_message(

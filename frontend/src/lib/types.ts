@@ -123,6 +123,7 @@ export type RagChatConfig = {
     | "step_back";
   multi_query_count: number;
   hyde_fallback_threshold: number;
+  condense_enabled: boolean;
 };
 
 // 检索优化（workflow 场景）—— 仅查询变换（None/Multi-Query/Decomposition）
