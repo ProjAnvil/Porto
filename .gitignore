@@ -37,3 +37,6 @@ out/
 backend/tests/rag_eval/data/
 backend/tests/rag_eval/.last_report.json
 backend/tests/rag_eval/reports/
+# spec 基线评估产物（保留 .gitkeep）
+backend/tests/workflow_eval/reports/*
+!backend/tests/workflow_eval/reports/.gitkeep

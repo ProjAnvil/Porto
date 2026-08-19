@@ -29,12 +29,17 @@ class WorkflowEvaluation(BaseModel):
 
 
 class RagMetrics(BaseModel):
-    """RAG 案例评估的 RAGAS 维度指标。"""
+    """RAG 案例评估的 RAGAS 维度指标。
+
+    ``answer_correctness`` 仅当 EvalCase 提供 ground_truth 时计算（token-F1
+    启发式），否则为 None（不计入加权分）。
+    """
 
     answer_relevance: float
     context_relevance: float
     groundedness: float
     faithfulness: float
+    answer_correctness: float | None = None
 
 
 class RagCaseEvaluation(BaseModel):

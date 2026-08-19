@@ -1,0 +1,118 @@
+name: eval
+
+# 分层评估流水线（双轨评估）：
+#   PR / push  → unit（非集成单测）+ retrieval-gate（零 LLM 硬门禁）
+#   nightly    → e2e（LLM judge 六指标，report-only）+ refusal（拒答硬门禁）
+#                + multiturn（多轮会话）+ spec-baseline（独立 judge 基线）
+# 集成门禁缺 LANGCHAIN_API_KEY secret 时自动 skip（conftest 语义），不会假红。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 18 * * *" # UTC 18:00 = 北京 02:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  unit:
+    name: 单元测试（非集成）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e . pytest pytest-asyncio
+      - run: python -m pytest -m "not integration"
+
+  retrieval-gate:
+    name: 检索轨硬门禁（零 LLM）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[eval]"
+      - name: 缓存 DomainRAG 数据集
+        uses: actions/cache@v4
+        with:
+          path: backend/tests/rag_eval/data
+          key: domainrag-${{ runner.os }}-v1
+      - name: 下载数据集（cache miss 时）
+        run: python -m tests.rag_eval.scripts.fetch_dataset
+      # baseline profile（local embedding + NONE + 无 rerank）零 LLM、零密钥；
+      # recall@k/MRR/hit@k 任一低于阈值 → fail（真实检索回归）
+      - run: python -m pytest -m integration tests/rag_eval/test_retrieval_gate.py
+        env:
+          RAG_EVAL_RETRIEVAL_PROFILE: baseline
+
+  nightly:
+    name: Nightly 端到端评估（需 secrets）
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      LANGCHAIN_AGENT_PROVIDER: ${{ secrets.LANGCHAIN_AGENT_PROVIDER }}
+      LANGCHAIN_MODEL: ${{ secrets.LANGCHAIN_MODEL }}
+      LANGCHAIN_BASE_URL: ${{ secrets.LANGCHAIN_BASE_URL }}
+      LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+      # 独立 judge（缺省回退 generator）：解锁「便宜模型生成、强模型评审」
+      RAG_EVAL_JUDGE_PROVIDER: ${{ secrets.RAG_EVAL_JUDGE_PROVIDER }}
+      RAG_EVAL_JUDGE_MODEL: ${{ secrets.RAG_EVAL_JUDGE_MODEL }}
+      RAG_EVAL_JUDGE_API_KEY: ${{ secrets.RAG_EVAL_JUDGE_API_KEY }}
+      RAG_EVAL_JUDGE_BASE_URL: ${{ secrets.RAG_EVAL_JUDGE_BASE_URL }}
+      DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE: "300"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[eval]"
+      - name: 缓存 DomainRAG 数据集
+        uses: actions/cache@v4
+        with:
+          path: backend/tests/rag_eval/data
+          key: domainrag-${{ runner.os }}-v1
+      - name: 下载数据集（cache miss 时）
+        run: python -m tests.rag_eval.scripts.fetch_dataset
+
+      - name: 拒答门禁（硬）
+        run: python -m pytest -m integration tests/rag_eval/test_refusal_gate.py -s
+
+      - name: 多轮会话评估（DomainRAG conversation）
+        run: python -m tests.rag_eval.experiment baseline
+          --dataset domainrag:conversation --max-cases 10
+
+      - name: 端到端六指标（report-only 起步）
+        run: python -m pytest -m integration tests/rag_eval/test_rag_gate.py
+        env:
+          RAG_EVAL_PROFILE: rerank
+          RAG_EVAL_MAX_CASES: "20"
+          RAG_EVAL_REPORT_ONLY: "1"
+
+      - name: spec 基线（模板 vs loop，独立 judge）
+        run: python -m pytest -m integration tests/workflow_eval/test_spec_gate.py -s
+        env:
+          SPEC_EVAL_MAX_PRDS: "1"
+
+      - name: 上传报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports-${{ github.run_id }}
+          path: |
+            backend/tests/rag_eval/reports/*.json
+            backend/tests/workflow_eval/reports/*.json
+          retention-days: 30

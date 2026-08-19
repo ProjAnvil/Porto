@@ -89,16 +89,33 @@ def evaluate_rag_case(case: EvalCase) -> RagCaseEvaluation:
     groundedness = _lexical_overlap(answer, context_text) if contexts else 0.0
     faithfulness = _sentence_support(answer, contexts) if contexts else 0.0
 
-    score = round(
-        100
-        * (
-            0.30 * max(0.0, answer_relevance)
-            + 0.25 * max(0.0, context_relevance)
-            + 0.25 * groundedness
-            + 0.20 * faithfulness
-        ),
-        2,
-    )
+    # correctness：有 ground_truth 时启用第五维（token-F1，零 LLM）。
+    # 权重从 4 维（.30/.25/.25/.20）重排为 5 维（.25/.20/.20/.15/.20），
+    # correctness 与 answer_relevance 同档——「答得对」与「答得切题」同等重要。
+    correctness = _token_f1(answer, case.ground_truth) if case.ground_truth else None
+    if correctness is not None:
+        score = round(
+            100
+            * (
+                0.25 * max(0.0, answer_relevance)
+                + 0.20 * max(0.0, context_relevance)
+                + 0.20 * groundedness
+                + 0.15 * faithfulness
+                + 0.20 * correctness
+            ),
+            2,
+        )
+    else:
+        score = round(
+            100
+            * (
+                0.30 * max(0.0, answer_relevance)
+                + 0.25 * max(0.0, context_relevance)
+                + 0.25 * groundedness
+                + 0.20 * faithfulness
+            ),
+            2,
+        )
     result = RagCaseEvaluation(
         question=case.question,
         score=score,
@@ -108,6 +125,7 @@ def evaluate_rag_case(case: EvalCase) -> RagCaseEvaluation:
             context_relevance=round(context_relevance, 4),
             groundedness=round(groundedness, 4),
             faithfulness=round(faithfulness, 4),
+            answer_correctness=round(correctness, 4) if correctness is not None else None,
         ),
         notes="Lightweight local eval inspired by RAGAS dimensions; no judge LLM required.",
     )
@@ -132,6 +150,22 @@ def _lexical_overlap(answer: str, context: str) -> float:
     if not answer_tokens:
         return 0.0
     return len(answer_tokens & context_tokens) / len(answer_tokens)
+
+
+def _token_f1(answer: str, ground_truth: str) -> float:
+    """回答 vs 标准答案的 token 集 F1（SQuAD 风格的零成本 correctness 近似）。"""
+    from .embeddings import tokens
+
+    a = set(tokens(answer))
+    g = set(tokens(ground_truth))
+    if not a or not g:
+        return 0.0
+    overlap = len(a & g)
+    precision = overlap / len(a)
+    recall = overlap / len(g)
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
 
 
 def _sentence_support(answer: str, contexts: list[str]) -> float:

@@ -10,7 +10,7 @@ FRONTEND_LOG  := $(RUN_DIR)/frontend.log
 
 .PHONY: help install start stop restart status logs logs-follow backend-start backend-stop frontend-start frontend-stop backend-dev frontend-dev clean \
         bundle-build bundle-start docker-build docker-build-bundled docker-run-bundled compose-up compose-down \
-        eval-install eval-dataset eval-test eval-run eval-sweep
+        eval-install eval-dataset eval-test eval-run eval-sweep eval-retrieval eval-refusal eval-multiturn spec-baseline
 
 help:
 	@echo "Porto Chatbot process manager (pid dir: $(PID_DIR))"
@@ -183,10 +183,32 @@ eval-dataset: ## 下载 DomainRAG 评测数据集到 gitignored 目录
 	cd backend && python -m tests.rag_eval.scripts.fetch_dataset
 
 eval-test: ## 运行 DeepEval RAG 质量门禁 (需 LLM key + 数据集)
-	cd backend && pytest -m integration tests/rag_eval/test_rag_gate.py
+	cd backend && DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE=300 pytest -m integration tests/rag_eval/test_rag_gate.py
 
 eval-run: ## 运行 RAG 检索实验 (PROFILE=name，默认列出所有 profile)
 	cd backend && python -m tests.rag_eval.experiment $(or $(PROFILE),--list)
 
 eval-sweep: ## 批量跑多个 profile 对比 (默认全扫；耗时很长)
 	cd backend && python -m tests.rag_eval.experiment --sweep-all
+
+# ==================== RAG eval 扩展（双轨评估，2026-08）====================
+
+eval-retrieval: ## 检索轨硬门禁：零 LLM 确定性指标 recall/MRR/hit (PR 必跑)
+	cd backend && pytest -m integration tests/rag_eval/test_retrieval_gate.py
+
+eval-retrieval-run: ## 检索轨实验 (PROFILE=name DATASET=domainrag:multidoc)
+	cd backend && python -m tests.rag_eval.experiment $(or $(PROFILE),baseline) \
+		--track retrieval $(if $(DATASET),--dataset $(DATASET))
+
+eval-refusal: ## 拒答门禁：知识库无答案时必须拒答 (需 LLM key，硬门禁)
+	cd backend && pytest -m integration tests/rag_eval/test_refusal_gate.py -s
+
+eval-multiturn: ## 多轮会话评估 (DomainRAG conversation；需 LLM key)
+	cd backend && DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE=300 python -m tests.rag_eval.experiment $(or $(PROFILE),baseline) \
+		--dataset domainrag:conversation --max-cases $(or $(MAX_CASES),10)
+
+spec-baseline: ## spec 基线对照：模板 vs LLM loop，独立 judge (需 LLM key)
+	cd backend && python scripts/spec_baseline_eval.py
+
+spec-gate: ## spec 基线 pytest 门禁 (SPEC_EVAL_REPORT_ONLY=0 启用硬门禁)
+	cd backend && pytest -m integration tests/workflow_eval/test_spec_gate.py -s
