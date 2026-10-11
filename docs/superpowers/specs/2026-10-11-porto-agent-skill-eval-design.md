@@ -9,7 +9,7 @@ Add a reproducible evaluation project under `eval/` that uses Smelt to assess al
 - Porto defines its five skills and deploys their `SKILL.md` files from `backend/src/porto_chatbot/agent_sdk/skills.py`.
 - Evaluation must load the current definitions from Porto rather than rely on copied prompt snapshots.
 - Smelt is installed by uv from its Git repository and locked to a full commit revision (`e0f5c289786cc6dafa727fd924a6b6c4f47b7d8b`, v0.5.1).
-- `eval/.env.template` is committed as a safe configuration example. `eval/.env` is created locally with empty values and ignored by Git.
+- `eval/.env.template` is committed as a safe configuration example, with an explicit exception to the repository's `.env.*` ignore rule. `eval/.env` is created locally with empty values and ignored by Git.
 - The suite does not call live Porto services or modify the Porto application data. Behavior cases use deterministic fixture-backed tools.
 - No LLM credentials are currently configured in this environment. Offline validation must therefore cover setup, skill generation, cases, and Smelt lint; full model evaluation remains runnable after the developer fills `eval/.env`.
 
@@ -17,7 +17,7 @@ Add a reproducible evaluation project under `eval/` that uses Smelt to assess al
 
 `eval/` is an isolated uv project with its own `pyproject.toml` and `uv.lock`. It depends on Smelt through a pinned Git revision and on Porto's local backend package so the runner can call the production skill deployment function. The uv project runs from `eval/`, making Smelt's automatic `.env` loading resolve to `eval/.env`.
 
-The runner builds all five skills into a temporary directory by calling Porto's `SKILLS` / `deploy_skills` definitions. Each evaluation uses Smelt's `evaluate_skill` API with a separate agent model and judge model, Porto-shaped fixture tools, curated cases, three behavior samples by default, writing review, and static lint. Adversarial challenge is enabled when a challenger role is configured and reported as skipped otherwise. Each skill produces Markdown and JSON reports under `eval/reports/`; local reports and the uv environment are ignored.
+The runner builds all five skills into a temporary directory by calling Porto's `SKILLS` / `deploy_skills` definitions. Each evaluation uses Smelt's `evaluate_skill` API with a separate agent model and judge model, Porto-shaped fixture tools, curated cases, three behavior samples by default, writing review, and static lint. Adversarial challenge is enabled only when a challenger role is configured; otherwise the runner explicitly disables it so Smelt does not fall back to spending judge calls on challenges. Each skill produces Markdown and JSON reports under `eval/reports/`; local reports and the uv environment are ignored.
 
 ## Behavior coverage
 
@@ -52,7 +52,7 @@ Automated offline checks verify the `.env` template and ignore rules, exact skil
 1. `uv lock` resolves the Smelt Git dependency to the specified commit and `uv sync` succeeds.
 2. The local `eval/.env` exists, is ignored by Git, contains no filled credential, and matches the documented template keys.
 3. Preflight exits successfully without credentials and confirms all five skills and case suites.
-4. `smelt validate` discovers all five current generated skill documents and emits per-skill lint findings.
+4. Smelt validation discovers all five current generated skill documents and emits per-skill lint findings. Current skills may fail Smelt's quality threshold; that nonzero quality-gate status is reported separately from preflight/setup success.
 5. With valid agent and judge configuration, one command runs all five behavior/writing/lint evaluations and saves Markdown and JSON reports; one skill can be rerun by name.
 6. Automated cases never call Porto services, use external state, or offer write-capable tools.
 
