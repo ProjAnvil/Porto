@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.template
+.venv/
+reports/
+.smelt/
+__pycache__/
+.pytest_cache/

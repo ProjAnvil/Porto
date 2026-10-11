@@ -1,0 +1,6 @@
+{
+  "decisions": ["Refund requests use refundRequestId as the idempotency key."],
+  "preferences": ["Keep unresolved payment behavior explicit; do not infer policy."],
+  "background": ["The payment platform supports authorization, refund, settlement, and channel routing."],
+  "open_questions": ["Payment-channel timeout final-state semantics are not decided." ]
+}

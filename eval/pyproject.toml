@@ -1,0 +1,30 @@
+[project]
+name = "porto-skill-eval"
+version = "0.1.0"
+description = "Smelt evaluation suite for Porto Agent SDK skills"
+requires-python = ">=3.12"
+dependencies = [
+  "smelt[openai] @ git+https://github.com/ProjAnvil/Smelt.git@e0f5c289786cc6dafa727fd924a6b6c4f47b7d8b",
+  "porto-chatbot>=0.5.2",
+]
+
+[tool.uv.sources]
+porto-chatbot = { path = "../backend", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8.4.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/porto_skill_eval"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
