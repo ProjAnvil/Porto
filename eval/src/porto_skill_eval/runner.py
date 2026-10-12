@@ -74,7 +74,7 @@ def evaluate(
                 )
                 .with_cases(*cases[name])
                 .with_times(3)
-                .with_challenge(enabled=challenge)
+                .with_challenge(enabled=challenge, rounds=2)
                 .run()
             )
             result.save(output_dir / f"{name}.md")

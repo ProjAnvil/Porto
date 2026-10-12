@@ -49,6 +49,10 @@ def test_memory_cases_require_and_forbid_retrieval_appropriately():
         for item in all_expectations
     )
     assert any(
+        isinstance(item, ToolCallExpectation) and item.tool_name == "search_knowledgebase"
+        for item in all_expectations
+    )
+    assert any(
         isinstance(item, NoToolCallExpectation) and item.tool_name == "search_knowledgebase"
         for item in all_expectations
     )
@@ -102,4 +106,23 @@ def test_skill_tool_inventory_exposes_only_relevant_fixture_read_tools():
     assert {tool.name for tool in tools_for_skill("porto-memory")} == {
         "get_session_facts",
         "search_memory",
+        "search_knowledgebase",
     }
+
+
+def test_memory_source_ambiguity_checks_both_sources_and_known_answers_skip_tools():
+    cases = build_cases(ScriptedLLM(["unused"]))["porto-memory"]
+    by_name = {case.name: case for case in cases}
+    ambiguous = {
+        item.tool_name
+        for item in by_name["memory-distinguishes-document-and-conversation-sources"].expectations
+        if isinstance(item, ToolCallExpectation)
+    }
+    known_answer_forbidden = {
+        item.tool_name
+        for item in by_name["memory-does-not-retrieve-answer-already-in-request"].expectations
+        if isinstance(item, NoToolCallExpectation)
+    }
+
+    assert {"search_knowledgebase", "search_memory"} <= ambiguous
+    assert {"get_session_facts", "search_memory", "search_knowledgebase"} <= known_answer_forbidden

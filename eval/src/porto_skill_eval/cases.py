@@ -189,6 +189,15 @@ def build_cases(judge: LLMClient) -> dict[str, tuple[SmeltCase, ...]]:
                 )
             )
             .then(
+                output_contains(
+                    "需求覆盖度",
+                    "API 规范性",
+                    "数据模型完整性",
+                    "依赖与边界",
+                    "可验证性",
+                    "一致性",
+                    "/12",
+                ),
                 _judge(judge, "应按六个 rubric 维度引用具体证据并评分；把无法确认的内容标为待确认，不臆造冲突。总分 0–12，并按题目所给 10/12 阈值给出返工结论；不可重写规格。"),
                 no_tool_call("get_prd_text"),
                 no_tool_call("search_knowledgebase"),
@@ -199,6 +208,15 @@ def build_cases(judge: LLMClient) -> dict[str, tuple[SmeltCase, ...]]:
             new_case("spec-evaluation-does-not-rewrite")
             .when(text("只评审并给分：支付查询接口 GET /payments/{id} 返回 payment_id 与 status，404 表示不存在。没有另行指定时，按 Porto 默认 10/12 阈值。请勿改写规格。"))
             .then(
+                output_contains(
+                    "需求覆盖度",
+                    "API 规范性",
+                    "数据模型完整性",
+                    "依赖与边界",
+                    "可验证性",
+                    "一致性",
+                    "/12",
+                ),
                 _judge(judge, "只依据给出的规格完成六维评审：六维分别评分并引用原文证据，给出总分 /12 和返工结论。不要输出一份替代版或重写后的完整规格。"),
                 no_tool_call("get_prd_text"),
                 no_tool_call("search_knowledgebase"),
@@ -209,6 +227,15 @@ def build_cases(judge: LLMClient) -> dict[str, tuple[SmeltCase, ...]]:
             new_case("spec-evaluation-scores-without-upstream-context")
             .when(text("只审核这段规格：POST /orders 创建订单；Order 有 id、status；验收标准是系统正常工作。没有 PRD 或其他上下文。"))
             .then(
+                output_contains(
+                    "需求覆盖度",
+                    "API 规范性",
+                    "数据模型完整性",
+                    "依赖与边界",
+                    "可验证性",
+                    "一致性",
+                    "/12",
+                ),
                 _judge(judge, "必须立即按六个维度引用规格证据给分；可核对性未知的覆盖度/一致性应给 1 并说明缺少上游上下文。不得拒绝评审、不得将缺失上下文多次作为缺陷扣分、不得重写或新增强制要求。"),
                 no_tool_call("get_prd_text"),
                 no_tool_call("search_knowledgebase"),
@@ -252,19 +279,38 @@ def build_cases(judge: LLMClient) -> dict[str, tuple[SmeltCase, ...]]:
             .then(
                 tool_call("get_session_facts"),
                 tool_call("search_memory"),
-                _judge(judge, "应从历史讨论中回答 merchantReference，并说明当前 session facts 没包含这项决定；不得编造其他规则。"),
+                _judge(judge, "应从历史讨论中回答 merchantReference；不得编造其他规则。"),
                 no_tool_call("get_prd_text"),
                 no_tool_call("search_knowledgebase"),
                 tool_budget(max=2),
                 turns_used(max=3),
             ),
             new_case("memory-does-not-hijack-document-questions")
-            .when(text("Porto 文档对 API 错误响应格式有什么约定？如果当前没有文档检索工具，请直接说明。"))
+            .when(text("Porto 文档对 API 错误响应格式有什么约定？请查一下文档并说明来源。"))
             .then(
-                _judge(judge, "不要把文档问题当成历史对话检索；当前工具没有 knowledgebase 时应说明无法检索文档，不得查询 memory 或 session facts。"),
+                tool_call("search_knowledgebase"),
+                _judge(judge, "从文档检索结果回答 API 错误响应格式并标记文档来源；不要把文档问题当成历史对话检索。"),
                 no_tool_call("search_memory"),
                 no_tool_call("get_session_facts"),
                 no_tool_call("get_prd_text"),
+                turns_used(max=2),
+            ),
+            new_case("memory-distinguishes-document-and-conversation-sources")
+            .when(text("我印象里你之前提过 Porto 的接口约定，但不确定是文档里的还是我们聊天里说的。请查一下到底来自哪里，并分别说明找到的内容。"))
+            .then(
+                tool_call("search_knowledgebase"),
+                tool_call("search_memory"),
+                _judge(judge, "分别检查知识库文档和会话/历史对话，按来源标明各自检索到的约定；不得把记忆内容说成文档内容，也不能因一个来源有结果就省略用户要求核实的另一个来源。"),
+                tool_budget(max=2),
+                turns_used(max=5),
+            ),
+            new_case("memory-does-not-retrieve-answer-already-in-request")
+            .when(text("退款请求使用原支付单的幂等键，这条规则已确认。请直接告诉我实现退款幂等时应使用哪个键，不要再查之前的记录。"))
+            .then(
+                _judge(judge, "直接依据用户当前消息回答退款幂等使用原支付单的幂等键；不要查询 session facts、memory 或 knowledgebase。"),
+                no_tool_call("get_session_facts"),
+                no_tool_call("search_memory"),
+                no_tool_call("search_knowledgebase"),
                 turns_used(max=1),
             ),
         ),

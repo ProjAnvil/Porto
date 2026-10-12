@@ -64,7 +64,7 @@ _SKILL_TOOL_NAMES = {
     "subsystem-decomposition": set(),
     "spec-generation": {"search_knowledgebase"},
     "spec-evaluation": set(),
-    "porto-memory": {"get_session_facts", "search_memory"},
+    "porto-memory": {"get_session_facts", "search_memory", "search_knowledgebase"},
 }
 
 
