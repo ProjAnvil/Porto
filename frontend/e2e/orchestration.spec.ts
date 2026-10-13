@@ -74,7 +74,10 @@ test("intent engine persists as rule after save and reload", async ({ page }) =>
 
 test("typesafe panel expands and validates empty api key", async ({ page }) => {
   await openOrchestration(page);
-  await expect(page.getByTestId("typesafe-panel")).toHaveCount(0);
+  // 面板常驻挂载（0fr 折叠动画）：断言打在高度真正为 0 的裁切容器上——
+  // 被裁切的子元素对 Playwright 仍算 visible
+  const clip = page.getByTestId("typesafe-panel-clip");
+  await expect(clip).toBeHidden();
   await page.getByRole("button", { name: /TypeSafe 外部引擎/ }).click();
   await expect(page.getByTestId("typesafe-panel")).toBeVisible();
   await page.getByRole("button", { name: "保存意图路由" }).click();
@@ -107,4 +110,25 @@ test("orchestration locks under agent_sdk and recovers after switching back", as
   await page.getByRole("button", { name: "编排", exact: true }).click();
   await expect(page.getByTestId("orchestration-locked-banner")).toHaveCount(0);
   await expect(page.getByTestId("pipeline-overview")).toBeVisible();
+});
+
+test("inspector hides on settings page and pin keeps it visible", async ({
+  page,
+}) => {
+  await openSettings(page);
+  // 未固定：进入 settings 后 Inspector 收起
+  await expect(page.getByRole("complementary", { name: "Inspector" })).toBeHidden();
+  // Settings 按钮非 toggle：经「问答」回工作台，Inspector 恢复显示
+  await page.getByRole("button", { name: "问答" }).click();
+  await expect(
+    page.getByRole("complementary", { name: "Inspector" }).getByText("Agent Steps"),
+  ).toBeVisible();
+  // 固定后再进 settings，Inspector 保持显示
+  await page.getByTestId("inspector-pin").click();
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(
+    page.getByRole("complementary", { name: "Inspector" }).getByText("Agent Steps"),
+  ).toBeVisible();
+  // 还原：取消固定（避免影响其他用例与本地持久化状态）
+  await page.getByTestId("inspector-pin").click();
 });

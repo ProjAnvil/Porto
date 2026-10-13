@@ -14,6 +14,73 @@
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
+/* ── Motion tokens ──
+   时长三档：fast 微观反馈 / base 面板级 / slow 仅 Inspector 轨道收缩。
+   缓动：standard 对称（收起、颜色），out-soft 快出慢停（一切"进入"）。
+   规则：进场均 enter-only，位移 ≤4px。 */
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 300ms;
+}
+
+@theme {
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-view-in: view-in var(--motion-base) var(--ease-out-soft) both;
+  --animate-section-in: section-in 160ms var(--ease-out-soft) both;
+  --animate-item-in: item-in var(--motion-base) var(--ease-out-soft) backwards;
+  --animate-toast-in: toast-in var(--motion-base) var(--ease-out-soft);
+  --animate-fade-in: fade-in var(--motion-fast) var(--ease-standard) both;
+
+  @keyframes view-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @keyframes section-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+  }
+  @keyframes item-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+}
+
+/* reduced-motion：动效时长归零；spinner 是功能性反馈，豁免 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-spin {
+    animation-duration: 1s !important;
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;

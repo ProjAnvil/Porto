@@ -32,10 +32,12 @@ export default defineConfig({
       },
     },
     {
-      command: "npm run dev -- -p 3170",
+      // 生产构建而非 next dev：Next 16 的项目级 dev 单例会拒绝同一目录的第二个
+      // dev server（用户 make start 的 3100 实例持有锁），build+start 与之解耦。
+      command: "npm run build && npm run start -- -p 3170",
       url: "http://localhost:3170",
       reuseExistingServer: false,
-      timeout: 120_000,
+      timeout: 300_000,
       env: {
         PORTO_API_BASE_URL: "http://127.0.0.1:8170",
       },

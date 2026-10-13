@@ -26,6 +26,7 @@ import {
   Loader2,
   Network,
   Pencil,
+  Pin,
   Play,
   Plus,
   Route,
@@ -287,6 +288,28 @@ const EMPTY_SUBSYSTEM: Subsystem = {
 
 export function PortoWorkbench() {
   const [view, setView] = useState<View>("workbench");
+
+  // Inspector 固定（pin）：固定时设置页也保持显示；未固定时进入 settings 自动收起。
+  // localStorage 持久化在 effect 中读写（SSR 首帧恒 false，无 hydration mismatch）。
+  const [inspectorPinned, setInspectorPinned] = useState(false);
+  // SSR 安全的 localStorage 读取必须走 mount effect（懒初始化会与 SSR 首帧
+  // hydration 不匹配），故豁免 react-compiler 的 setState-in-effect 规则。
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setInspectorPinned(localStorage.getItem("porto.inspector.pinned") === "1");
+    } catch {
+      /* 隐私模式/禁用存储：退化为会话内状态 */
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("porto.inspector.pinned", inspectorPinned ? "1" : "0");
+    } catch {
+      /* 同上 */
+    }
+  }, [inspectorPinned]);
+  const showInspector = view === "workbench" || inspectorPinned;
   const [mode, setMode] = useState<Mode>("chat");
   const [sessionId, setSessionId] = useState(
     `porto-${new Date().toISOString().slice(0, 10)}`,
@@ -713,7 +736,13 @@ export function PortoWorkbench() {
             后端未连接，请检查 make status
           </div>
         ) : null}
-        <div className="grid min-h-0 flex-1 grid-cols-1 bg-zinc-100 text-zinc-950 lg:grid-cols-[300px_minmax(0,1fr)_380px]">
+        <div
+          className={`grid min-h-0 flex-1 grid-cols-1 bg-zinc-100 text-zinc-950 transition-[grid-template-columns] duration-300 ease-standard lg:overflow-hidden ${
+            showInspector
+              ? "lg:grid-cols-[300px_minmax(0,1fr)_380px]"
+              : "lg:grid-cols-[300px_minmax(0,1fr)_0px]"
+          }`}
+        >
         <Sidebar
           busy={Boolean(busyLabel)}
           kbStats={kbStats}
@@ -731,7 +760,7 @@ export function PortoWorkbench() {
           setView={setView}
         />
 
-        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden border-x border-zinc-200 bg-white">
+        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-zinc-200 bg-white">
           <header className="flex h-14 items-center justify-between border-b border-zinc-200 px-4">
             <div className="flex items-center gap-2 text-sm font-semibold">
               {view === "settings" ? (
@@ -759,6 +788,8 @@ export function PortoWorkbench() {
             ) : null}
           </header>
 
+          {/* view/mode 切换统一入场动画（enter-only：key 重挂载触发，出场直接卸载） */}
+          <div key={`${view}-${mode}`} className="flex min-h-0 flex-1 animate-view-in flex-col">
           {view === "settings" ? (
             <SettingsPage
               agentConfig={agentConfig}
@@ -818,9 +849,16 @@ export function PortoWorkbench() {
               agentMaxToolTurns={agentConfig.agent_max_tool_turns}
             />
           )}
+          </div>
         </main>
 
-        <Inspector inspector={inspector} memoryItems={memoryItems} />
+        <Inspector
+          inspector={inspector}
+          memoryItems={memoryItems}
+          pinned={inspectorPinned}
+          onTogglePinned={() => setInspectorPinned((v) => !v)}
+          visible={showInspector}
+        />
         </div>
       </div>
   );
@@ -1444,6 +1482,14 @@ function SettingsPage({
 }) {
   const [section, setSection] = useState<SettingsSection>("rag");
   const [savedLabel, setSavedLabel] = useState("");
+  // toast 二阶段：1600ms 开始出场（收起动画 200ms），1800ms 卸载；连续保存时重置计时器
+  const [savedVisible, setSavedVisible] = useState(false);
+  const savedTimers = useRef<number[]>([]);
+  const sectionScrollRef = useRef<HTMLDivElement | null>(null);
+  // section 切换：内容入场动画 + 滚动归零（残留滚动位置是"伪 bug 感"的主要来源）
+  useEffect(() => {
+    if (sectionScrollRef.current) sectionScrollRef.current.scrollTop = 0;
+  }, [section]);
 
   const ri = kbStats?.rag_index;
   const progressPct =
@@ -1474,8 +1520,13 @@ function SettingsPage({
   };
 
   const markSaved = (label: string) => {
+    savedTimers.current.forEach(window.clearTimeout);
     setSavedLabel(label);
-    window.setTimeout(() => setSavedLabel(""), 1800);
+    setSavedVisible(true);
+    savedTimers.current = [
+      window.setTimeout(() => setSavedVisible(false), 1600),
+      window.setTimeout(() => setSavedLabel(""), 1800),
+    ];
   };
 
   async function saveKnowledge() {
@@ -1549,18 +1600,29 @@ function SettingsPage({
         </div>
       </aside>
 
-      <section className="min-w-0 overflow-y-auto p-5">
+      <section className="min-w-0 overflow-y-auto p-5" ref={sectionScrollRef}>
         {error ? (
           <div className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
             {error}
           </div>
         ) : null}
         {savedLabel ? (
-          <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {savedLabel}
+          <div
+            aria-live="polite"
+            className={`grid transition-[grid-template-rows,opacity] duration-200 ease-standard ${
+              savedVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+            }`}
+            role="status"
+          >
+            <div className="min-h-0 overflow-hidden">
+              <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                {savedLabel}
+              </div>
+            </div>
           </div>
         ) : null}
 
+        <div className="animate-section-in" key={section}>
         {section === "rag" ? (
           <RagSettingsForm
             key={JSON.stringify(ragConfig)}
@@ -1710,7 +1772,7 @@ function SettingsPage({
                 {ri.status === "running" ? (
                   <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
                     <div
-                      className="h-full bg-zinc-950 transition-all"
+                      className="h-full bg-zinc-950 transition-[width]"
                       style={{ width: `${progressPct}%` }}
                     />
                   </div>
@@ -1758,6 +1820,7 @@ function SettingsPage({
         {section === "architecture" ? <ArchitectureView /> : null}
 
         {section === "vector_database" ? <VectorDatabaseSettings /> : null}
+        </div>
       </section>
     </div>
   );
@@ -2126,12 +2189,13 @@ function EngineCardGroup({
                   : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50"
               }`}
             >
-              {selected ? (
-                <CheckCircle2
-                  size={16}
-                  className="absolute right-2 top-2 text-zinc-950"
-                />
-              ) : null}
+              <CheckCircle2
+                size={16}
+                aria-hidden
+                className={`absolute right-2 top-2 text-zinc-950 transition-all duration-120 ease-standard ${
+                  selected ? "scale-100 opacity-100" : "scale-75 opacity-0"
+                }`}
+              />
               <span className="text-sm font-medium text-zinc-800">
                 {opt.label}
               </span>
@@ -2642,8 +2706,9 @@ function StrategyCardGroup({
         <button
           key={opt.value}
           type="button"
+          aria-pressed={value === opt.value}
           onClick={() => onChange(opt.value)}
-          className={`flex-1 min-w-[140px] rounded-lg border p-3 text-left transition ${
+          className={`flex-1 min-w-[140px] rounded-lg border p-3 text-left transition duration-150 ease-standard focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-950 ${
             value === opt.value
               ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900"
               : "border-zinc-200 hover:border-zinc-400"
@@ -2791,7 +2856,12 @@ function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
   const scrollTo = (id: string) => {
     const el = document.getElementById(id);
     if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+      block: "start",
+    });
     el.classList.add("ring-2", "ring-zinc-950", "ring-offset-2");
     window.setTimeout(
       () => el.classList.remove("ring-2", "ring-zinc-950", "ring-offset-2"),
@@ -3120,7 +3190,9 @@ function OrchestrationPage({
 
       <fieldset
         aria-disabled={locked}
-        className={locked ? "space-y-6 opacity-50" : "space-y-6"}
+        className={`space-y-6 transition-opacity duration-200 ease-standard ${
+          locked ? "opacity-50" : "opacity-100"
+        }`}
         disabled={locked}
       >
         <PipelineOverviewRail stages={stages} />
@@ -3151,7 +3223,7 @@ function OrchestrationPage({
             </div>
 
             <div
-              className={`border-t border-zinc-200 pt-4 ${
+              className={`border-t border-zinc-200 pt-4 transition-opacity duration-200 ease-standard ${
                 intentDraft.intent_routing_mode === "off" ? "opacity-50" : ""
               }`}
             >
@@ -3159,7 +3231,7 @@ function OrchestrationPage({
                 路由引擎
               </div>
               {intentDraft.intent_routing_mode === "off" ? (
-                <p className="mb-3 text-xs text-zinc-400">
+                <p className="mb-3 animate-fade-in text-xs text-zinc-400">
                   路由已关闭，无需选择引擎。
                 </p>
               ) : null}
@@ -3174,7 +3246,20 @@ function OrchestrationPage({
               </fieldset>
             </div>
 
-            {typesafeSelected ? (
+            {/* 常驻挂载 + grid-rows 0fr↔1fr 展开动画（无需测量内容高度）；
+                inert 把收起态移出 tab 序与可访问性树 */}
+            <div
+              className={`grid transition-[grid-template-rows] duration-200 ease-standard ${
+                typesafeSelected ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+              }`}
+            >
+              <div
+                className={`min-h-0 overflow-hidden transition-opacity duration-200 ease-standard ${
+                  typesafeSelected ? "opacity-100" : "opacity-0"
+                }`}
+                data-testid="typesafe-panel-clip"
+                inert={!typesafeSelected}
+              >
               <div
                 className="rounded-lg border-l-2 border-zinc-300 bg-zinc-50 py-4 pl-4 pr-3"
                 data-testid="typesafe-panel"
@@ -3307,7 +3392,8 @@ function OrchestrationPage({
                   </label>
                 </div>
               </div>
-            ) : null}
+              </div>
+            </div>
 
             <div className="border-t border-zinc-200 pt-4">
               <div className="mb-2 text-sm font-semibold text-zinc-900">
@@ -3727,7 +3813,7 @@ function SettingsCard({
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">{title}</h2>
         <button
-          className="flex items-center gap-2 rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
+          className="flex items-center gap-2 rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white transition-colors duration-120 ease-standard hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-950 disabled:opacity-40"
           disabled={busy}
           onClick={() => void onSave()}
         >
@@ -4645,61 +4731,105 @@ function splitCsv(value: string): string[] {
 function Inspector({
   inspector,
   memoryItems,
+  pinned,
+  onTogglePinned,
+  visible,
 }: {
   inspector: InspectorState;
   memoryItems: MessageRecord[];
+  pinned: boolean;
+  onTogglePinned: () => void;
+  visible: boolean;
 }) {
+  // 两层结构：外层随 grid 第三轨道 380px↔0px 被裁切（无 padding/border，避免泄漏底色），
+  // 内层定宽 380px 保证收缩过程文字不回流。
   return (
-    <aside className="min-w-0 overflow-y-auto border-t border-zinc-200 bg-zinc-50 p-4 lg:border-t-0">
-      <InspectorSection icon={<Play size={15} />} title="Agent Steps">
-        <div className="space-y-2">
-          {inspector.steps.map((step, index) => (
-            <details
-              className="rounded-lg border border-zinc-200 bg-white p-3"
-              key={`${step.name}-${index}`}
-            >
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">{step.name}</span>
-                <span className="flex items-center gap-1 text-emerald-600">
-                  <CheckCircle2 size={15} />
-                  <ChevronDown size={13} />
-                </span>
-              </summary>
-              <p className="mt-2 text-xs leading-5 text-zinc-600">
-                {step.summary}
-              </p>
-            </details>
-          ))}
-          {inspector.steps.length === 0 ? <EmptyText text="尚无执行步骤。" /> : null}
+    <aside
+      aria-label="Inspector"
+      className={`min-w-0 lg:h-full lg:overflow-hidden ${visible ? "" : "max-lg:hidden"}`}
+    >
+      <div
+        className={`h-auto w-full overflow-y-auto border-t border-zinc-200 bg-zinc-50 p-4 transition-opacity duration-200 ease-standard lg:h-full lg:w-[380px] lg:border-t-0 lg:border-l ${
+          visible ? "opacity-100" : "opacity-0"
+        }`}
+      >
+        <div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center justify-between border-b border-zinc-200 bg-zinc-50/95 px-4 py-2 backdrop-blur-sm">
+          <span className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">
+            Inspector
+          </span>
+          <button
+            type="button"
+            aria-pressed={pinned}
+            aria-label={
+              pinned ? "取消固定 Inspector（进入设置页时收起）" : "固定 Inspector（设置页保持显示）"
+            }
+            title={pinned ? "已固定：设置页保持显示" : "未固定：进入设置页自动收起"}
+            data-testid="inspector-pin"
+            onClick={onTogglePinned}
+            className={`flex size-7 items-center justify-center rounded-md transition-colors duration-120 ease-standard focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-400 ${
+              pinned
+                ? "bg-zinc-200/80 text-zinc-900"
+                : "text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-700"
+            }`}
+          >
+            <Pin
+              size={14}
+              aria-hidden
+              className={`transition-transform duration-120 ease-standard ${pinned ? "rotate-45 fill-current" : ""}`}
+            />
+          </button>
         </div>
-      </InspectorSection>
 
-      {inspector.evaluation ? <EvalCard evaluation={inspector.evaluation} /> : null}
+        <InspectorSection icon={<Play size={15} />} index={0} title="Agent Steps">
+          <div className="space-y-2">
+            {inspector.steps.map((step, index) => (
+              <details
+                className="rounded-lg border border-zinc-200 bg-white p-3"
+                key={`${step.name}-${index}`}
+              >
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
+                  <span className="truncate text-sm font-medium">{step.name}</span>
+                  <span className="flex items-center gap-1 text-emerald-600">
+                    <CheckCircle2 size={15} />
+                    <ChevronDown size={13} />
+                  </span>
+                </summary>
+                <p className="mt-2 text-xs leading-5 text-zinc-600">
+                  {step.summary}
+                </p>
+              </details>
+            ))}
+            {inspector.steps.length === 0 ? <EmptyText text="尚无执行步骤。" /> : null}
+          </div>
+        </InspectorSection>
 
-      <InspectorSection icon={<History size={15} />} title="Memory Search">
-        <ChunkList chunks={inspector.memory} empty="暂无记忆命中。" />
-      </InspectorSection>
+        {inspector.evaluation ? <EvalCard evaluation={inspector.evaluation} /> : null}
 
-      <InspectorSection icon={<History size={15} />} title="Chat Records">
-        <div className="max-h-80 space-y-2 overflow-y-auto">
-          {memoryItems.map((item) => (
-            <div className="rounded-lg border border-zinc-200 bg-white p-2" key={item.id}>
-              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-                <span className="font-medium">{item.role}</span>
-                <span className="truncate text-zinc-400">{item.created_at}</span>
+        <InspectorSection icon={<History size={15} />} index={2} title="Memory Search">
+          <ChunkList chunks={inspector.memory} empty="暂无记忆命中。" />
+        </InspectorSection>
+
+        <InspectorSection icon={<History size={15} />} index={3} title="Chat Records">
+          <div className="max-h-80 space-y-2 overflow-y-auto">
+            {memoryItems.map((item) => (
+              <div className="rounded-lg border border-zinc-200 bg-white p-2" key={item.id}>
+                <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                  <span className="font-medium">{item.role}</span>
+                  <span className="truncate text-zinc-400">{item.created_at}</span>
+                </div>
+                <p className="line-clamp-3 text-xs leading-5 text-zinc-600">
+                  {item.content}
+                </p>
               </div>
-              <p className="line-clamp-3 text-xs leading-5 text-zinc-600">
-                {item.content}
-              </p>
-            </div>
-          ))}
-          {memoryItems.length === 0 ? <EmptyText text="暂无聊天记录。" /> : null}
-        </div>
-      </InspectorSection>
+            ))}
+            {memoryItems.length === 0 ? <EmptyText text="暂无聊天记录。" /> : null}
+          </div>
+        </InspectorSection>
 
-      <InspectorSection icon={<FileInput size={15} />} title="Sources">
-        <ChunkList chunks={inspector.sources} empty="暂无引用片段。" />
-      </InspectorSection>
+        <InspectorSection icon={<FileInput size={15} />} index={4} title="Sources">
+          <ChunkList chunks={inspector.sources} empty="暂无引用片段。" />
+        </InspectorSection>
+      </div>
     </aside>
   );
 }
@@ -4707,14 +4837,20 @@ function Inspector({
 function InspectorSection({
   children,
   icon,
+  index,
   title,
 }: {
   children: React.ReactNode;
   icon: React.ReactNode;
+  index: number;
   title: string;
 }) {
+  // stagger 入场：45ms 步进、仅 lg（移动端 Inspector 在折叠线下方）；backwards 保证 delay 期间不可见
   return (
-    <section className="mb-6">
+    <section
+      className="mb-6 lg:animate-item-in"
+      style={{ animationDelay: `${Math.min(index, 4) * 45}ms` }}
+    >
       <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
         {icon}
         {title}
@@ -4726,7 +4862,7 @@ function InspectorSection({
 
 function EvalCard({ evaluation }: { evaluation: ChatResponseEval }) {
   return (
-    <InspectorSection icon={<Gauge size={15} />} title="RAG Eval">
+    <InspectorSection icon={<Gauge size={15} />} index={1} title="RAG Eval">
       <div className="rounded-lg border border-zinc-200 bg-white p-3">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-medium">Score</span>
