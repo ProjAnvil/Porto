@@ -13,6 +13,7 @@ from ..settings import settings
 from .deps import get_health_monitor, get_index_supervisor, get_workflow_executor
 from .routes import (
     chat,
+    intent,
     knowledge,
     sessions,
     vector_databases,
@@ -103,6 +104,7 @@ async def log_requests(request: Request, call_next):
 
 
 app.include_router(settings_routes.router)
+app.include_router(intent.router)
 app.include_router(knowledge.router)
 app.include_router(vector_databases.router)
 app.include_router(vector_migrations.router)

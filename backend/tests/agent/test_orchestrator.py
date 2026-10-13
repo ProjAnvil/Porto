@@ -69,3 +69,20 @@ def test_chitchat_excluded_from_vector_search(orch, sample_settings):
     # But session history shows both
     all_msgs = orch.sessions.list_messages("s1")
     assert len(all_msgs) == 4
+
+
+def test_route_intent_step_reports_engine_metadata(orch, sample_settings, monkeypatch):
+    """编排元数据：route_intent step 携带 engine/confidence/fallback（意图引擎可观测）。"""
+    from porto_chatbot.agent import orchestrator as orch_mod
+    from porto_chatbot.models import RagChatSettingsPayload
+
+    monkeypatch.setattr(
+        orch_mod, "effective_rag_chat_settings",
+        lambda payload=None: RagChatSettingsPayload(intent_engine="rule"),
+    )
+    req = ChatRequest(message="你好", session_id="test-engine-meta")
+    with patch.object(orch, "_llm_complete", return_value="你好！"):
+        resp = orch.handle(req)
+    step = next(s for s in resp.steps if s.name == "route_intent")
+    assert step.data["engine"] == "rule"
+    assert step.data["fallback"] is False

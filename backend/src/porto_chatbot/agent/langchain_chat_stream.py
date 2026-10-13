@@ -263,7 +263,13 @@ async def _stream_rag_path(
             "name": "route_intent",
             "status": "completed",
             "summary": f"rag: {decision.reason}",
-            "data": {"intent": decision.intent, "reason": decision.reason},
+            "data": {
+                "intent": decision.intent,
+                "reason": decision.reason,
+                "engine": getattr(decision, "engine", ""),
+                "confidence": getattr(decision, "confidence", None),
+                "fallback": getattr(decision, "fallback_from", None) is not None,
+            },
         },
         {
             "name": "retrieve_memory",

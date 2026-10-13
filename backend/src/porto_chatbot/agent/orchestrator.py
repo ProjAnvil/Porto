@@ -88,7 +88,10 @@ class ChatOrchestrator:
         routing_mode = rag_chat.intent_routing_mode or IntentRoutingMode.BINARY
         if routing_mode == IntentRoutingMode.OFF:
             return IntentDecision(ChatIntent.RAG, "routing_off")
-        return route_chat_intent(req.message, self.settings, llm, routing_mode=routing_mode)
+        return route_chat_intent(
+            req.message, self.settings, llm,
+            routing_mode=routing_mode, engine=rag_chat.intent_engine,
+        )
 
     @property
     def _transform_strategy(self) -> QueryTransformStrategy:
@@ -173,7 +176,10 @@ class ChatOrchestrator:
             steps=[
                 {"name": "route_intent", "status": "completed",
                  "summary": f"direct: {decision.reason}",
-                 "data": {"intent": decision.intent, "reason": decision.reason}},
+                 "data": {"intent": decision.intent, "reason": decision.reason,
+                          "engine": getattr(decision, "engine", ""),
+                          "confidence": getattr(decision, "confidence", None),
+                          "fallback": getattr(decision, "fallback_from", None) is not None}},
                 {"name": "answer", "status": "completed",
                  "summary": "直接回复，未调用 RAG", "data": {}},
             ],
@@ -204,7 +210,10 @@ class ChatOrchestrator:
             steps=[
                 {"name": "route_intent", "status": "completed",
                  "summary": f"rag unavailable: {reason}",
-                 "data": {"reason": reason}},
+                 "data": {"reason": reason,
+                          "engine": getattr(decision, "engine", ""),
+                          "confidence": getattr(decision, "confidence", None),
+                          "fallback": getattr(decision, "fallback_from", None) is not None}},
                 {"name": "retrieve_knowledge", "status": "completed",
                  "summary": hint, "data": {}},
                 {"name": "answer", "status": "completed",
@@ -308,7 +317,10 @@ class ChatOrchestrator:
             steps=[
                 {"name": "route_intent", "status": "completed",
                  "summary": f"rag: {decision.reason}",
-                 "data": {"intent": decision.intent, "reason": decision.reason}},
+                 "data": {"intent": decision.intent, "reason": decision.reason,
+                          "engine": getattr(decision, "engine", ""),
+                          "confidence": getattr(decision, "confidence", None),
+                          "fallback": getattr(decision, "fallback_from", None) is not None}},
                 {"name": "retrieve_memory", "status": "completed",
                  "summary": f"检索到 {len(memories)} 条记忆，近期 {len(recent)} 条"
                             + ("（含历史摘要）" if summary else ""),

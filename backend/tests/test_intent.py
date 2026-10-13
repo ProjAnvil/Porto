@@ -128,3 +128,39 @@ def test_adaptive_mode_llm_schema_includes_three_labels(tmp_path, monkeypatch):
     d = route_chat_intent("支付订单状态", None, llm, routing_mode=IntentRoutingMode.ADAPTIVE)
     assert captured["enum"] == ["direct", "quick_rag", "deep_rag"]
     assert d.intent == "quick_rag"
+
+
+# ── 意图引擎（builtin_llm / rule / typesafe）──
+
+
+def test_rule_engine_skips_llm_entirely(tmp_path):
+    from porto_chatbot.models.enums import IntentEngine
+
+    s = Settings(kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l")
+    llm = _enabled_llm(tmp_path)
+    called = {"n": 0}
+    monkey = llm.complete_structured  # noqa: F841 — 保证引用存在
+    llm.complete_structured = lambda *a, **k: called.update(n=called["n"] + 1)
+    d = route_chat_intent("你好", s, llm, engine=IntentEngine.RULE)
+    assert d.intent == ChatIntent.DIRECT
+    assert d.engine == "rule"
+    assert d.confidence is None
+    assert called["n"] == 0  # 规则引擎不碰 LLM
+
+
+def test_default_engine_is_builtin_llm(tmp_path):
+    s = Settings(kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l")
+    llm = LLMClient(s)  # 未启用 → builtin 流程内部降级 rule
+    d = route_chat_intent("帮我查知识库里的支付文档", s, llm)
+    assert d.engine == "rule"  # llm.enabled=False → 规则胜出
+
+
+def test_off_mode_reports_empty_engine():
+    from porto_chatbot.models.enums import IntentEngine
+
+    d = route_chat_intent(
+        "你好", routing_mode=IntentRoutingMode.OFF, engine=IntentEngine.RULE,
+    )
+    assert d.intent == ChatIntent.RAG
+    assert d.reason == "routing_off"
+    assert d.engine == ""
