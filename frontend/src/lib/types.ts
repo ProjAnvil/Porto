@@ -112,6 +112,9 @@ export type DocumentConfig = {
   max_pdf_pages: number;
 };
 
+// 意图引擎（路由模式的执行者；仅 Langchain chat 路径消费）
+export type IntentEngine = "builtin_llm" | "rule" | "typesafe";
+
 // 检索优化（chat 场景）—— intent routing + 查询变换
 export type RagChatConfig = {
   intent_routing_mode: "off" | "binary" | "adaptive";
@@ -124,6 +127,12 @@ export type RagChatConfig = {
   multi_query_count: number;
   hyde_fallback_threshold: number;
   condense_enabled: boolean;
+  intent_engine: IntentEngine;
+  chat_typesafe_api_key: string;
+  chat_typesafe_base_url: string;
+  chat_typesafe_timeout_ms: number;
+  chat_typesafe_confidence_threshold: number;
+  chat_typesafe_low_confidence_fallback: boolean;
 };
 
 // 检索优化（workflow 场景）—— 仅查询变换（None/Multi-Query/Decomposition）

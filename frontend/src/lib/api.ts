@@ -304,12 +304,20 @@ export const defaultDocumentConfig: DocumentConfig = {
 };
 
 // 与 backend settings.py 默认值保持一致（chat_intent_routing_mode=BINARY、
-// *_query_transform_strategy=NONE、multi_query_count=4、hyde_fallback_threshold=0.3）
+// *_query_transform_strategy=NONE、multi_query_count=4、hyde_fallback_threshold=0.3、
+// condense_enabled=true、chat_intent_engine=builtin_llm、typesafe 超时 2000ms/阈值 0.6）
 export const defaultRagChatConfig: RagChatConfig = {
   intent_routing_mode: "binary",
   query_transform_strategy: "none",
   multi_query_count: 4,
   hyde_fallback_threshold: 0.3,
+  condense_enabled: true,
+  intent_engine: "builtin_llm",
+  chat_typesafe_api_key: "",
+  chat_typesafe_base_url: "",
+  chat_typesafe_timeout_ms: 2000,
+  chat_typesafe_confidence_threshold: 0.6,
+  chat_typesafe_low_confidence_fallback: true,
 };
 
 export const defaultRagWorkflowConfig: RagWorkflowConfig = {
