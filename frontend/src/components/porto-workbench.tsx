@@ -1604,7 +1604,9 @@ function SettingsPage({
 
         {section === "orchestration" ? (
           <OrchestrationPage
-            key={agentConfig.chatbot_backend ?? "langchain"}
+            key={`${agentConfig.chatbot_backend ?? "langchain"}|${JSON.stringify(
+              ragChatConfig,
+            )}|${JSON.stringify(ragConfig)}|${JSON.stringify(agentConfig)}`}
             busy={busy}
             agentConfig={agentConfig}
             ragConfig={ragConfig}
@@ -2888,7 +2890,12 @@ function OrchestrationPage({
 }) {
   const locked = (agentConfig.chatbot_backend ?? "langchain") === "agent_sdk";
 
-  const [intentDraft, setIntentDraft] = useState(ragChatConfig);
+  // GET /api/settings 对未保存的可选键返回 null（api_key/base_url），统一归一为 ""
+  const [intentDraft, setIntentDraft] = useState(() => ({
+    ...ragChatConfig,
+    chat_typesafe_api_key: ragChatConfig.chat_typesafe_api_key ?? "",
+    chat_typesafe_base_url: ragChatConfig.chat_typesafe_base_url ?? "",
+  }));
   const [transformDraft, setTransformDraft] = useState(ragChatConfig);
   const [retrievalDraft, setRetrievalDraft] = useState(ragConfig);
   const [rerankDraft, setRerankDraft] = useState<RerankConfig>(() => ({
