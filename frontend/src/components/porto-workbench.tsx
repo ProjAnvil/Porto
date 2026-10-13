@@ -18,6 +18,8 @@ import {
   ChevronDown,
   Database,
   Download,
+  Eye,
+  EyeOff,
   FileInput,
   Gauge,
   History,
@@ -26,6 +28,7 @@ import {
   Pencil,
   Play,
   Plus,
+  Route,
   Search,
   Send,
   Settings,
@@ -57,6 +60,7 @@ import {
   startMigration,
   retryMigration,
   cancelMigration,
+  testIntentDecision,
   updateWorkflowSpec,
   uploadChatFile,
   deleteVectorProfile,
@@ -64,6 +68,7 @@ import {
   saveVectorProfile,
   testVectorConnection,
 } from "@/lib/api";
+import type { IntentTestResult } from "@/lib/api";
 import type {
   AgentConfig,
   ChatResponseEval,
@@ -110,7 +115,8 @@ type SettingsSection =
   | "knowledge"
   | "architecture"
   | "retrieval_optimization"
-  | "vector_database";
+  | "vector_database"
+  | "orchestration";
 
 type ChatAttachmentStatus = "uploading" | "done" | "error";
 type ChatAttachment = {
@@ -496,25 +502,6 @@ export function PortoWorkbench() {
     }
   }
 
-  async function saveRagChatConfig(
-    nextConfig: RagChatConfig,
-  ): Promise<boolean> {
-    setBusyLabel("保存检索优化（Chat 场景）");
-    setError("");
-    try {
-      const saved = await saveAppSettings({ rag_chat: nextConfig });
-      setRagChatConfig(saved.rag_chat);
-      return true;
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "保存检索优化（Chat 场景）失败",
-      );
-      return false;
-    } finally {
-      setBusyLabel("");
-    }
-  }
-
   async function saveRagWorkflowConfig(
     nextConfig: RagWorkflowConfig,
   ): Promise<boolean> {
@@ -528,6 +515,58 @@ export function PortoWorkbench() {
       setError(
         err instanceof Error ? err.message : "保存检索优化（Workflow 场景）失败",
       );
+      return false;
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  // 编排页：按卡片做部分保存（PUT 只带本卡字段，ConfigStore merge 语义不清掉同 namespace 其他键）
+  async function saveOrchestrationRagChat(
+    partial: Partial<RagChatConfig>,
+  ): Promise<boolean> {
+    setBusyLabel("保存编排设置");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ rag_chat: partial });
+      setRagChatConfig(saved.rag_chat);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存编排设置失败");
+      return false;
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function saveOrchestrationRag(
+    partial: Partial<RagConfig>,
+  ): Promise<boolean> {
+    setBusyLabel("保存编排设置");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ rag: partial });
+      setRagConfig(saved.rag);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存编排设置失败");
+      return false;
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function saveOrchestrationAgent(
+    partial: Partial<AgentConfig>,
+  ): Promise<boolean> {
+    setBusyLabel("保存编排设置");
+    setError("");
+    try {
+      const saved = await saveAppSettings({ agent: partial });
+      setAgentConfig(saved.agent);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存编排设置失败");
       return false;
     } finally {
       setBusyLabel("");
@@ -735,8 +774,10 @@ export function PortoWorkbench() {
               onSaveAgent={saveAgentConfig}
               onSaveDocument={saveDocumentConfig}
               onSaveRag={saveRagConfig}
-              onSaveRagChat={saveRagChatConfig}
               onSaveRagWorkflow={saveRagWorkflowConfig}
+              onSaveOrchRagChat={saveOrchestrationRagChat}
+              onSaveOrchRag={saveOrchestrationRag}
+              onSaveOrchAgent={saveOrchestrationAgent}
             />
           ) : mode === "chat" ? (
             <ChatLoader
@@ -1378,8 +1419,10 @@ function SettingsPage({
   onSaveAgent,
   onSaveDocument,
   onSaveRag,
-  onSaveRagChat,
   onSaveRagWorkflow,
+  onSaveOrchRagChat,
+  onSaveOrchRag,
+  onSaveOrchAgent,
 }: {
   agentConfig: AgentConfig;
   busy: boolean;
@@ -1394,8 +1437,10 @@ function SettingsPage({
   onSaveAgent: (config: AgentConfig) => Promise<void>;
   onSaveDocument: (config: DocumentConfig) => Promise<boolean>;
   onSaveRag: (config: RagConfig) => Promise<RagConfig | null>;
-  onSaveRagChat: (config: RagChatConfig) => Promise<boolean>;
   onSaveRagWorkflow: (config: RagWorkflowConfig) => Promise<boolean>;
+  onSaveOrchRagChat: (partial: Partial<RagChatConfig>) => Promise<boolean>;
+  onSaveOrchRag: (partial: Partial<RagConfig>) => Promise<boolean>;
+  onSaveOrchAgent: (partial: Partial<AgentConfig>) => Promise<boolean>;
 }) {
   const [section, setSection] = useState<SettingsSection>("rag");
   const [savedLabel, setSavedLabel] = useState("");
@@ -1445,68 +1490,61 @@ function SettingsPage({
           {(
             [
               {
-                id: "rag",
-                label: "RAG",
-                icon: <Gauge size={15} />,
-                child: false,
+                label: "对话引擎",
+                items: [
+                  { id: "agent", label: "Agent", icon: <Bot size={15} /> },
+                ],
               },
               {
-                id: "retrieval_optimization",
-                label: "检索优化",
-                icon: <Search size={15} />,
-                child: true,
+                label: "编排 · 仅 Langchain",
+                items: [
+                  { id: "orchestration", label: "编排", icon: <Route size={15} /> },
+                ],
               },
               {
-                id: "vector_database",
-                label: "向量数据库",
-                icon: <Database size={15} />,
-                child: true,
+                label: "知识检索",
+                items: [
+                  { id: "rag", label: "RAG", icon: <Gauge size={15} /> },
+                  { id: "retrieval_optimization", label: "检索优化", icon: <Search size={15} /> },
+                  { id: "vector_database", label: "向量数据库", icon: <Database size={15} /> },
+                ],
               },
               {
-                id: "agent",
-                label: "Agent",
-                icon: <Bot size={15} />,
-                child: false,
-              },
-              {
-                id: "document",
-                label: "文件解析",
-                icon: <FileInput size={15} />,
-                child: false,
-              },
-              {
-                id: "knowledge",
-                label: "Knowledge",
-                icon: <Database size={15} />,
-                child: false,
-              },
-              {
-                id: "architecture",
-                label: "架构",
-                icon: <Network size={15} />,
-                child: false,
+                label: "运行环境",
+                items: [
+                  { id: "document", label: "文件解析", icon: <FileInput size={15} /> },
+                  { id: "knowledge", label: "Knowledge", icon: <Database size={15} /> },
+                  { id: "architecture", label: "架构", icon: <Network size={15} /> },
+                ],
               },
             ] as {
-              id: SettingsSection;
               label: string;
-              icon: React.ReactNode;
-              child: boolean;
+              items: {
+                id: SettingsSection;
+                label: string;
+                icon: React.ReactNode;
+              }[];
             }[]
-          ).map((item) => (
-            <button
-              className={`flex w-full items-center gap-2 rounded-md py-2 text-sm ${
-                item.child ? "pl-7 text-[13px]" : "px-3"
-              } ${
-                section === item.id
-                  ? "bg-zinc-950 text-white"
-                  : "text-zinc-600 hover:bg-zinc-100"
-              }`}
-              key={item.id}
-              onClick={() => setSection(item.id)}
-            >
-              {item.icon}
-              {item.label}
-            </button>
+          ).map((group) => (
+            <div key={group.label} className="mt-4 first:mt-0">
+              <p className="px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+                {group.label}
+              </p>
+              {group.items.map((item) => (
+                <button
+                  className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition ${
+                    section === item.id
+                      ? "bg-zinc-950 text-white"
+                      : "text-zinc-600 hover:bg-zinc-100"
+                  }`}
+                  key={item.id}
+                  onClick={() => setSection(item.id)}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              ))}
+            </div>
           ))}
         </div>
       </aside>
@@ -1556,19 +1594,26 @@ function SettingsPage({
 
         {section === "retrieval_optimization" ? (
           <RagOptimizationSettingsForm
-            key={`${JSON.stringify(ragChatConfig)}|${JSON.stringify(
-              ragWorkflowConfig,
-            )}|${JSON.stringify(ragConfig)}`}
+            key={JSON.stringify(ragWorkflowConfig)}
             busy={busy}
-            ragChatConfig={ragChatConfig}
             ragWorkflowConfig={ragWorkflowConfig}
-            ragConfig={ragConfig}
-            onSavedChat={() => markSaved("Chat 场景检索优化已保存")}
             onSavedWorkflow={() => markSaved("Workflow 场景检索优化已保存")}
-            onSavedRerank={() => markSaved("重排序设置已保存")}
-            onSaveRagChat={onSaveRagChat}
             onSaveRagWorkflow={onSaveRagWorkflow}
-            onSaveRerank={onSaveRag}
+          />
+        ) : null}
+
+        {section === "orchestration" ? (
+          <OrchestrationPage
+            key={agentConfig.chatbot_backend ?? "langchain"}
+            busy={busy}
+            agentConfig={agentConfig}
+            ragConfig={ragConfig}
+            ragChatConfig={ragChatConfig}
+            onGoToAgent={() => setSection("agent")}
+            onSaved={() => markSaved("编排设置已保存")}
+            onSaveOrchRagChat={onSaveOrchRagChat}
+            onSaveOrchRag={onSaveOrchRag}
+            onSaveOrchAgent={onSaveOrchAgent}
           />
         ) : null}
 
@@ -2477,45 +2522,6 @@ function AgentSettingsForm({
             />
           </label>
           <label className="block">
-            <span className="text-xs text-zinc-500">Memory 压缩阈值（消息数）</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={4}
-              value={agentDraft.memory_compact_threshold}
-              onChange={(event) =>
-                updateAgent(
-                  "memory_compact_threshold",
-                  Number(event.target.value),
-                )
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Memory 近期保留条数</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={1}
-              value={agentDraft.memory_recent_keep}
-              onChange={(event) =>
-                updateAgent("memory_recent_keep", Number(event.target.value))
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Context 字符预算</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={1000}
-              value={agentDraft.context_char_budget}
-              onChange={(event) =>
-                updateAgent("context_char_budget", Number(event.target.value))
-              }
-            />
-          </label>
-          <label className="block">
             <span className="text-xs text-zinc-500">原生流式输出</span>
             <input
               className="mt-2 h-4 w-4 accent-zinc-950"
@@ -2663,47 +2669,17 @@ type RerankConfig = Pick<
 
 function RagOptimizationSettingsForm({
   busy,
-  ragChatConfig,
   ragWorkflowConfig,
-  ragConfig,
-  onSavedChat,
   onSavedWorkflow,
-  onSavedRerank,
-  onSaveRagChat,
   onSaveRagWorkflow,
-  onSaveRerank,
 }: {
   busy: boolean;
-  ragChatConfig: RagChatConfig;
   ragWorkflowConfig: RagWorkflowConfig;
-  ragConfig: RagConfig;
-  onSavedChat: () => void;
   onSavedWorkflow: () => void;
-  onSavedRerank: () => void;
-  onSaveRagChat: (config: RagChatConfig) => Promise<boolean>;
   onSaveRagWorkflow: (config: RagWorkflowConfig) => Promise<boolean>;
-  onSaveRerank: (config: RagConfig) => Promise<RagConfig | null>;
 }) {
-  const [chatDraft, setChatDraft] = useState<RagChatConfig>(ragChatConfig);
   const [workflowDraft, setWorkflowDraft] =
     useState<RagWorkflowConfig>(ragWorkflowConfig);
-  const [rerankDraft, setRerankDraft] = useState<RerankConfig>(() => ({
-    rerank_enabled: ragConfig.rerank_enabled,
-    rerank_top_n: ragConfig.rerank_top_n,
-    rerank_choice_batch_size: ragConfig.rerank_choice_batch_size,
-    rerank_provider: ragConfig.rerank_provider,
-    rerank_model: ragConfig.rerank_model,
-    rerank_type: ragConfig.rerank_type,
-    rerank_api_key: ragConfig.rerank_api_key,
-    rerank_base_url: ragConfig.rerank_base_url,
-  }));
-
-  const updateChat = <K extends keyof RagChatConfig>(
-    key: K,
-    value: RagChatConfig[K],
-  ) => {
-    setChatDraft((current) => ({ ...current, [key]: value }));
-  };
 
   const updateWorkflow = <K extends keyof RagWorkflowConfig>(
     key: K,
@@ -2712,101 +2688,16 @@ function RagOptimizationSettingsForm({
     setWorkflowDraft((current) => ({ ...current, [key]: value }));
   };
 
-  const updateRerank = <K extends keyof RerankConfig>(
-    key: K,
-    value: RerankConfig[K],
-  ) => {
-    setRerankDraft((current) => ({ ...current, [key]: value }));
-  };
-
-  async function saveChat() {
-    const ok = await onSaveRagChat(chatDraft);
-    if (ok) onSavedChat();
-  }
-
   async function saveWorkflow() {
     const ok = await onSaveRagWorkflow(workflowDraft);
     if (ok) onSavedWorkflow();
   }
 
-  async function saveRerank() {
-    const saved = await onSaveRerank({ ...ragConfig, ...rerankDraft });
-    if (saved) onSavedRerank();
-  }
-
   return (
     <div className="max-w-3xl space-y-6">
       <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
-        查询优化为查询时行为，修改后立即生效，无需重建知识库索引。
+        查询优化为查询时行为，修改后立即生效，无需重建知识库索引。Chat 场景与重排序配置已移至「编排」页。
       </div>
-
-      {/* Chat 场景 */}
-      <SettingsCard
-        busy={busy}
-        saveLabel="保存 Chat 场景"
-        title="Chat 场景检索优化"
-        onSave={saveChat}
-      >
-        <div className="space-y-6">
-          <div>
-            <div className="mb-2 text-sm font-semibold text-zinc-900">
-              意图路由（Intent Routing）
-            </div>
-            <p className="mb-3 text-xs text-zinc-500">
-              控制是否在检索前对用户消息分流；Adaptive 模式会自动套用下方的查询变换。
-            </p>
-            <StrategyCardGroup
-              options={ROUTING_OPTIONS}
-              value={chatDraft.intent_routing_mode}
-              onChange={(v) =>
-                updateChat(
-                  "intent_routing_mode",
-                  v as RagChatConfig["intent_routing_mode"],
-                )
-              }
-            />
-          </div>
-
-          <div className="border-t border-zinc-200 pt-4">
-            <div className="mb-2 text-sm font-semibold text-zinc-900">
-              查询变换（Query Transform）
-            </div>
-            <p className="mb-3 text-xs text-zinc-500">
-              检索前对问题做改写/拆解，提升召回质量。Adaptive 路由命中"深度检索"时自动套用此策略。
-            </p>
-            <StrategyCardGroup
-              options={CHAT_TRANSFORM_OPTIONS}
-              value={chatDraft.query_transform_strategy}
-              onChange={(v) =>
-                updateChat(
-                  "query_transform_strategy",
-                  v as RagChatConfig["query_transform_strategy"],
-                )
-              }
-            />
-            {chatDraft.query_transform_strategy === "multi_query" ? (
-              <label className="mt-4 block">
-                <span className="text-xs text-zinc-500">
-                  改写数量（multi_query_count）：{chatDraft.multi_query_count}
-                </span>
-                <input
-                  className="mt-2 w-full accent-zinc-950"
-                  type="range"
-                  min={2}
-                  max={8}
-                  value={chatDraft.multi_query_count}
-                  onChange={(event) =>
-                    updateChat(
-                      "multi_query_count",
-                      Number(event.target.value),
-                    )
-                  }
-                />
-              </label>
-            ) : null}
-          </div>
-        </div>
-      </SettingsCard>
 
       {/* Workflow 场景 */}
       <SettingsCard
@@ -2854,161 +2745,952 @@ function RagOptimizationSettingsForm({
           ) : null}
         </div>
       </SettingsCard>
+    </div>
+  );
+}
 
-      {/* 重排序专项 */}
-      <SettingsCard
-        busy={busy}
-        saveLabel="保存重排序设置"
-        title="重排序（Rerank）"
-        onSave={saveRerank}
-      >
-        <div className="space-y-3">
-          <label className="flex items-center gap-2">
-            <input
-              checked={rerankDraft.rerank_enabled}
-              type="checkbox"
-              onChange={(event) =>
-                updateRerank("rerank_enabled", event.target.checked)
-              }
-            />
-            <span className="text-sm font-medium text-zinc-700">
-              启用重排序（检索候选后二次精排）
-            </span>
-          </label>
-          <p className="text-xs text-zinc-500">
-            对 Chat 与 Workflow 两个场景同时生效。LLM 模式缺省复用 Agent 设置，未配置可用 LLM 时自动降级为不重排。
-            Cross-Encoder 模式调用专用 reranker API（Jina / Cohere / Voyage），更快更准。
+// ── 编排（Orchestration）—— Langchain chat 管道的分层配置，agent_sdk 引擎下锁定 ──
+
+const INTENT_ENGINE_OPTIONS: CardOption[] = [
+  {
+    value: "builtin_llm",
+    label: "内置 LLM",
+    description: "复用当前 Agent 模型判别，无需额外配置（默认）",
+  },
+  {
+    value: "rule",
+    label: "规则引擎",
+    description: "关键词快速分流，零成本、精度有限",
+  },
+  {
+    value: "typesafe",
+    label: "TypeSafe 外部引擎",
+    description: "独立决策服务（System One 分类），返回意图与置信度",
+  },
+];
+
+const ENGINE_LABELS: Record<string, string> = {
+  builtin_llm: "内置 LLM",
+  rule: "规则",
+  typesafe: "TypeSafe",
+};
+
+type PipelineStage = {
+  id: string;
+  no: string;
+  label: string;
+  summary: string;
+  muted?: boolean;
+  dirty?: boolean;
+};
+
+function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
+  const scrollTo = (id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.classList.add("ring-2", "ring-zinc-950", "ring-offset-2");
+    window.setTimeout(
+      () => el.classList.remove("ring-2", "ring-zinc-950", "ring-offset-2"),
+      800,
+    );
+  };
+  return (
+    <div
+      className="mb-6 rounded-xl border border-zinc-200 bg-zinc-50 p-4"
+      data-testid="pipeline-overview"
+    >
+      <div className="mb-1 flex items-center justify-between">
+        <p className="text-sm font-semibold text-zinc-900">管道总览</p>
+        {stages.some((s) => s.dirty) ? (
+          <span className="flex items-center gap-1 text-xs text-zinc-500">
+            <span className="inline-block h-1 w-1 rounded-full bg-rose-500" />
+            有未保存更改
+          </span>
+        ) : null}
+      </div>
+      <p className="mb-3 text-xs text-zinc-500">
+        Langchain 聊天管道——消息依次流经以下阶段，点击任一阶段跳转到对应配置。
+      </p>
+      <ol className="flex list-none flex-col gap-2 md:flex-row md:items-center">
+        {stages.map((stage, i) => (
+          <li key={stage.id} className="flex items-center gap-2 md:contents">
+            <button
+              type="button"
+              aria-label={`${stage.label}，当前 ${stage.summary}${
+                stage.dirty ? "，未保存更改" : ""
+              }，点击跳转`}
+              onClick={() => scrollTo(stage.id)}
+              className={`relative flex min-w-[92px] flex-1 flex-col rounded-lg border px-3 py-2 text-left transition hover:border-zinc-400 ${
+                stage.muted
+                  ? "border-zinc-200 bg-white/60"
+                  : "border-zinc-300 bg-white"
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                <span
+                  className={`font-mono text-xs ${
+                    stage.muted ? "text-zinc-300" : "text-zinc-950"
+                  }`}
+                >
+                  {stage.no}
+                </span>
+                <span className="text-xs font-medium text-zinc-700">
+                  {stage.label}
+                </span>
+                {stage.dirty ? (
+                  <span className="absolute right-1.5 top-1.5 inline-block h-1 w-1 rounded-full bg-rose-500" />
+                ) : null}
+              </span>
+              <span
+                className={`mt-0.5 truncate text-xs ${
+                  stage.muted ? "text-zinc-400" : "text-zinc-500"
+                }`}
+              >
+                {stage.summary}
+              </span>
+            </button>
+            {i < stages.length - 1 ? (
+              <span
+                aria-hidden
+                className="hidden text-zinc-300 md:inline"
+              >
+                →
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function OrchestrationPage({
+  busy,
+  agentConfig,
+  ragConfig,
+  ragChatConfig,
+  onGoToAgent,
+  onSaved,
+  onSaveOrchRagChat,
+  onSaveOrchRag,
+  onSaveOrchAgent,
+}: {
+  busy: boolean;
+  agentConfig: AgentConfig;
+  ragConfig: RagConfig;
+  ragChatConfig: RagChatConfig;
+  onGoToAgent: () => void;
+  onSaved: () => void;
+  onSaveOrchRagChat: (partial: Partial<RagChatConfig>) => Promise<boolean>;
+  onSaveOrchRag: (partial: Partial<RagConfig>) => Promise<boolean>;
+  onSaveOrchAgent: (partial: Partial<AgentConfig>) => Promise<boolean>;
+}) {
+  const locked = (agentConfig.chatbot_backend ?? "langchain") === "agent_sdk";
+
+  const [intentDraft, setIntentDraft] = useState(ragChatConfig);
+  const [transformDraft, setTransformDraft] = useState(ragChatConfig);
+  const [retrievalDraft, setRetrievalDraft] = useState(ragConfig);
+  const [rerankDraft, setRerankDraft] = useState<RerankConfig>(() => ({
+    rerank_enabled: ragConfig.rerank_enabled,
+    rerank_top_n: ragConfig.rerank_top_n,
+    rerank_choice_batch_size: ragConfig.rerank_choice_batch_size,
+    rerank_provider: ragConfig.rerank_provider,
+    rerank_model: ragConfig.rerank_model,
+    rerank_type: ragConfig.rerank_type,
+    rerank_api_key: ragConfig.rerank_api_key,
+    rerank_base_url: ragConfig.rerank_base_url,
+  }));
+  const [memoryDraft, setMemoryDraft] = useState({
+    memory_compact_threshold: agentConfig.memory_compact_threshold,
+    memory_recent_keep: agentConfig.memory_recent_keep,
+    context_char_budget: agentConfig.context_char_budget,
+  });
+  const [intentError, setIntentError] = useState("");
+  const [testMessage, setTestMessage] = useState("你好");
+  const [testResult, setTestResult] = useState<IntentTestResult | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+
+  const updateIntent = <K extends keyof RagChatConfig>(
+    key: K,
+    value: RagChatConfig[K],
+  ) => setIntentDraft((c) => ({ ...c, [key]: value }));
+  const updateTransform = <K extends keyof RagChatConfig>(
+    key: K,
+    value: RagChatConfig[K],
+  ) => setTransformDraft((c) => ({ ...c, [key]: value }));
+  const updateRerank = <K extends keyof RerankConfig>(
+    key: K,
+    value: RerankConfig[K],
+  ) => setRerankDraft((c) => ({ ...c, [key]: value }));
+
+  const typesafeSelected =
+    intentDraft.intent_engine === "typesafe" &&
+    intentDraft.intent_routing_mode !== "off";
+
+  async function saveIntent() {
+    if (
+      intentDraft.intent_engine === "typesafe" &&
+      intentDraft.intent_routing_mode !== "off" &&
+      !intentDraft.chat_typesafe_api_key.trim()
+    ) {
+      setIntentError("使用 TypeSafe 引擎需要填写 API Key");
+      return;
+    }
+    setIntentError("");
+    const ok = await onSaveOrchRagChat({
+      intent_routing_mode: intentDraft.intent_routing_mode,
+      intent_engine: intentDraft.intent_engine,
+      chat_typesafe_api_key: intentDraft.chat_typesafe_api_key,
+      chat_typesafe_base_url: intentDraft.chat_typesafe_base_url,
+      chat_typesafe_timeout_ms: intentDraft.chat_typesafe_timeout_ms,
+      chat_typesafe_confidence_threshold:
+        intentDraft.chat_typesafe_confidence_threshold,
+      chat_typesafe_low_confidence_fallback:
+        intentDraft.chat_typesafe_low_confidence_fallback,
+    });
+    if (ok) onSaved();
+  }
+
+  async function saveTransform() {
+    const ok = await onSaveOrchRagChat({
+      query_transform_strategy: transformDraft.query_transform_strategy,
+      multi_query_count: transformDraft.multi_query_count,
+      hyde_fallback_threshold: transformDraft.hyde_fallback_threshold,
+      condense_enabled: transformDraft.condense_enabled,
+    });
+    if (ok) onSaved();
+  }
+
+  async function saveRetrieval() {
+    const ok = await onSaveOrchRag({
+      retrieval_method: retrievalDraft.retrieval_method,
+      hybrid_vector_weight: retrievalDraft.hybrid_vector_weight,
+    });
+    if (ok) onSaved();
+  }
+
+  async function saveRerank() {
+    const ok = await onSaveOrchRag(rerankDraft);
+    if (ok) onSaved();
+  }
+
+  async function saveMemory() {
+    const ok = await onSaveOrchAgent(memoryDraft);
+    if (ok) onSaved();
+  }
+
+  async function runIntentTest() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await testIntentDecision(testMessage, {
+        engine: intentDraft.intent_engine,
+        routing_mode: intentDraft.intent_routing_mode,
+      });
+      setTestResult(result);
+    } catch (err) {
+      setTestResult({
+        intent: "error",
+        reason: err instanceof Error ? err.message : "测试失败",
+        engine: intentDraft.intent_engine,
+        confidence: null,
+        fallback: false,
+        latency_ms: 0,
+      });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const transformSummary =
+    transformDraft.query_transform_strategy === "none"
+      ? "直查"
+      : transformDraft.query_transform_strategy;
+  const stages: PipelineStage[] = [
+    {
+      id: "stage-intent",
+      no: "01",
+      label: "意图路由",
+      summary:
+        intentDraft.intent_routing_mode === "off"
+          ? "关闭"
+          : `${intentDraft.intent_routing_mode} · ${
+              ENGINE_LABELS[intentDraft.intent_engine] ??
+              intentDraft.intent_engine
+            }`,
+      muted: intentDraft.intent_routing_mode === "off",
+      dirty: JSON.stringify(intentDraft) !== JSON.stringify(ragChatConfig),
+    },
+    {
+      id: "stage-transform",
+      no: "02",
+      label: "检索前变换",
+      summary: transformSummary,
+      muted: transformDraft.query_transform_strategy === "none",
+      dirty:
+        JSON.stringify(transformDraft) !== JSON.stringify(ragChatConfig),
+    },
+    {
+      id: "stage-retrieval",
+      no: "03",
+      label: "检索",
+      summary: `${retrievalDraft.retrieval_method}${
+        retrievalDraft.retrieval_method === "hybrid"
+          ? `·${retrievalDraft.hybrid_vector_weight}`
+          : ""
+      }`,
+      dirty:
+        retrievalDraft.retrieval_method !== ragConfig.retrieval_method ||
+        retrievalDraft.hybrid_vector_weight !== ragConfig.hybrid_vector_weight,
+    },
+    {
+      id: "stage-rerank",
+      no: "04",
+      label: "重排",
+      summary: rerankDraft.rerank_enabled
+        ? `${rerankDraft.rerank_type}·top${rerankDraft.rerank_top_n}`
+        : "关闭",
+      muted: !rerankDraft.rerank_enabled,
+      dirty: JSON.stringify(rerankDraft) !== JSON.stringify({
+        rerank_enabled: ragConfig.rerank_enabled,
+        rerank_top_n: ragConfig.rerank_top_n,
+        rerank_choice_batch_size: ragConfig.rerank_choice_batch_size,
+        rerank_provider: ragConfig.rerank_provider,
+        rerank_model: ragConfig.rerank_model,
+        rerank_type: ragConfig.rerank_type,
+        rerank_api_key: ragConfig.rerank_api_key,
+        rerank_base_url: ragConfig.rerank_base_url,
+      }),
+    },
+    {
+      id: "stage-memory",
+      no: "05",
+      label: "记忆 / Facts",
+      summary: `压缩 ${memoryDraft.memory_compact_threshold} · 保留 ${memoryDraft.memory_recent_keep}`,
+      dirty: JSON.stringify(memoryDraft) !== JSON.stringify({
+        memory_compact_threshold: agentConfig.memory_compact_threshold,
+        memory_recent_keep: agentConfig.memory_recent_keep,
+        context_char_budget: agentConfig.context_char_budget,
+      }),
+    },
+    {
+      id: "stage-budget",
+      no: "06",
+      label: "Prompt 预算",
+      summary: `${memoryDraft.context_char_budget} 字符`,
+    },
+  ];
+
+  return (
+    <div className="max-w-3xl">
+      {locked ? (
+        <div
+          role="note"
+          className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+          data-testid="orchestration-locked-banner"
+        >
+          <p className="font-semibold">编排仅适用于 Langchain 聊天管道</p>
+          <p className="mt-1 text-xs">
+            当前 Chatbot 引擎为 Claude Agent SDK，此页配置暂不生效，已保存的配置会被完整保留。
           </p>
-          <label className="block">
-            <span className="text-xs text-zinc-500">重排序类型</span>
-            <select
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              disabled={!rerankDraft.rerank_enabled}
-              value={rerankDraft.rerank_type}
-              onChange={(event) =>
-                updateRerank(
-                  "rerank_type",
-                  event.target.value as RerankConfig["rerank_type"],
+          <button
+            className="mt-2 text-xs font-medium underline"
+            type="button"
+            onClick={onGoToAgent}
+          >
+            前往 Agent 设置 →
+          </button>
+        </div>
+      ) : null}
+
+      <div
+        aria-disabled={locked}
+        className={locked ? "pointer-events-none space-y-6 opacity-50" : "space-y-6"}
+      >
+        <PipelineOverviewRail stages={stages} />
+
+        {/* 01 意图路由 */}
+        <SettingsCard
+          busy={busy}
+          saveLabel="保存意图路由"
+          title="01 · 意图路由（Intent Routing）"
+          onSave={saveIntent}
+        >
+          <div className="space-y-6" data-testid="stage-intent">
+            <div>
+              <p className="mb-3 text-xs text-zinc-500">
+                决定是否在检索前对用户消息分流。Adaptive 模式会在「深度检索」时自动套用第
+                02 层的查询变换。
+              </p>
+              <StrategyCardGroup
+                options={ROUTING_OPTIONS}
+                value={intentDraft.intent_routing_mode}
+                onChange={(v) =>
+                  updateIntent(
+                    "intent_routing_mode",
+                    v as RagChatConfig["intent_routing_mode"],
+                  )
+                }
+              />
+            </div>
+
+            <div
+              className={`border-t border-zinc-200 pt-4 ${
+                intentDraft.intent_routing_mode === "off" ? "opacity-50" : ""
+              }`}
+            >
+              <div className="mb-2 text-sm font-semibold text-zinc-900">
+                路由引擎
+              </div>
+              {intentDraft.intent_routing_mode === "off" ? (
+                <p className="mb-3 text-xs text-zinc-400">
+                  路由已关闭，无需选择引擎。
+                </p>
+              ) : null}
+              <fieldset disabled={intentDraft.intent_routing_mode === "off"}>
+                <StrategyCardGroup
+                  options={INTENT_ENGINE_OPTIONS}
+                  value={intentDraft.intent_engine}
+                  onChange={(v) =>
+                    updateIntent("intent_engine", v as RagChatConfig["intent_engine"])
+                  }
+                />
+              </fieldset>
+            </div>
+
+            {typesafeSelected ? (
+              <div
+                className="rounded-lg border-l-2 border-zinc-300 bg-zinc-50 py-4 pl-4 pr-3"
+                data-testid="typesafe-panel"
+              >
+                <div className="mb-3 text-xs font-semibold text-zinc-600">
+                  TypeSafe 引擎配置
+                </div>
+                <div className="space-y-4">
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">API Key</span>
+                    <span className="mt-1 flex">
+                      <input
+                        className={`w-full rounded-l-md border px-2 py-2 text-sm ${
+                          intentError
+                            ? "border-rose-300"
+                            : "border-zinc-200"
+                        }`}
+                        type={showKey ? "text" : "password"}
+                        data-testid="typesafe-api-key"
+                        placeholder="ts-..."
+                        value={intentDraft.chat_typesafe_api_key}
+                        onChange={(event) =>
+                          updateIntent("chat_typesafe_api_key", event.target.value)
+                        }
+                      />
+                      <button
+                        aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                        aria-pressed={showKey}
+                        className="rounded-r-md border border-l-0 border-zinc-200 bg-white px-2 text-zinc-500 hover:text-zinc-800"
+                        type="button"
+                        onClick={() => setShowKey((v) => !v)}
+                      >
+                        {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </span>
+                    {intentError ? (
+                      <span className="mt-1 block text-xs text-rose-600" data-testid="typesafe-key-error">
+                        {intentError}
+                      </span>
+                    ) : null}
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">
+                      Base URL（留空使用 TypeSafe 默认地址）
+                    </span>
+                    <input
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                      placeholder="https://api.typesafe.ai"
+                      value={intentDraft.chat_typesafe_base_url}
+                      onChange={(event) =>
+                        updateIntent("chat_typesafe_base_url", event.target.value)
+                      }
+                    />
+                  </label>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="block">
+                      <span className="text-xs text-zinc-500">超时（ms）</span>
+                      <input
+                        className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                        type="number"
+                        min={100}
+                        max={30000}
+                        value={intentDraft.chat_typesafe_timeout_ms}
+                        onChange={(event) =>
+                          updateIntent(
+                            "chat_typesafe_timeout_ms",
+                            Number(event.target.value),
+                          )
+                        }
+                      />
+                    </label>
+                    <div>
+                      <label className="flex items-center justify-between">
+                        <span className="text-xs text-zinc-500">
+                          置信度阈值（低于此值视为低置信）
+                        </span>
+                        <input
+                          aria-label="置信度阈值"
+                          className="w-16 rounded-md border border-zinc-200 px-2 py-1 text-sm"
+                          max={1}
+                          min={0}
+          step={0.05}
+                          type="number"
+                          value={intentDraft.chat_typesafe_confidence_threshold}
+                          onChange={(event) =>
+                            updateIntent(
+                              "chat_typesafe_confidence_threshold",
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+                      </label>
+                      <input
+                        aria-label="置信度阈值滑块"
+                        className="mt-2 w-full accent-zinc-950"
+                        max={1}
+                        min={0}
+                        step={0.05}
+                        type="range"
+                        value={intentDraft.chat_typesafe_confidence_threshold}
+                        onChange={(event) =>
+                          updateIntent(
+                            "chat_typesafe_confidence_threshold",
+                            Number(event.target.value),
+                          )
+                        }
+                      />
+                      <p className="flex justify-between text-xs text-zinc-400">
+                        <span>0 宽松</span>
+                        <span>1 严格</span>
+                      </p>
+                    </div>
+                  </div>
+                  <label className="flex items-start gap-2">
+                    <input
+                      checked={intentDraft.chat_typesafe_low_confidence_fallback}
+                      className="mt-0.5"
+                      type="checkbox"
+                      onChange={(event) =>
+                        updateIntent(
+                          "chat_typesafe_low_confidence_fallback",
+                          event.target.checked,
+                        )
+                      }
+                    />
+                    <span className="text-xs text-zinc-600">
+                      低置信自动回退：置信度低于阈值时，回退到内置 LLM
+                      引擎重新判别（推荐）。关闭后低置信结果将被直接采用。
+                    </span>
+                  </label>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="border-t border-zinc-200 pt-4">
+              <div className="mb-2 text-sm font-semibold text-zinc-900">
+                发送测试消息
+              </div>
+              <p className="mb-2 text-xs text-zinc-500">
+                用当前草稿的路由模式与引擎试判一条消息（TypeSafe 引擎的 Key
+                使用服务端已保存值）。
+              </p>
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  data-testid="intent-test-input"
+                  value={testMessage}
+                  onChange={(event) => setTestMessage(event.target.value)}
+                />
+                <button
+                  className="flex items-center gap-2 rounded-md bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
+                  disabled={testing || !testMessage.trim()}
+                  type="button"
+                  onClick={() => void runIntentTest()}
+                >
+                  {testing ? <Loader2 size={14} className="animate-spin" /> : null}
+                  测试
+                </button>
+              </div>
+              {testResult ? (
+                <div
+                  className="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600"
+                  data-testid="intent-test-result"
+                >
+                  <span className="font-mono text-zinc-900">
+                    {testResult.intent}
+                  </span>
+                  <span className="mx-2">·</span>
+                  <span>
+                    引擎 {ENGINE_LABELS[testResult.engine] ?? testResult.engine}
+                  </span>
+                  <span className="mx-2">·</span>
+                  <span>
+                    置信度{" "}
+                    {testResult.confidence != null
+                      ? testResult.confidence.toFixed(2)
+                      : "—"}
+                  </span>
+                  <span className="mx-2">·</span>
+                  <span>{testResult.latency_ms}ms</span>
+                  {testResult.fallback ? (
+                    <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">
+                      已降级回退
+                    </span>
+                  ) : null}
+                  <p className="mt-1 text-zinc-400">{testResult.reason}</p>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </SettingsCard>
+
+        {/* 02 检索前变换 */}
+        <SettingsCard
+          busy={busy}
+          saveLabel="保存检索前变换"
+          title="02 · 检索前变换（Query Transform）"
+          onSave={saveTransform}
+        >
+          <div className="space-y-4" data-testid="stage-transform">
+            {intentDraft.intent_routing_mode === "adaptive" ? (
+              <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                Adaptive 路由命中「深度检索」时将自动套用此处策略。
+              </div>
+            ) : null}
+            <StrategyCardGroup
+              options={CHAT_TRANSFORM_OPTIONS}
+              value={transformDraft.query_transform_strategy}
+              onChange={(v) =>
+                updateTransform(
+                  "query_transform_strategy",
+                  v as RagChatConfig["query_transform_strategy"],
                 )
               }
-            >
-              <option value="llm">LLM 提示重排（现有）</option>
-              <option value="cross_encoder">Cross-Encoder 专用 Reranker（Jina / Cohere / Voyage）</option>
-            </select>
-          </label>
-          <div className="grid gap-4 md:grid-cols-2">
+            />
+            {transformDraft.query_transform_strategy === "multi_query" ? (
+              <label className="block">
+                <span className="text-xs text-zinc-500">
+                  改写数量（multi_query_count）：{transformDraft.multi_query_count}
+                </span>
+                <input
+                  className="mt-2 w-full accent-zinc-950"
+                  max={8}
+                  min={2}
+                  type="range"
+                  value={transformDraft.multi_query_count}
+                  onChange={(event) =>
+                    updateTransform(
+                      "multi_query_count",
+                      Number(event.target.value),
+                    )
+                  }
+                />
+              </label>
+            ) : null}
+            <div className="border-t border-zinc-200 pt-4">
+              <label className="flex items-start gap-2">
+                <input
+                  checked={transformDraft.condense_enabled}
+                  className="mt-0.5"
+                  type="checkbox"
+                  onChange={(event) =>
+                    updateTransform("condense_enabled", event.target.checked)
+                  }
+                />
+                <span className="text-xs text-zinc-600">
+                  Condense 指代消解：检索前用 LLM 判断是否需要结合对话历史改写问题，可与任意变换策略组合（多轮
+                  recall +0.24，单轮零影响）。
+                </span>
+              </label>
+            </div>
+          </div>
+        </SettingsCard>
+
+        {/* 03 检索 */}
+        <SettingsCard
+          busy={busy}
+          saveLabel="保存检索设置"
+          title="03 · 检索（Retrieval）"
+          onSave={saveRetrieval}
+        >
+          <div className="space-y-4" data-testid="stage-retrieval">
             <label className="block">
-              <span className="text-xs text-zinc-500">重排序保留数量（Top N）</span>
+              <span className="text-xs text-zinc-500">检索算法</span>
+              <select
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                value={retrievalDraft.retrieval_method}
+                onChange={(event) =>
+                  setRetrievalDraft((c) => ({
+                    ...c,
+                    retrieval_method: event.target
+                      .value as RagConfig["retrieval_method"],
+                  }))
+                }
+              >
+                <option value="vector">Vector（语义向量）</option>
+                <option value="bm25">BM25（关键词）</option>
+                <option value="hybrid">Hybrid（向量 + BM25 融合）</option>
+              </select>
+            </label>
+            {retrievalDraft.retrieval_method === "hybrid" ? (
+              <label className="block">
+                <span className="text-xs text-zinc-500">
+                  融合权重（向量 vs BM25）：{retrievalDraft.hybrid_vector_weight}
+                </span>
+                <input
+                  className="mt-2 w-full accent-zinc-950"
+                  max={1}
+                  min={0}
+                  step={0.1}
+                  type="range"
+                  value={retrievalDraft.hybrid_vector_weight}
+                  onChange={(event) =>
+                    setRetrievalDraft((c) => ({
+                      ...c,
+                      hybrid_vector_weight: Number(event.target.value),
+                    }))
+                  }
+                />
+                <span className="flex justify-between text-xs text-zinc-400">
+                  <span>0 偏 BM25</span>
+                  <span>1 偏向量</span>
+                </span>
+              </label>
+            ) : null}
+            <p className="text-xs text-zinc-400">
+              Embedding、分块与 Top-K 等完整检索参数在「知识检索 · RAG」页配置。
+            </p>
+          </div>
+        </SettingsCard>
+
+        {/* 04 重排 */}
+        <SettingsCard
+          busy={busy}
+          saveLabel="保存重排序设置"
+          title="04 · 重排（Rerank）"
+          onSave={saveRerank}
+        >
+          <div className="space-y-3" data-testid="stage-rerank">
+            <label className="flex items-center gap-2">
+              <input
+                checked={rerankDraft.rerank_enabled}
+                type="checkbox"
+                onChange={(event) =>
+                  updateRerank("rerank_enabled", event.target.checked)
+                }
+              />
+              <span className="text-sm font-medium text-zinc-700">
+                启用重排序（检索候选后二次精排）
+              </span>
+            </label>
+            <p className="text-xs text-zinc-500">
+              对 Chat 与 Workflow 两个场景同时生效。LLM 模式缺省复用 Agent
+              设置；Cross-Encoder 模式调用专用 reranker API（Jina / Cohere /
+              Voyage）。
+            </p>
+            <label className="block">
+              <span className="text-xs text-zinc-500">重排序类型</span>
+              <select
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                disabled={!rerankDraft.rerank_enabled}
+                value={rerankDraft.rerank_type}
+                onChange={(event) =>
+                  updateRerank(
+                    "rerank_type",
+                    event.target.value as RerankConfig["rerank_type"],
+                  )
+                }
+              >
+                <option value="llm">LLM 提示重排</option>
+                <option value="cross_encoder">
+                  Cross-Encoder 专用 Reranker（Jina / Cohere / Voyage）
+                </option>
+              </select>
+            </label>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block">
+                <span className="text-xs text-zinc-500">保留数量（Top N）</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  type="number"
+                  min={1}
+                  disabled={!rerankDraft.rerank_enabled}
+                  value={rerankDraft.rerank_top_n}
+                  onChange={(event) =>
+                    updateRerank("rerank_top_n", Number(event.target.value))
+                  }
+                />
+              </label>
+              {rerankDraft.rerank_type === "llm" ? (
+                <>
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">
+                      批大小（choice_batch_size）
+                    </span>
+                    <input
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                      type="number"
+                      min={1}
+                      disabled={!rerankDraft.rerank_enabled}
+                      value={rerankDraft.rerank_choice_batch_size}
+                      onChange={(event) =>
+                        updateRerank(
+                          "rerank_choice_batch_size",
+                          Number(event.target.value),
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">
+                      Provider（留空复用 Agent）
+                    </span>
+                    <select
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                      disabled={!rerankDraft.rerank_enabled}
+                      value={rerankDraft.rerank_provider ?? ""}
+                      onChange={(event) =>
+                        updateRerank(
+                          "rerank_provider",
+                          (event.target.value || null) as RerankConfig["rerank_provider"],
+                        )
+                      }
+                    >
+                      <option value="">（复用 Agent 设置）</option>
+                      <option value="openai">openai</option>
+                      <option value="anthropic">anthropic</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">
+                      Model（留空复用 Agent）
+                    </span>
+                    <input
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                      disabled={!rerankDraft.rerank_enabled}
+                      placeholder="可选"
+                      value={rerankDraft.rerank_model ?? ""}
+                      onChange={(event) =>
+                        updateRerank("rerank_model", event.target.value || null)
+                      }
+                    />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="block">
+                    <span className="text-xs text-zinc-500">Reranker Model</span>
+                    <input
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                      disabled={!rerankDraft.rerank_enabled}
+                      placeholder="jina-reranker-v2-base-multilingual"
+                      value={rerankDraft.rerank_model ?? ""}
+                      onChange={(event) =>
+                        updateRerank("rerank_model", event.target.value || null)
+                      }
+                    />
+                  </label>
+                  <label className="block md:col-span-2">
+                    <span className="text-xs text-zinc-500">Reranker Base URL</span>
+                    <input
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                      disabled={!rerankDraft.rerank_enabled}
+                      placeholder="https://api.jina.ai/v1"
+                      value={rerankDraft.rerank_base_url ?? ""}
+                      onChange={(event) =>
+                        updateRerank("rerank_base_url", event.target.value || null)
+                      }
+                    />
+                  </label>
+                  <label className="block md:col-span-2">
+                    <span className="text-xs text-zinc-500">Reranker API Key</span>
+                    <input
+                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                      type="password"
+                      disabled={!rerankDraft.rerank_enabled}
+                      placeholder="jina-..."
+                      value={rerankDraft.rerank_api_key ?? ""}
+                      onChange={(event) =>
+                        updateRerank("rerank_api_key", event.target.value || null)
+                      }
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+          </div>
+        </SettingsCard>
+
+        {/* 05/06 记忆与 Prompt 预算 */}
+        <SettingsCard
+          busy={busy}
+          saveLabel="保存记忆与预算"
+          title="05 · 记忆与上下文预算（Memory / Prompt Budget）"
+          onSave={saveMemory}
+        >
+          <div className="grid gap-4 md:grid-cols-3" data-testid="stage-memory">
+            <label className="block">
+              <span className="text-xs text-zinc-500">
+                Memory 压缩阈值（消息数）
+              </span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                type="number"
+                min={4}
+                value={memoryDraft.memory_compact_threshold}
+                onChange={(event) =>
+                  setMemoryDraft((c) => ({
+                    ...c,
+                    memory_compact_threshold: Number(event.target.value),
+                  }))
+                }
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-zinc-500">Memory 近期保留条数</span>
               <input
                 className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
                 type="number"
                 min={1}
-                disabled={!rerankDraft.rerank_enabled}
-                value={rerankDraft.rerank_top_n}
+                value={memoryDraft.memory_recent_keep}
                 onChange={(event) =>
-                  updateRerank("rerank_top_n", Number(event.target.value))
+                  setMemoryDraft((c) => ({
+                    ...c,
+                    memory_recent_keep: Number(event.target.value),
+                  }))
                 }
               />
             </label>
-            {rerankDraft.rerank_type === "llm" ? (
-              <>
-                <label className="block">
-                  <span className="text-xs text-zinc-500">
-                    重排序批大小（choice_batch_size）
-                  </span>
-                  <input
-                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                    type="number"
-                    min={1}
-                    disabled={!rerankDraft.rerank_enabled}
-                    value={rerankDraft.rerank_choice_batch_size}
-                    onChange={(event) =>
-                      updateRerank(
-                        "rerank_choice_batch_size",
-                        Number(event.target.value),
-                      )
-                    }
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-xs text-zinc-500">
-                    重排序 Provider（留空复用 Agent）
-                  </span>
-                  <select
-                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                    disabled={!rerankDraft.rerank_enabled}
-                    value={rerankDraft.rerank_provider ?? ""}
-                    onChange={(event) =>
-                      updateRerank(
-                        "rerank_provider",
-                        (event.target.value || null) as RerankConfig["rerank_provider"],
-                      )
-                    }
-                  >
-                    <option value="">（复用 Agent 设置）</option>
-                    <option value="openai">openai</option>
-                    <option value="anthropic">anthropic</option>
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-xs text-zinc-500">
-                    重排序 Model（留空复用 Agent）
-                  </span>
-                  <input
-                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                    disabled={!rerankDraft.rerank_enabled}
-                    placeholder="可选"
-                    value={rerankDraft.rerank_model ?? ""}
-                    onChange={(event) =>
-                      updateRerank("rerank_model", event.target.value || null)
-                    }
-                  />
-                </label>
-              </>
-            ) : (
-              <>
-                <label className="block">
-                  <span className="text-xs text-zinc-500">Reranker Model</span>
-                  <input
-                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                    disabled={!rerankDraft.rerank_enabled}
-                    placeholder="jina-reranker-v2-base-multilingual"
-                    value={rerankDraft.rerank_model ?? ""}
-                    onChange={(event) =>
-                      updateRerank("rerank_model", event.target.value || null)
-                    }
-                  />
-                </label>
-                <label className="block md:col-span-2">
-                  <span className="text-xs text-zinc-500">Reranker Base URL</span>
-                  <input
-                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                    disabled={!rerankDraft.rerank_enabled}
-                    placeholder="https://api.jina.ai/v1"
-                    value={rerankDraft.rerank_base_url ?? ""}
-                    onChange={(event) =>
-                      updateRerank("rerank_base_url", event.target.value || null)
-                    }
-                  />
-                </label>
-                <label className="block md:col-span-2">
-                  <span className="text-xs text-zinc-500">Reranker API Key</span>
-                  <input
-                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                    type="password"
-                    disabled={!rerankDraft.rerank_enabled}
-                    placeholder="jina-..."
-                    value={rerankDraft.rerank_api_key ?? ""}
-                    onChange={(event) =>
-                      updateRerank("rerank_api_key", event.target.value || null)
-                    }
-                  />
-                </label>
-              </>
-            )}
+            <label className="block">
+              <span className="text-xs text-zinc-500">Context 字符预算</span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                type="number"
+                min={1000}
+                value={memoryDraft.context_char_budget}
+                onChange={(event) =>
+                  setMemoryDraft((c) => ({
+                    ...c,
+                    context_char_budget: Number(event.target.value),
+                  }))
+                }
+              />
+            </label>
           </div>
-        </div>
-      </SettingsCard>
+          <p className="mt-3 text-xs text-zinc-400">
+            会话 Facts 的抽取开关当前由环境变量控制（PORTO_FACTS_ENABLED），暂不在此配置。
+          </p>
+        </SettingsCard>
+      </div>
     </div>
   );
 }

@@ -39,6 +39,29 @@ export async function getAppSettings() {
   return parseJson<AppSettings>(await fetch("/api/settings"));
 }
 
+// 意图决策探测（编排页「发送测试消息」）：无副作用，engine/mode 省略时用服务端生效配置
+export type IntentTestResult = {
+  intent: string;
+  reason: string;
+  engine: string;
+  confidence: number | null;
+  fallback: boolean;
+  latency_ms: number;
+};
+
+export async function testIntentDecision(
+  message: string,
+  overrides?: { engine?: string; routing_mode?: string },
+): Promise<IntentTestResult> {
+  return parseJson<IntentTestResult>(
+    await fetch("/api/intent/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, ...overrides }),
+    }),
+  );
+}
+
 export async function saveAppSettings(settings: {
   rag?: Partial<RagConfig>;
   agent?: Partial<AgentConfig>;
