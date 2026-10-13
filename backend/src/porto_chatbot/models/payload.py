@@ -6,6 +6,7 @@ from .enums import (
     ChatbotBackend,
     DocumentParseMode,
     EmbeddingProvider,
+    IntentEngine,
     IntentRoutingMode,
     LLMProvider,
     LocalParser,
@@ -93,6 +94,12 @@ class RagChatSettingsPayload(BaseModel):
     multi_query_count: int | None = Field(default=None, ge=2, le=8)
     hyde_fallback_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     condense_enabled: bool | None = None
+    intent_engine: IntentEngine | None = None
+    chat_typesafe_api_key: str | None = None
+    chat_typesafe_base_url: str | None = None
+    chat_typesafe_timeout_ms: int | None = Field(default=None, ge=100, le=30000)
+    chat_typesafe_confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    chat_typesafe_low_confidence_fallback: bool | None = None
 
 
 class RagWorkflowSettingsPayload(BaseModel):

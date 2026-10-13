@@ -51,6 +51,13 @@ class IntentRoutingMode(StrEnum):
     ADAPTIVE = "adaptive"
 
 
+# ── 意图引擎（路由模式选定后由谁执行分类）──
+class IntentEngine(StrEnum):
+    BUILTIN_LLM = "builtin_llm"
+    RULE = "rule"
+    TYPESAFE = "typesafe"
+
+
 # ── Agent 引擎 ──
 class ChatbotBackend(StrEnum):
     LANGCHAIN = "langchain"

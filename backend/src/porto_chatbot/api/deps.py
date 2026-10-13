@@ -161,6 +161,12 @@ def default_rag_chat_settings() -> RagChatSettingsPayload:
         multi_query_count=s.multi_query_count,
         hyde_fallback_threshold=s.hyde_fallback_threshold,
         condense_enabled=s.condense_enabled,
+        intent_engine=s.chat_intent_engine,
+        chat_typesafe_api_key=s.chat_typesafe_api_key,
+        chat_typesafe_base_url=s.chat_typesafe_base_url,
+        chat_typesafe_timeout_ms=s.chat_typesafe_timeout_ms,
+        chat_typesafe_confidence_threshold=s.chat_typesafe_confidence_threshold,
+        chat_typesafe_low_confidence_fallback=s.chat_typesafe_low_confidence_fallback,
     )
 
 

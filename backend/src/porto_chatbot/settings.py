@@ -9,6 +9,7 @@ from .models.enums import (
     ChatbotBackend,
     DocumentParseMode,
     EmbeddingProvider,
+    IntentEngine,
     IntentRoutingMode,
     LLMProvider,
     LocalParser,
@@ -158,6 +159,14 @@ class Settings(BaseSettings):
     # 仅多轮场景有历史时生效，可与任意 query_transform_strategy 组合。
     # 默认开启（2026-08 消融实证：单轮零影响、多轮 recall +0.24，fail-open 无风险）
     condense_enabled: bool = Field(default=True)
+
+    # --- 意图引擎（可插拔决策引擎；仅 Langchain chat 路径消费）---
+    chat_intent_engine: IntentEngine = IntentEngine.BUILTIN_LLM
+    chat_typesafe_api_key: str | None = None
+    chat_typesafe_base_url: str | None = None
+    chat_typesafe_timeout_ms: int = Field(default=2000, ge=100, le=30000)
+    chat_typesafe_confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    chat_typesafe_low_confidence_fallback: bool = True
 
     @field_validator("data_dir", "log_dir", "static_dir", mode="after")
     @classmethod

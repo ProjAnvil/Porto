@@ -80,6 +80,13 @@ RAG_CHAT_SETTING_KEYS = {
     "query_transform_strategy",
     "multi_query_count",
     "hyde_fallback_threshold",
+    "condense_enabled",
+    "intent_engine",
+    "chat_typesafe_api_key",
+    "chat_typesafe_base_url",
+    "chat_typesafe_timeout_ms",
+    "chat_typesafe_confidence_threshold",
+    "chat_typesafe_low_confidence_fallback",
 }
 
 RAG_WORKFLOW_SETTING_KEYS = {
@@ -87,7 +94,13 @@ RAG_WORKFLOW_SETTING_KEYS = {
     "multi_query_count",
 }
 
-SENSITIVE_SETTING_KEYS = {"agent_api_key", "critic_api_key", "embedding_api_key", "rerank_api_key"}
+SENSITIVE_SETTING_KEYS = {
+    "agent_api_key",
+    "critic_api_key",
+    "embedding_api_key",
+    "rerank_api_key",
+    "chat_typesafe_api_key",
+}
 
 
 class ConfigStore:
