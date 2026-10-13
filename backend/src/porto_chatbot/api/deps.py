@@ -188,6 +188,27 @@ def effective_rag_chat_settings(
     return RagChatSettingsPayload(**updates)
 
 
+def effective_intent_runtime_settings(base=None, rag_chat=None):
+    """意图引擎运行时 Settings：把 rag_chat 生效配置（.env 默认 + db 覆盖）
+    合入 Settings，使设置页保存的 typesafe 键（api key/base url/超时/阈值/回退）
+    对 route_chat_intent 可见——否则引擎只能读到 env 级配置，UI 配置形同虚设。
+
+    调用方已解析过 effective_rag_chat_settings 时直接传入，避免重复读库。
+    """
+    settings = base or current_settings()
+    rag_chat = rag_chat or effective_rag_chat_settings()
+    updates = {
+        "chat_typesafe_api_key": rag_chat.chat_typesafe_api_key,
+        "chat_typesafe_base_url": rag_chat.chat_typesafe_base_url,
+        "chat_typesafe_timeout_ms": rag_chat.chat_typesafe_timeout_ms,
+        "chat_typesafe_confidence_threshold": rag_chat.chat_typesafe_confidence_threshold,
+        "chat_typesafe_low_confidence_fallback": rag_chat.chat_typesafe_low_confidence_fallback,
+    }
+    return settings.model_copy(
+        update={k: v for k, v in updates.items() if v is not None},
+    )
+
+
 def effective_rag_workflow_settings(
     payload: RagWorkflowSettingsPayload | None = None,
 ) -> RagWorkflowSettingsPayload:

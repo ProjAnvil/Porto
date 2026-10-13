@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from ..api.deps import effective_rag_chat_settings, get_index_supervisor
+from ..api.deps import (
+    effective_intent_runtime_settings,
+    effective_rag_chat_settings,
+    get_index_supervisor,
+)
 from ..evaluation import evaluate_rag_cases
 from ..intent import IntentDecision, route_chat_intent
 from ..llm import LLMClient, format_sources
@@ -88,8 +92,10 @@ class ChatOrchestrator:
         routing_mode = rag_chat.intent_routing_mode or IntentRoutingMode.BINARY
         if routing_mode == IntentRoutingMode.OFF:
             return IntentDecision(ChatIntent.RAG, "routing_off")
+        # 合入 db 级 rag_chat 配置（typesafe 键），UI 保存的意图引擎配置由此生效
+        settings = effective_intent_runtime_settings(self.settings, rag_chat)
         return route_chat_intent(
-            req.message, self.settings, llm,
+            req.message, settings, llm,
             routing_mode=routing_mode, engine=rag_chat.intent_engine,
         )
 
@@ -155,9 +161,11 @@ class ChatOrchestrator:
             llm,
         )
         if not answer:
-            if decision.reason == "greeting":
+            # typesafe 降级时 reason 带 "typesafe:...|" 前缀，取末段匹配规则 reason
+            base_reason = decision.reason.rsplit("|", 1)[-1]
+            if base_reason == "greeting":
                 answer = "你好！我是 Porto 助手，可以帮你查询知识库、拆解 PRD，或生成子系统需求。"
-            elif decision.reason == "smalltalk_or_help":
+            elif base_reason == "smalltalk_or_help":
                 answer = "我是 Porto 助手，可以进行知识库问答、PRD 分析和子系统拆分。"
             else:
                 answer = "我在。你可以继续提问，或说明需要查询哪部分知识库内容。"

@@ -2784,6 +2784,7 @@ type PipelineStage = {
   summary: string;
   muted?: boolean;
   dirty?: boolean;
+  anchor?: string; // 滚动目标元素 id（多节点指向同一卡时与 id 不同）
 };
 
 function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
@@ -2816,13 +2817,13 @@ function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
       </p>
       <ol className="flex list-none flex-col gap-2 md:flex-row md:items-center">
         {stages.map((stage, i) => (
-          <li key={stage.id} className="flex items-center gap-2 md:contents">
+          <li key={stage.no} className="flex items-center gap-2 md:contents">
             <button
               type="button"
               aria-label={`${stage.label}，当前 ${stage.summary}${
                 stage.dirty ? "，未保存更改" : ""
               }，点击跳转`}
-              onClick={() => scrollTo(stage.id)}
+              onClick={() => scrollTo(stage.anchor ?? stage.id)}
               className={`relative flex min-w-[92px] flex-1 flex-col rounded-lg border px-3 py-2 text-left transition hover:border-zinc-400 ${
                 stage.muted
                   ? "border-zinc-200 bg-white/60"
@@ -2890,12 +2891,15 @@ function OrchestrationPage({
 }) {
   const locked = (agentConfig.chatbot_backend ?? "langchain") === "agent_sdk";
 
-  // GET /api/settings 对未保存的可选键返回 null（api_key/base_url），统一归一为 ""
-  const [intentDraft, setIntentDraft] = useState(() => ({
-    ...ragChatConfig,
-    chat_typesafe_api_key: ragChatConfig.chat_typesafe_api_key ?? "",
-    chat_typesafe_base_url: ragChatConfig.chat_typesafe_base_url ?? "",
-  }));
+  // GET /api/settings 对未保存的可选键返回 null（api_key/base_url），统一归一为 ""；
+  // draft 初始化与脏检测共用同一归一化，避免新装环境出现假"未保存"标记
+  const normalizeIntentConfig = (c: RagChatConfig): RagChatConfig => ({
+    ...c,
+    chat_typesafe_api_key: c.chat_typesafe_api_key ?? "",
+    chat_typesafe_base_url: c.chat_typesafe_base_url ?? "",
+  });
+  const intentBaseline = normalizeIntentConfig(ragChatConfig);
+  const [intentDraft, setIntentDraft] = useState(intentBaseline);
   const [transformDraft, setTransformDraft] = useState(ragChatConfig);
   const [retrievalDraft, setRetrievalDraft] = useState(ragConfig);
   const [rerankDraft, setRerankDraft] = useState<RerankConfig>(() => ({
@@ -2949,8 +2953,9 @@ function OrchestrationPage({
     const ok = await onSaveOrchRagChat({
       intent_routing_mode: intentDraft.intent_routing_mode,
       intent_engine: intentDraft.intent_engine,
-      chat_typesafe_api_key: intentDraft.chat_typesafe_api_key,
-      chat_typesafe_base_url: intentDraft.chat_typesafe_base_url,
+      // 留空 = 不发送该键（merge 语义下保持已存值不变）
+      chat_typesafe_api_key: intentDraft.chat_typesafe_api_key || undefined,
+      chat_typesafe_base_url: intentDraft.chat_typesafe_base_url || undefined,
       chat_typesafe_timeout_ms: intentDraft.chat_typesafe_timeout_ms,
       chat_typesafe_confidence_threshold:
         intentDraft.chat_typesafe_confidence_threshold,
@@ -3028,7 +3033,7 @@ function OrchestrationPage({
               intentDraft.intent_engine
             }`,
       muted: intentDraft.intent_routing_mode === "off",
-      dirty: JSON.stringify(intentDraft) !== JSON.stringify(ragChatConfig),
+      dirty: JSON.stringify(intentDraft) !== JSON.stringify(intentBaseline),
     },
     {
       id: "stage-transform",
@@ -3085,6 +3090,7 @@ function OrchestrationPage({
     {
       id: "stage-budget",
       no: "06",
+      anchor: "stage-memory", // 05/06 同一张卡
       label: "Prompt 预算",
       summary: `${memoryDraft.context_char_budget} 字符`,
     },
@@ -3112,9 +3118,10 @@ function OrchestrationPage({
         </div>
       ) : null}
 
-      <div
+      <fieldset
         aria-disabled={locked}
-        className={locked ? "pointer-events-none space-y-6 opacity-50" : "space-y-6"}
+        className={locked ? "space-y-6 opacity-50" : "space-y-6"}
+        disabled={locked}
       >
         <PipelineOverviewRail stages={stages} />
 
@@ -3125,7 +3132,7 @@ function OrchestrationPage({
           title="01 · 意图路由（Intent Routing）"
           onSave={saveIntent}
         >
-          <div className="space-y-6" data-testid="stage-intent">
+          <div className="space-y-6" id="stage-intent" data-testid="stage-intent">
             <div>
               <p className="mb-3 text-xs text-zinc-500">
                 决定是否在检索前对用户消息分流。Adaptive 模式会在「深度检索」时自动套用第
@@ -3367,7 +3374,7 @@ function OrchestrationPage({
           title="02 · 检索前变换（Query Transform）"
           onSave={saveTransform}
         >
-          <div className="space-y-4" data-testid="stage-transform">
+          <div className="space-y-4" id="stage-transform" data-testid="stage-transform">
             {intentDraft.intent_routing_mode === "adaptive" ? (
               <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
                 Adaptive 路由命中「深度检索」时将自动套用此处策略。
@@ -3429,7 +3436,7 @@ function OrchestrationPage({
           title="03 · 检索（Retrieval）"
           onSave={saveRetrieval}
         >
-          <div className="space-y-4" data-testid="stage-retrieval">
+          <div className="space-y-4" id="stage-retrieval" data-testid="stage-retrieval">
             <label className="block">
               <span className="text-xs text-zinc-500">检索算法</span>
               <select
@@ -3486,7 +3493,7 @@ function OrchestrationPage({
           title="04 · 重排（Rerank）"
           onSave={saveRerank}
         >
-          <div className="space-y-3" data-testid="stage-rerank">
+          <div className="space-y-3" id="stage-rerank" data-testid="stage-rerank">
             <label className="flex items-center gap-2">
               <input
                 checked={rerankDraft.rerank_enabled}
@@ -3644,7 +3651,7 @@ function OrchestrationPage({
           title="05 · 记忆与上下文预算（Memory / Prompt Budget）"
           onSave={saveMemory}
         >
-          <div className="grid gap-4 md:grid-cols-3" data-testid="stage-memory">
+          <div className="grid gap-4 md:grid-cols-3" id="stage-memory" data-testid="stage-memory">
             <label className="block">
               <span className="text-xs text-zinc-500">
                 Memory 压缩阈值（消息数）
@@ -3697,7 +3704,7 @@ function OrchestrationPage({
             会话 Facts 的抽取开关当前由环境变量控制（PORTO_FACTS_ENABLED），暂不在此配置。
           </p>
         </SettingsCard>
-      </div>
+      </fieldset>
     </div>
   );
 }

@@ -12,7 +12,9 @@ export default defineConfig({
   use: {
     // 必须用 localhost（与 next dev 自报的源一致）：Next 16 dev 的跨源保护会把
     // 127.0.0.1 视为不同源，对 /_next/static 资源返回 403，导致水合失败。
-    baseURL: "http://localhost:3100",
+    // 端口用 3170/8170（非 dev 默认端口）+ 禁止复用存量 server：
+    // 否则会挂到开发者正跑着的 make dev 上，把测试写入真实配置。
+    baseURL: "http://localhost:3170",
     // channel=chromium：用完整 Chromium 的新 headless 模式，避免依赖
     // chromium_headless_shell（独立下载物）。
     channel: "chromium",
@@ -20,9 +22,9 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "cd ../backend && uv run uvicorn porto_chatbot.main:app --host 127.0.0.1 --port 8100",
-      url: "http://127.0.0.1:8100/api/health",
-      reuseExistingServer: true,
+        "cd ../backend && uv run uvicorn porto_chatbot.main:app --host 127.0.0.1 --port 8170",
+      url: "http://127.0.0.1:8170/api/health",
+      reuseExistingServer: false,
       timeout: 120_000,
       env: {
         PORTO_CHATBOT_DATA_DIR: "./.e2e-data",
@@ -30,10 +32,13 @@ export default defineConfig({
       },
     },
     {
-      command: "npm run dev -- -p 3100",
-      url: "http://127.0.0.1:3100",
-      reuseExistingServer: true,
+      command: "npm run dev -- -p 3170",
+      url: "http://localhost:3170",
+      reuseExistingServer: false,
       timeout: 120_000,
+      env: {
+        PORTO_API_BASE_URL: "http://127.0.0.1:8170",
+      },
     },
   ],
 });

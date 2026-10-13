@@ -86,3 +86,34 @@ def test_route_intent_step_reports_engine_metadata(orch, sample_settings, monkey
     step = next(s for s in resp.steps if s.name == "route_intent")
     assert step.data["engine"] == "rule"
     assert step.data["fallback"] is False
+
+
+def test_route_intent_merges_db_typesafe_settings_into_runtime_settings(
+    orch, monkeypatch,
+):
+    """[回归] 设置页保存的 typesafe 键必须合入 route_chat_intent 收到的 Settings。"""
+    from porto_chatbot.agent import orchestrator as orch_mod
+    from porto_chatbot.intent import IntentDecision
+    from porto_chatbot.models import ChatRequest, RagChatSettingsPayload
+    from porto_chatbot.models.enums import ChatIntent
+
+    monkeypatch.setattr(
+        orch_mod, "effective_rag_chat_settings",
+        lambda payload=None: RagChatSettingsPayload(
+            intent_engine="typesafe", chat_typesafe_api_key="db-key",
+            chat_typesafe_timeout_ms=1500,
+        ),
+    )
+    captured: dict = {}
+
+    def fake_route(message, settings, llm, routing_mode=None, engine=None):
+        captured["api_key"] = settings.chat_typesafe_api_key
+        captured["timeout_ms"] = settings.chat_typesafe_timeout_ms
+        captured["engine"] = engine
+        return IntentDecision(ChatIntent.DIRECT, "greeting", engine="rule")
+
+    monkeypatch.setattr(orch_mod, "route_chat_intent", fake_route)
+    orch._route_intent(ChatRequest(message="你好", session_id="s"), llm=None)
+    assert captured["api_key"] == "db-key"
+    assert captured["timeout_ms"] == 1500
+    assert captured["engine"] == "typesafe"

@@ -144,7 +144,11 @@ def _typesafe_route(
 
     def _degrade(prefix: str) -> IntentDecision:
         d = _builtin_route(message, settings, llm, routing_mode)
-        return replace(d, fallback_from="typesafe", reason=f"{prefix}|{d.reason}")
+        return replace(
+            d, fallback_from="typesafe",
+            # 截前缀保末段：调用方按 "reason.rsplit('|', 1)[-1]" 匹配基础 reason
+            reason=f"{prefix[:40]}|{d.reason}",
+        )
 
     if empty or settings is None or not settings.chat_typesafe_api_key:
         return _degrade("typesafe:fallback:not_configured")

@@ -47,9 +47,11 @@ def _build_direct_answer(orch: ChatOrchestrator, req: ChatRequest, decision, llm
         llm,
     )
     if not answer:
-        if decision.reason == "greeting":
+        # typesafe 降级时 reason 带 "typesafe:...|" 前缀，取末段匹配规则 reason
+        base_reason = decision.reason.rsplit("|", 1)[-1]
+        if base_reason == "greeting":
             answer = "你好！我是 Porto 助手，可以帮你查询知识库、拆解 PRD，或生成子系统需求。"
-        elif decision.reason == "smalltalk_or_help":
+        elif base_reason == "smalltalk_or_help":
             answer = "我是 Porto 助手，可以进行知识库问答、PRD 分析和子系统拆分。"
         else:
             answer = "我在。你可以继续提问，或说明需要查询哪部分知识库内容。"

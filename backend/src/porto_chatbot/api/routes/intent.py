@@ -14,7 +14,7 @@ from ...intent import route_chat_intent
 from ...llm import LLMClient
 from ...logging_utils import get_component_logger
 from ...models.enums import IntentEngine, IntentRoutingMode
-from ..deps import current_settings, effective_rag_chat_settings
+from ..deps import effective_intent_runtime_settings, effective_rag_chat_settings
 
 logger = get_component_logger("api")
 
@@ -38,10 +38,12 @@ class IntentTestResponse(BaseModel):
 
 @router.post("/api/intent/test", response_model=IntentTestResponse)
 def test_intent(req: IntentTestRequest) -> IntentTestResponse:
+    # 注意：builtin_llm 引擎每次调用是一次真实结构化 LLM 请求。本端点与
+    # /api/chat 同信任边界（本地服务），未做限流；若暴露到公网需先加速率限制。
     rag_chat = effective_rag_chat_settings()
     routing_mode = req.routing_mode or rag_chat.intent_routing_mode or IntentRoutingMode.BINARY
     engine = req.engine or rag_chat.intent_engine
-    settings = current_settings()
+    settings = effective_intent_runtime_settings()
     started = time.monotonic()
     decision = route_chat_intent(
         req.message, settings, LLMClient(settings),

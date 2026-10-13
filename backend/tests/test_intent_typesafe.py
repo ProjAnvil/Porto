@@ -128,3 +128,31 @@ def test_typesafe_adaptive_mode_uses_three_labels(monkeypatch):
     )
     assert seen["criteria"] == ["direct", "quick_rag", "deep_rag"]
     assert d.intent == ChatIntent.DEEP_RAG
+
+
+def test_typesafe_call_uses_seconds_timeout_and_no_retry(monkeypatch):
+    """[回归] 调用级 timeout 单位是秒（ms/1000）；重试策略在 client 构造上且 max_retries=0。"""
+    import typesafe_sdk as ts_sdk
+    from typesafe_sdk import RetryPolicy
+
+    call_kwargs: dict = {}
+    ctor_kwargs: dict = {}
+
+    class KwargsClient(FakeTypesafeClient):
+        def system_one(self, *, state, questions, **kwargs):
+            call_kwargs.update(kwargs)
+            return self._resp
+
+    def fake_ctor(**kwargs):
+        ctor_kwargs.update(kwargs)
+        return KwargsClient("direct", 0.9)
+
+    monkeypatch.setattr(ts_sdk, "TypeSafeClient", fake_ctor)
+    intent_mod.route_chat_intent(
+        "你好", _settings(chat_typesafe_timeout_ms=2000), llm=None,
+        engine=IntentEngine.TYPESAFE,
+    )
+    assert call_kwargs["timeout"] == 2.0
+    assert isinstance(ctor_kwargs["retry"], RetryPolicy)
+    assert ctor_kwargs["retry"].max_retries == 0
+    assert ctor_kwargs["api_key"] == "k-test"
