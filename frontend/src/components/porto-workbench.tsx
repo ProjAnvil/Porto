@@ -12,6 +12,8 @@ import {
   useChatRuntime,
 } from "@assistant-ui/react-ai-sdk";
 import {
+  ArrowRight,
+  ArrowUpRight,
   Bot,
   Braces,
   CheckCircle2,
@@ -23,18 +25,25 @@ import {
   FileInput,
   Gauge,
   History,
+  Layers,
+  Library,
   Loader2,
+  MessageSquare,
   Network,
   Pencil,
   Pin,
   Play,
   Plus,
+  Replace,
   Route,
+  ScanSearch,
   Search,
   Send,
   Settings,
+  ShieldCheck,
   Trash2,
   Upload,
+  Workflow,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -115,9 +124,49 @@ type SettingsSection =
   | "document"
   | "knowledge"
   | "architecture"
-  | "retrieval_optimization"
   | "vector_database"
-  | "orchestration";
+  | "orchestration"
+  | "workflow_transform"
+  | "workflow_critic";
+
+// 生效范围（设置页 IA v3：通用 / Chat 调优 / Workflow 调优）
+type Scope = "chat" | "workflow" | "shared";
+
+const SCOPE_META: Record<Scope, { icon: React.ReactNode; label: string }> = {
+  chat: { icon: <MessageSquare size={13} />, label: "生效范围 · 仅 Chat（Langchain 管道）" },
+  workflow: { icon: <Workflow size={13} />, label: "生效范围 · 仅 Workflow（PRD 拆解）" },
+  shared: { icon: <Layers size={13} />, label: "生效范围 · Chat 与 Workflow 共享" },
+};
+
+function ScopeBadge({ scope, note }: { scope: Scope; note?: string }) {
+  return (
+    <div
+      className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-600"
+      data-testid="scope-badge"
+    >
+      {SCOPE_META[scope].icon}
+      <span className="font-medium text-zinc-700">{SCOPE_META[scope].label}</span>
+      {note ? <span className="text-zinc-400">{note}</span> : null}
+    </div>
+  );
+}
+
+// 锚点定位：smooth scroll + 800ms ring 高亮（编排页 rail 与 RAG 页 pendingAnchor 共用）
+function revealAnchor(id: string) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto"
+      : "smooth",
+    block: "start",
+  });
+  el.classList.add("ring-2", "ring-zinc-950", "ring-offset-2");
+  window.setTimeout(
+    () => el.classList.remove("ring-2", "ring-zinc-950", "ring-offset-2"),
+    800,
+  );
+}
 
 type ChatAttachmentStatus = "uploading" | "done" | "error";
 type ChatAttachment = {
@@ -482,21 +531,6 @@ export function PortoWorkbench() {
     }
   }
 
-  async function saveRagConfig(nextConfig: RagConfig): Promise<RagConfig | null> {
-    setBusyLabel("保存 RAG 设置");
-    setError("");
-    try {
-      const saved = await saveAppSettings({ rag: nextConfig });
-      setRagConfig(saved.rag);
-      return saved.rag;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "保存 RAG 设置失败");
-      return null;
-    } finally {
-      setBusyLabel("");
-    }
-  }
-
   async function saveAgentConfig(nextConfig: AgentConfig) {
     setBusyLabel("保存 Agent 设置");
     setError("");
@@ -804,7 +838,6 @@ export function PortoWorkbench() {
               onRefreshIndex={refreshIndex}
               onSaveAgent={saveAgentConfig}
               onSaveDocument={saveDocumentConfig}
-              onSaveRag={saveRagConfig}
               onSaveRagWorkflow={saveRagWorkflowConfig}
               onSaveOrchRagChat={saveOrchestrationRagChat}
               onSaveOrchRag={saveOrchestrationRag}
@@ -1456,7 +1489,6 @@ function SettingsPage({
   onRefreshIndex,
   onSaveAgent,
   onSaveDocument,
-  onSaveRag,
   onSaveRagWorkflow,
   onSaveOrchRagChat,
   onSaveOrchRag,
@@ -1474,13 +1506,19 @@ function SettingsPage({
   onRefreshIndex: (config?: RagConfig) => Promise<void>;
   onSaveAgent: (config: AgentConfig) => Promise<void>;
   onSaveDocument: (config: DocumentConfig) => Promise<boolean>;
-  onSaveRag: (config: RagConfig) => Promise<RagConfig | null>;
   onSaveRagWorkflow: (config: RagWorkflowConfig) => Promise<boolean>;
   onSaveOrchRagChat: (partial: Partial<RagChatConfig>) => Promise<boolean>;
   onSaveOrchRag: (partial: Partial<RagConfig>) => Promise<boolean>;
   onSaveOrchAgent: (partial: Partial<AgentConfig>) => Promise<boolean>;
 }) {
   const [section, setSection] = useState<SettingsSection>("rag");
+  // 跨 section 锚点（编排页 ③④ 节点跳 RAG 卡）+ 导航埋点（PM battle 共识的决策保险）
+  const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  const goToSection = (next: SettingsSection, anchor?: string) => {
+    console.debug("[settings-nav]", { from: section, to: next, anchor: anchor ?? null });
+    if (anchor) setPendingAnchor(anchor);
+    setSection(next);
+  };
   const [savedLabel, setSavedLabel] = useState("");
   // toast 二阶段：1600ms 开始出场（收起动画 200ms），1800ms 卸载；连续保存时重置计时器
   const [savedVisible, setSavedVisible] = useState(false);
@@ -1490,6 +1528,15 @@ function SettingsPage({
   useEffect(() => {
     if (sectionScrollRef.current) sectionScrollRef.current.scrollTop = 0;
   }, [section]);
+  // 跨 section 锚点（编排页 ③④ 节点 → RAG 卡）：切换后定位高亮
+  useEffect(() => {
+    if (section === "rag" && pendingAnchor) {
+      revealAnchor(pendingAnchor);
+      // 一次性导航意图的消费（事件回调写入、effect 消费后清零），非级联渲染
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPendingAnchor(null);
+    }
+  }, [section, pendingAnchor]);
 
   const ri = kbStats?.rag_index;
   const progressPct =
@@ -1541,31 +1588,32 @@ function SettingsPage({
           {(
             [
               {
-                label: "对话引擎",
+                label: "通用",
                 items: [
                   { id: "agent", label: "Agent", icon: <Bot size={15} /> },
-                ],
-              },
-              {
-                label: "编排 · 仅 Langchain",
-                items: [
-                  { id: "orchestration", label: "编排", icon: <Route size={15} /> },
-                ],
-              },
-              {
-                label: "知识检索",
-                items: [
-                  { id: "rag", label: "RAG", icon: <Gauge size={15} /> },
-                  { id: "retrieval_optimization", label: "检索优化", icon: <Search size={15} /> },
+                  { id: "rag", label: "RAG", icon: <ScanSearch size={15} /> },
                   { id: "vector_database", label: "向量数据库", icon: <Database size={15} /> },
+                  { id: "document", label: "文件解析", icon: <FileInput size={15} /> },
+                  { id: "knowledge", label: "Knowledge", icon: <Library size={15} /> },
+                  { id: "architecture", label: "架构", icon: <Network size={15} /> },
                 ],
               },
               {
-                label: "运行环境",
+                label: "Chat · 对话调优",
                 items: [
-                  { id: "document", label: "文件解析", icon: <FileInput size={15} /> },
-                  { id: "knowledge", label: "Knowledge", icon: <Database size={15} /> },
-                  { id: "architecture", label: "架构", icon: <Network size={15} /> },
+                  {
+                    id: "orchestration",
+                    label: "编排",
+                    icon: <Route size={15} />,
+                    badge: "仅 Langchain",
+                  },
+                ],
+              },
+              {
+                label: "Workflow · 流程调优",
+                items: [
+                  { id: "workflow_transform", label: "检索前变换", icon: <Replace size={15} /> },
+                  { id: "workflow_critic", label: "Critic 评审与规格精炼", icon: <ShieldCheck size={15} /> },
                 ],
               },
             ] as {
@@ -1574,6 +1622,7 @@ function SettingsPage({
                 id: SettingsSection;
                 label: string;
                 icon: React.ReactNode;
+                badge?: string;
               }[];
             }[]
           ).map((group) => (
@@ -1588,11 +1637,22 @@ function SettingsPage({
                       ? "bg-zinc-950 text-white"
                       : "text-zinc-600 hover:bg-zinc-100"
                   }`}
-                  key={item.id}
-                  onClick={() => setSection(item.id)}
+                  key={item.id + item.label}
+                  onClick={() => goToSection(item.id)}
                 >
                   {item.icon}
-                  {item.label}
+                  <span className="truncate">{item.label}</span>
+                  {item.badge ? (
+                    <span
+                      className={`ml-auto shrink-0 rounded border px-1 py-px text-[10px] font-medium leading-4 ${
+                        section === item.id
+                          ? "border-zinc-600 bg-zinc-900 text-zinc-300"
+                          : "border-zinc-200 bg-zinc-50 text-zinc-500"
+                      }`}
+                    >
+                      {item.badge}
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -1628,9 +1688,9 @@ function SettingsPage({
             key={JSON.stringify(ragConfig)}
             busy={busy}
             ragConfig={ragConfig}
-            onSaved={() => markSaved("RAG settings saved and indexed")}
+            onSaved={() => markSaved("RAG 设置已保存")}
             onRefreshIndex={onRefreshIndex}
-            onSaveRag={onSaveRag}
+            onSaveRagPartial={onSaveOrchRag}
           />
         ) : null}
 
@@ -1647,20 +1707,30 @@ function SettingsPage({
         {section === "document" ? (
           <DocumentSettingsForm
             key={JSON.stringify(documentConfig)}
-            busy={busy}
             documentConfig={documentConfig}
+            busy={busy}
             onSaved={() => markSaved("文件解析设置已保存")}
             onSaveDocument={onSaveDocument}
           />
         ) : null}
 
-        {section === "retrieval_optimization" ? (
-          <RagOptimizationSettingsForm
+        {section === "workflow_transform" ? (
+          <WorkflowTransformForm
             key={JSON.stringify(ragWorkflowConfig)}
             busy={busy}
             ragWorkflowConfig={ragWorkflowConfig}
-            onSavedWorkflow={() => markSaved("Workflow 场景检索优化已保存")}
+            onSaved={() => markSaved("Workflow 检索前变换已保存")}
             onSaveRagWorkflow={onSaveRagWorkflow}
+          />
+        ) : null}
+
+        {section === "workflow_critic" ? (
+          <WorkflowCriticForm
+            key={JSON.stringify(agentConfig)}
+            busy={busy}
+            agentConfig={agentConfig}
+            onSaved={() => markSaved("Critic 与规格精炼设置已保存")}
+            onSaveAgentPartial={onSaveOrchAgent}
           />
         ) : null}
 
@@ -1673,10 +1743,10 @@ function SettingsPage({
             agentConfig={agentConfig}
             ragConfig={ragConfig}
             ragChatConfig={ragChatConfig}
-            onGoToAgent={() => setSection("agent")}
+            onGoToAgent={() => goToSection("agent")}
+            onGoToSection={goToSection}
             onSaved={() => markSaved("编排设置已保存")}
             onSaveOrchRagChat={onSaveOrchRagChat}
-            onSaveOrchRag={onSaveOrchRag}
             onSaveOrchAgent={onSaveOrchAgent}
           />
         ) : null}
@@ -1709,53 +1779,9 @@ function SettingsPage({
               </div>
             </div>
 
-            <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-              <p className="text-xs text-zinc-500">知识库目录</p>
-              <ul className="mt-2 space-y-1 text-sm">
-                {ragConfig.kb_dirs.map((d, i) => (
-                  <li key={`${d}-${i}`} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-zinc-700">{d}</span>
-                    <button
-                      className="text-xs text-rose-500 hover:underline"
-                      type="button"
-                      onClick={() =>
-                        onSaveRag({
-                          ...ragConfig,
-                          kb_dirs: ragConfig.kb_dirs.filter((_, j) => j !== i),
-                        })
-                      }
-                    >
-                      删除
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <form
-                className="mt-2 flex gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const input = event.currentTarget.elements.namedItem("dir") as HTMLInputElement | null;
-                  const value = input?.value.trim();
-                  if (value && !ragConfig.kb_dirs.includes(value)) {
-                    void onSaveRag({ ...ragConfig, kb_dirs: [...ragConfig.kb_dirs, value] });
-                    if (input) input.value = "";
-                  }
-                }}
-              >
-                <input
-                  className="flex-1 rounded-md border border-zinc-200 px-2 py-1 text-sm"
-                  name="dir"
-                  placeholder="添加目录路径，如 ~/Documents/repo"
-                />
-                <button
-                  className="rounded-md bg-zinc-950 px-3 py-1 text-sm text-white"
-                  type="submit"
-                >
-                  添加
-                </button>
-              </form>
-              <p className="mt-2 text-xs text-zinc-400">添加/删除目录后需点 Re-index 生效</p>
-            </div>
+            <p className="mt-2 text-xs text-zinc-400">
+              知识库目录与 Re-index 已移至「通用 · RAG」页配置。
+            </p>
 
             {ri ? (
               <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm">
@@ -1831,174 +1857,464 @@ function RagSettingsForm({
   ragConfig,
   onSaved,
   onRefreshIndex,
-  onSaveRag,
+  onSaveRagPartial,
 }: {
   busy: boolean;
   ragConfig: RagConfig;
   onSaved: () => void;
   onRefreshIndex: (config?: RagConfig) => Promise<void>;
-  onSaveRag: (config: RagConfig) => Promise<RagConfig | null>;
+  onSaveRagPartial: (partial: Partial<RagConfig>) => Promise<boolean>;
 }) {
+  // 拆卡后必须按卡 partial 提交：卡A 未保存草稿不能被卡B 的保存误存（merge 语义）
   const [ragDraft, setRagDraft] = useState<RagConfig>(ragConfig);
 
   const updateRag = <K extends keyof RagConfig>(key: K, value: RagConfig[K]) => {
     setRagDraft((current) => ({ ...current, [key]: value }));
   };
 
-  async function saveRag() {
-    const saved = await onSaveRag(ragDraft);
-    if (saved) onSaved();
+  async function saveEmbedding() {
+    if (
+      await onSaveRagPartial({
+        embedding_provider: ragDraft.embedding_provider,
+        embedding_model: ragDraft.embedding_model,
+        embedding_base_url: ragDraft.embedding_base_url,
+        embedding_api_key: ragDraft.embedding_api_key,
+      })
+    )
+      onSaved();
   }
 
+  async function saveChunk() {
+    if (
+      await onSaveRagPartial({
+        chunk_size: ragDraft.chunk_size,
+        chunk_overlap: ragDraft.chunk_overlap,
+      })
+    )
+      onSaved();
+  }
+
+  async function saveDirs() {
+    if (await onSaveRagPartial({ kb_dirs: ragDraft.kb_dirs })) onSaved();
+  }
+
+  async function saveRetrieval() {
+    if (
+      await onSaveRagPartial({
+        retrieval_method: ragDraft.retrieval_method,
+        top_k: ragDraft.top_k,
+        bm25_top_k: ragDraft.bm25_top_k,
+        hybrid_vector_weight: ragDraft.hybrid_vector_weight,
+      })
+    )
+      onSaved();
+  }
+
+  async function saveRerank() {
+    if (
+      await onSaveRagPartial({
+        rerank_enabled: ragDraft.rerank_enabled,
+        rerank_top_n: ragDraft.rerank_top_n,
+        rerank_choice_batch_size: ragDraft.rerank_choice_batch_size,
+        rerank_provider: ragDraft.rerank_provider,
+        rerank_model: ragDraft.rerank_model,
+        rerank_type: ragDraft.rerank_type,
+        rerank_api_key: ragDraft.rerank_api_key,
+        rerank_base_url: ragDraft.rerank_base_url,
+      })
+    )
+      onSaved();
+  }
+
+  const removeDir = (i: number) => {
+    const next = ragDraft.kb_dirs.filter((_, j) => j !== i);
+    setRagDraft((current) => ({ ...current, kb_dirs: next }));
+  };
+
   return (
-    <SettingsCard
-      busy={busy}
-      saveLabel="保存配置"
-      title="RAG Settings"
-      onSave={saveRag}
-    >
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="block">
-          <span className="text-xs text-zinc-500">Embedding Provider</span>
-          <select
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            value={ragDraft.embedding_provider}
-            onChange={(event) =>
-              updateRag(
-                "embedding_provider",
-                event.target.value as RagConfig["embedding_provider"],
-              )
-            }
-          >
-            <option value="ollama">ollama</option>
-            <option value="local">local</option>
-            <option value="openai_compatible">openai_compatible（OpenAI / Jina / Fireworks 等）</option>
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-xs text-zinc-500">Embedding Model</span>
-          <input
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            value={ragDraft.embedding_model}
-            onChange={(event) =>
-              updateRag("embedding_model", event.target.value)
-            }
-          />
-        </label>
-        <label className="block md:col-span-2">
-          <span className="text-xs text-zinc-500">Embedding Base URL</span>
-          <input
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            value={ragDraft.embedding_base_url}
-            onChange={(event) =>
-              updateRag("embedding_base_url", event.target.value)
-            }
-          />
-        </label>
-        {ragDraft.embedding_provider === "openai_compatible" ? (
-          <label className="block md:col-span-2">
-            <span className="text-xs text-zinc-500">Embedding API Key</span>
+    <div className="max-w-3xl space-y-6">
+      <ScopeBadge scope="shared" note="Embedding / 分块 / 目录改动需 Re-index；查询参数保存即生效" />
+
+      <p className="px-1 pb-1 pt-2 text-[11px] font-medium tracking-wide text-zinc-400">
+        索引构建 —— 改动需 Re-index
+      </p>
+
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存 Embedding"
+        title="Embedding 模型"
+        onSave={saveEmbedding}
+      >
+        <div className="grid scroll-mt-4 gap-4 md:grid-cols-2" id="rag-embedding" data-testid="rag-embedding">
+          <label className="block">
+            <span className="text-xs text-zinc-500">Embedding Provider</span>
+            <select
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={ragDraft.embedding_provider}
+              onChange={(event) =>
+                updateRag(
+                  "embedding_provider",
+                  event.target.value as RagConfig["embedding_provider"],
+                )
+              }
+            >
+              <option value="ollama">ollama</option>
+              <option value="local">local</option>
+              <option value="openai_compatible">openai_compatible（OpenAI / Jina / Fireworks 等）</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Embedding Model</span>
             <input
               className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="password"
-              placeholder="sk-..."
-              value={ragDraft.embedding_api_key ?? ""}
+              value={ragDraft.embedding_model}
               onChange={(event) =>
-                updateRag("embedding_api_key", event.target.value || null)
+                updateRag("embedding_model", event.target.value)
               }
             />
           </label>
-        ) : null}
-        <label className="block">
-          <span className="text-xs text-zinc-500">Chunk Size</span>
-          <input
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            min={200}
-            type="number"
-            value={ragDraft.chunk_size}
-            onChange={(event) =>
-              updateRag("chunk_size", Number(event.target.value))
-            }
-          />
-        </label>
-        <label className="block">
-          <span className="text-xs text-zinc-500">Chunk Overlap</span>
-          <input
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            min={0}
-            type="number"
-            value={ragDraft.chunk_overlap}
-            onChange={(event) =>
-              updateRag("chunk_overlap", Number(event.target.value))
-            }
-          />
-        </label>
-        <label className="block md:col-span-2">
-          <span className="text-xs text-zinc-500">Top K: {ragDraft.top_k}</span>
-          <input
-            className="mt-2 w-full accent-zinc-950"
-            max={20}
-            min={1}
-            type="range"
-            value={ragDraft.top_k}
-            onChange={(event) => updateRag("top_k", Number(event.target.value))}
-          />
-        </label>
-        <label className="block">
-          <span className="text-xs text-zinc-500">检索算法</span>
-          <select
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            value={ragDraft.retrieval_method}
-            onChange={(event) =>
-              updateRag("retrieval_method", event.target.value as RagConfig["retrieval_method"])
-            }
-          >
-            <option value="hybrid">hybrid（向量 + BM25）</option>
-            <option value="vector">vector（仅向量）</option>
-            <option value="bm25">bm25（仅关键词）</option>
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-xs text-zinc-500">BM25 候选数（hybrid 用）</span>
-          <input
-            className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-            type="number"
-            min={1}
-            value={ragDraft.bm25_top_k}
-            onChange={(event) => updateRag("bm25_top_k", Number(event.target.value))}
-          />
-        </label>
-        <label className="block md:col-span-2">
-          <span className="text-xs text-zinc-500">
-            向量 / BM25 融合权重（RRF，hybrid 用）：向量 {ragDraft.hybrid_vector_weight.toFixed(2)} ·
-            BM25 {(1 - ragDraft.hybrid_vector_weight).toFixed(2)}
-          </span>
-          <input
-            className="mt-2 w-full accent-zinc-950"
-            max={1}
-            min={0}
-            step={0.05}
-            type="range"
-            value={ragDraft.hybrid_vector_weight}
-            onChange={(event) =>
-              updateRag("hybrid_vector_weight", Number(event.target.value))
-            }
-          />
-        </label>
-      </div>
+          <label className="block md:col-span-2">
+            <span className="text-xs text-zinc-500">Embedding Base URL</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={ragDraft.embedding_base_url}
+              onChange={(event) =>
+                updateRag("embedding_base_url", event.target.value)
+              }
+            />
+          </label>
+          {ragDraft.embedding_provider === "openai_compatible" ? (
+            <label className="block md:col-span-2">
+              <span className="text-xs text-zinc-500">Embedding API Key</span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                type="password"
+                placeholder="sk-..."
+                value={ragDraft.embedding_api_key ?? ""}
+                onChange={(event) =>
+                  updateRag("embedding_api_key", event.target.value || null)
+                }
+              />
+            </label>
+          ) : null}
+        </div>
+      </SettingsCard>
 
-      <div className="mt-4 flex items-center gap-3">
-        <button
-          className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
-          type="button"
-          disabled={busy}
-          onClick={() => onRefreshIndex(ragDraft)}
-        >
-          Re-index
-        </button>
-        <span className="text-xs text-zinc-400">改动目录或切分参数后需手动 Re-index 生效</span>
-      </div>
-    </SettingsCard>
+      <SettingsCard busy={busy} saveLabel="保存分块" title="分块（Chunk）" onSave={saveChunk}>
+        <div className="grid scroll-mt-4 gap-4 md:grid-cols-2" id="rag-chunk" data-testid="rag-chunk">
+          <label className="block">
+            <span className="text-xs text-zinc-500">Chunk Size</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              min={200}
+              type="number"
+              value={ragDraft.chunk_size}
+              onChange={(event) =>
+                updateRag("chunk_size", Number(event.target.value))
+              }
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">Chunk Overlap</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              min={0}
+              type="number"
+              value={ragDraft.chunk_overlap}
+              onChange={(event) =>
+                updateRag("chunk_overlap", Number(event.target.value))
+              }
+            />
+          </label>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存目录"
+        title="知识库目录（kb_dirs）"
+        onSave={saveDirs}
+      >
+        <div className="scroll-mt-4" id="rag-dirs" data-testid="rag-dirs">
+          <ul className="space-y-1 text-sm">
+            {ragDraft.kb_dirs.map((d, i) => (
+              <li key={`${d}-${i}`} className="flex items-center justify-between gap-2">
+                <span className="truncate text-zinc-700">{d}</span>
+                <button
+                  className="text-xs text-rose-500 hover:underline"
+                  type="button"
+                  onClick={() => removeDir(i)}
+                >
+                  删除
+                </button>
+              </li>
+            ))}
+          </ul>
+          <form
+            className="mt-2 flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const input = event.currentTarget.elements.namedItem("dir") as HTMLInputElement | null;
+              const value = input?.value.trim();
+              if (value && !ragDraft.kb_dirs.includes(value)) {
+                setRagDraft((current) => ({
+                  ...current,
+                  kb_dirs: [...current.kb_dirs, value],
+                }));
+                if (input) input.value = "";
+              }
+            }}
+          >
+            <input
+              className="flex-1 rounded-md border border-zinc-200 px-2 py-1 text-sm"
+              name="dir"
+              placeholder="添加目录路径，如 ~/Documents/repo"
+            />
+            <button
+              className="rounded-md bg-zinc-950 px-3 py-1 text-sm text-white"
+              type="submit"
+            >
+              添加
+            </button>
+          </form>
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+              type="button"
+              disabled={busy}
+              onClick={() => onRefreshIndex(ragDraft)}
+            >
+              Re-index
+            </button>
+            <span className="text-xs text-zinc-400">目录/分块/Embedding 改动后需手动 Re-index 生效</span>
+          </div>
+        </div>
+      </SettingsCard>
+
+      <p className="px-1 pb-1 pt-2 text-[11px] font-medium tracking-wide text-zinc-400">
+        查询检索 —— 保存即生效
+      </p>
+
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存检索参数"
+        title="检索参数（Retrieval）"
+        onSave={saveRetrieval}
+      >
+        <div className="grid scroll-mt-4 gap-4 md:grid-cols-2" id="rag-retrieval" data-testid="rag-retrieval">
+          <label className="block">
+            <span className="text-xs text-zinc-500">检索算法</span>
+            <select
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              value={ragDraft.retrieval_method}
+              onChange={(event) =>
+                updateRag(
+                  "retrieval_method",
+                  event.target.value as RagConfig["retrieval_method"],
+                )
+              }
+            >
+              <option value="hybrid">hybrid（向量 + BM25）</option>
+              <option value="vector">vector（仅向量）</option>
+              <option value="bm25">bm25（仅关键词）</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs text-zinc-500">BM25 候选数（hybrid 用）</span>
+            <input
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              type="number"
+              min={1}
+              disabled={ragDraft.retrieval_method !== "hybrid"}
+              value={ragDraft.bm25_top_k}
+              onChange={(event) =>
+                updateRag("bm25_top_k", Number(event.target.value))
+              }
+            />
+          </label>
+          <label className="block md:col-span-2">
+            <span className="text-xs text-zinc-500">Top K: {ragDraft.top_k}</span>
+            <input
+              className="mt-2 w-full accent-zinc-950"
+              max={20}
+              min={1}
+              type="range"
+              value={ragDraft.top_k}
+              onChange={(event) => updateRag("top_k", Number(event.target.value))}
+            />
+          </label>
+          {ragDraft.retrieval_method === "hybrid" ? (
+            <label className="block md:col-span-2">
+              <span className="text-xs text-zinc-500">
+                向量 / BM25 融合权重（RRF，hybrid 用）：向量 {ragDraft.hybrid_vector_weight.toFixed(2)} ·
+                BM25 {(1 - ragDraft.hybrid_vector_weight).toFixed(2)}
+              </span>
+              <input
+                className="mt-2 w-full accent-zinc-950"
+                max={1}
+                min={0}
+                step={0.05}
+                type="range"
+                value={ragDraft.hybrid_vector_weight}
+                onChange={(event) =>
+                  updateRag("hybrid_vector_weight", Number(event.target.value))
+                }
+              />
+            </label>
+          ) : null}
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存重排序设置"
+        title="重排（Rerank）"
+        onSave={saveRerank}
+      >
+        <div className="scroll-mt-4 space-y-3" id="rag-rerank" data-testid="rag-rerank">
+          <label className="flex items-center gap-2">
+            <input
+              checked={ragDraft.rerank_enabled}
+              type="checkbox"
+              onChange={(event) =>
+                updateRag("rerank_enabled", event.target.checked)
+              }
+            />
+            <span className="text-sm font-medium text-zinc-700">
+              启用重排序（检索候选后二次精排）
+            </span>
+          </label>
+          <p className="text-xs text-zinc-500">
+            对 Chat 与 Workflow 两个场景同时生效。LLM 模式缺省复用 Agent 设置；Cross-Encoder
+            模式调用专用 reranker API（Jina / Cohere / Voyage）。
+          </p>
+          <label className="block">
+            <span className="text-xs text-zinc-500">重排序类型</span>
+            <select
+              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+              disabled={!ragDraft.rerank_enabled}
+              value={ragDraft.rerank_type}
+              onChange={(event) =>
+                updateRag(
+                  "rerank_type",
+                  event.target.value as RagConfig["rerank_type"],
+                )
+              }
+            >
+              <option value="llm">LLM 提示重排</option>
+              <option value="cross_encoder">
+                Cross-Encoder 专用 Reranker（Jina / Cohere / Voyage）
+              </option>
+            </select>
+          </label>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block">
+              <span className="text-xs text-zinc-500">保留数量（Top N）</span>
+              <input
+                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                type="number"
+                min={1}
+                disabled={!ragDraft.rerank_enabled}
+                value={ragDraft.rerank_top_n}
+                onChange={(event) =>
+                  updateRag("rerank_top_n", Number(event.target.value))
+                }
+              />
+            </label>
+            {ragDraft.rerank_type === "llm" ? (
+              <>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">批大小（choice_batch_size）</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    type="number"
+                    min={1}
+                    disabled={!ragDraft.rerank_enabled}
+                    value={ragDraft.rerank_choice_batch_size}
+                    onChange={(event) =>
+                      updateRag(
+                        "rerank_choice_batch_size",
+                        Number(event.target.value),
+                      )
+                    }
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">Provider（留空复用 Agent）</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!ragDraft.rerank_enabled}
+                    value={ragDraft.rerank_provider ?? ""}
+                    onChange={(event) =>
+                      updateRag(
+                        "rerank_provider",
+                        (event.target.value || null) as RagConfig["rerank_provider"],
+                      )
+                    }
+                  >
+                    <option value="">（复用 Agent 设置）</option>
+                    <option value="openai">openai</option>
+                    <option value="anthropic">anthropic</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">Model（留空复用 Agent）</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!ragDraft.rerank_enabled}
+                    placeholder="可选"
+                    value={ragDraft.rerank_model ?? ""}
+                    onChange={(event) =>
+                      updateRag("rerank_model", event.target.value || null)
+                    }
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="block">
+                  <span className="text-xs text-zinc-500">Reranker Model</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!ragDraft.rerank_enabled}
+                    placeholder="jina-reranker-v2-base-multilingual"
+                    value={ragDraft.rerank_model ?? ""}
+                    onChange={(event) =>
+                      updateRag("rerank_model", event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="text-xs text-zinc-500">Reranker Base URL</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    disabled={!ragDraft.rerank_enabled}
+                    placeholder="https://api.jina.ai/v1"
+                    value={ragDraft.rerank_base_url ?? ""}
+                    onChange={(event) =>
+                      updateRag("rerank_base_url", event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="text-xs text-zinc-500">Reranker API Key</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                    type="password"
+                    disabled={!ragDraft.rerank_enabled}
+                    placeholder="jina-..."
+                    value={ragDraft.rerank_api_key ?? ""}
+                    onChange={(event) =>
+                      updateRag("rerank_api_key", event.target.value || null)
+                    }
+                  />
+                </label>
+              </>
+            )}
+          </div>
+        </div>
+      </SettingsCard>
+    </div>
   );
 }
 
@@ -2431,162 +2747,11 @@ function AgentSettingsForm({
         </label>
       </div>
 
-      <div className="mt-5 rounded-lg border border-zinc-200 p-4">
-        <p className="text-sm font-semibold text-zinc-700">Critic LLM</p>
-        <p className="text-xs text-zinc-400">独立评审模型，留空复用 generator</p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <label className="block">
-            <span className="text-xs text-zinc-500">Provider</span>
-            <select
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              value={agentDraft.critic_provider ?? ""}
-              onChange={(event) =>
-                updateAgent(
-                  "critic_provider",
-                  (event.target.value || null) as AgentConfig["critic_provider"],
-                )
-              }
-            >
-              <option value="">（复用 generator）</option>
-              <option value="openai">openai</option>
-              <option value="anthropic">anthropic</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Model</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              value={agentDraft.critic_model ?? ""}
-              onChange={(event) => updateAgent("critic_model", event.target.value || null)}
-            />
-          </label>
-          <label className="block md:col-span-2">
-            <span className="text-xs text-zinc-500">Base URL</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              value={agentDraft.critic_base_url ?? ""}
-              onChange={(event) => updateAgent("critic_base_url", event.target.value || null)}
-            />
-          </label>
-          <label className="block md:col-span-2">
-            <span className="text-xs text-zinc-500">API Key</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="password"
-              value={agentDraft.critic_api_key ?? ""}
-              onChange={(event) => updateAgent("critic_api_key", event.target.value || null)}
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Temperature</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              step="0.1"
-              min="0"
-              max="2"
-              value={agentDraft.critic_temperature ?? 0.1}
-              onChange={(event) => updateAgent("critic_temperature", Number(event.target.value))}
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Max Tokens</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min="1"
-              value={agentDraft.critic_max_tokens ?? 1500}
-              onChange={(event) => updateAgent("critic_max_tokens", Number(event.target.value))}
-            />
-          </label>
-        </div>
-      </div>
-
       <details className="mt-4">
         <summary className="cursor-pointer text-xs text-zinc-500">
-          高级配置（Spec loop · Workflow · Memory · Context）
+          高级配置（流式 · 工具轮数）
         </summary>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
-          <label className="block">
-            <span className="text-xs text-zinc-500">Spec refine 启用</span>
-            <input
-              className="mt-2 h-4 w-4 accent-zinc-950"
-              type="checkbox"
-              checked={agentDraft.spec_refine_enabled}
-              onChange={(event) =>
-                updateAgent("spec_refine_enabled", event.target.checked)
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Spec refine 最大迭代</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={0}
-              max={10}
-              value={agentDraft.spec_refine_max_iter}
-              onChange={(event) =>
-                updateAgent("spec_refine_max_iter", Number(event.target.value))
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Spec 并发度（1-10）</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={1}
-              max={10}
-              value={agentDraft.spec_refine_concurrency}
-              onChange={(event) =>
-                updateAgent(
-                  "spec_refine_concurrency",
-                  Math.min(10, Math.max(1, Number(event.target.value))),
-                )
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Spec PASS 分数（满分 12）</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={0}
-              max={12}
-              value={agentDraft.spec_refine_pass_score}
-              onChange={(event) =>
-                updateAgent("spec_refine_pass_score", Number(event.target.value))
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Workflow 回边启用</span>
-            <input
-              className="mt-2 h-4 w-4 accent-zinc-950"
-              type="checkbox"
-              checked={agentDraft.workflow_rework_enabled}
-              onChange={(event) =>
-                updateAgent("workflow_rework_enabled", event.target.checked)
-              }
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-zinc-500">Workflow 回边上限</span>
-            <input
-              className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-              type="number"
-              min={0}
-              max={5}
-              value={agentDraft.workflow_rework_max_passes}
-              onChange={(event) =>
-                updateAgent(
-                  "workflow_rework_max_passes",
-                  Number(event.target.value),
-                )
-              }
-            />
-          </label>
           <label className="block">
             <span className="text-xs text-zinc-500">原生流式输出</span>
             <input
@@ -2722,27 +2887,16 @@ function StrategyCardGroup({
   );
 }
 
-type RerankConfig = Pick<
-  RagConfig,
-  | "rerank_enabled"
-  | "rerank_top_n"
-  | "rerank_choice_batch_size"
-  | "rerank_provider"
-  | "rerank_model"
-  | "rerank_type"
-  | "rerank_api_key"
-  | "rerank_base_url"
->;
 
-function RagOptimizationSettingsForm({
+function WorkflowTransformForm({
   busy,
   ragWorkflowConfig,
-  onSavedWorkflow,
+  onSaved,
   onSaveRagWorkflow,
 }: {
   busy: boolean;
   ragWorkflowConfig: RagWorkflowConfig;
-  onSavedWorkflow: () => void;
+  onSaved: () => void;
   onSaveRagWorkflow: (config: RagWorkflowConfig) => Promise<boolean>;
 }) {
   const [workflowDraft, setWorkflowDraft] =
@@ -2757,26 +2911,19 @@ function RagOptimizationSettingsForm({
 
   async function saveWorkflow() {
     const ok = await onSaveRagWorkflow(workflowDraft);
-    if (ok) onSavedWorkflow();
+    if (ok) onSaved();
   }
 
   return (
     <div className="max-w-3xl space-y-6">
-      <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
-        查询优化为查询时行为，修改后立即生效，无需重建知识库索引。Chat 场景与重排序配置已移至「编排」页。
-      </div>
-
-      {/* Workflow 场景 */}
+      <ScopeBadge scope="workflow" note="查询时行为，改后即生效" />
       <SettingsCard
         busy={busy}
-        saveLabel="保存 Workflow 场景"
-        title="Workflow 场景检索优化"
+        saveLabel="保存 Workflow 变换"
+        title="Workflow 检索前变换（Query Transform）"
         onSave={saveWorkflow}
       >
         <div className="space-y-3">
-          <div className="text-sm font-semibold text-zinc-900">
-            查询变换（Query Transform）
-          </div>
           <p className="text-xs text-zinc-500">
             仅提供适用于长 PRD 文档的变换策略；HyDE / Step-Back 不适用于长文档场景，故不提供。
           </p>
@@ -2797,9 +2944,9 @@ function RagOptimizationSettingsForm({
               </span>
               <input
                 className="mt-2 w-full accent-zinc-950"
-                type="range"
-                min={2}
                 max={8}
+                min={2}
+                type="range"
                 value={workflowDraft.multi_query_count}
                 onChange={(event) =>
                   updateWorkflow(
@@ -2816,7 +2963,233 @@ function RagOptimizationSettingsForm({
   );
 }
 
-// ── 编排（Orchestration）—— Langchain chat 管道的分层配置，agent_sdk 引擎下锁定 ──
+// Workflow 调优：Critic 评审 + 规格精炼 + 回边返工（从 Agent 表单迁出，agent namespace 部分保存）
+const WORKFLOW_AGENT_KEYS = [
+  "critic_provider",
+  "critic_model",
+  "critic_base_url",
+  "critic_api_key",
+  "critic_temperature",
+  "critic_max_tokens",
+  "spec_refine_enabled",
+  "spec_refine_max_iter",
+  "spec_refine_concurrency",
+  "spec_refine_pass_score",
+  "workflow_rework_enabled",
+  "workflow_rework_max_passes",
+] as const;
+
+function WorkflowCriticForm({
+  busy,
+  agentConfig,
+  onSaved,
+  onSaveAgentPartial,
+}: {
+  busy: boolean;
+  agentConfig: AgentConfig;
+  onSaved: () => void;
+  onSaveAgentPartial: (partial: Partial<AgentConfig>) => Promise<boolean>;
+}) {
+  // null 归一化：critic_* 可选键 GET 可能返回 null（照抄 normalizeIntentConfig 先例）
+  const [draft, setDraft] = useState(() => ({
+    critic_provider: agentConfig.critic_provider ?? null,
+    critic_model: agentConfig.critic_model ?? null,
+    critic_base_url: agentConfig.critic_base_url ?? null,
+    critic_api_key: agentConfig.critic_api_key ?? null,
+    critic_temperature: agentConfig.critic_temperature ?? 0.1,
+    critic_max_tokens: agentConfig.critic_max_tokens ?? 1500,
+    spec_refine_enabled: agentConfig.spec_refine_enabled,
+    spec_refine_max_iter: agentConfig.spec_refine_max_iter,
+    spec_refine_concurrency: agentConfig.spec_refine_concurrency,
+    spec_refine_pass_score: agentConfig.spec_refine_pass_score,
+    workflow_rework_enabled: agentConfig.workflow_rework_enabled,
+    workflow_rework_max_passes: agentConfig.workflow_rework_max_passes,
+  }));
+
+  const update = <K extends keyof typeof draft>(key: K, value: (typeof draft)[K]) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  async function save() {
+    // 只提交本页渲染的键：绝不能把整份 AgentConfig PUT 回去（会覆盖 Agent 页刚保存的配置）
+    const ok = await onSaveAgentPartial(
+      Object.fromEntries(WORKFLOW_AGENT_KEYS.map((k) => [k, draft[k]])) as Partial<AgentConfig>,
+    );
+    if (ok) onSaved();
+  }
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <ScopeBadge scope="workflow" />
+      <SettingsCard
+        busy={busy}
+        saveLabel="保存 Critic 与精炼设置"
+        title="Critic 评审与规格精炼"
+        onSave={save}
+      >
+        <div className="space-y-5">
+          <div>
+            <p className="text-sm font-semibold text-zinc-700">Critic 模型</p>
+            <p className="text-xs text-zinc-400">独立评审模型，留空复用 generator</p>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="block">
+                <span className="text-xs text-zinc-500">Provider</span>
+                <select
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  value={draft.critic_provider ?? ""}
+                  onChange={(event) =>
+                    update(
+                      "critic_provider",
+                      (event.target.value || null) as AgentConfig["critic_provider"],
+                    )
+                  }
+                >
+                  <option value="">（复用 generator）</option>
+                  <option value="openai">openai</option>
+                  <option value="anthropic">anthropic</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">Model</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  value={draft.critic_model ?? ""}
+                  onChange={(event) => update("critic_model", event.target.value || null)}
+                />
+              </label>
+              <label className="block md:col-span-2">
+                <span className="text-xs text-zinc-500">Base URL</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  value={draft.critic_base_url ?? ""}
+                  onChange={(event) => update("critic_base_url", event.target.value || null)}
+                />
+              </label>
+              <label className="block md:col-span-2">
+                <span className="text-xs text-zinc-500">API Key</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  type="password"
+                  value={draft.critic_api_key ?? ""}
+                  onChange={(event) => update("critic_api_key", event.target.value || null)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">Temperature</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  max={2}
+                  min={0}
+                  step={0.1}
+                  type="number"
+                  value={draft.critic_temperature}
+                  onChange={(event) => update("critic_temperature", Number(event.target.value))}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">Max Tokens</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  min={1}
+                  type="number"
+                  value={draft.critic_max_tokens}
+                  onChange={(event) => update("critic_max_tokens", Number(event.target.value))}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="border-t border-zinc-200 pt-4">
+            <p className="text-sm font-semibold text-zinc-700">规格精炼（Spec Refine）</p>
+            <div className="mt-3 grid gap-4 md:grid-cols-2">
+              <label className="block">
+                <span className="text-xs text-zinc-500">启用</span>
+                <input
+                  className="mt-2 h-4 w-4 accent-zinc-950"
+                  type="checkbox"
+                  checked={draft.spec_refine_enabled}
+                  onChange={(event) => update("spec_refine_enabled", event.target.checked)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">最大迭代</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  max={10}
+                  min={0}
+                  type="number"
+                  value={draft.spec_refine_max_iter}
+                  onChange={(event) =>
+                    update("spec_refine_max_iter", Number(event.target.value))
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">Spec 并发度（1-10）</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  max={10}
+                  min={1}
+                  type="number"
+                  value={draft.spec_refine_concurrency}
+                  onChange={(event) =>
+                    update(
+                      "spec_refine_concurrency",
+                      Math.min(10, Math.max(1, Number(event.target.value))),
+                    )
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">Spec PASS 分数（满分 12）</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  max={12}
+                  min={0}
+                  type="number"
+                  value={draft.spec_refine_pass_score}
+                  onChange={(event) =>
+                    update("spec_refine_pass_score", Number(event.target.value))
+                  }
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="border-t border-zinc-200 pt-4">
+            <p className="text-sm font-semibold text-zinc-700">回边返工（Rework）</p>
+            <div className="mt-3 grid gap-4 md:grid-cols-2">
+              <label className="block">
+                <span className="text-xs text-zinc-500">启用</span>
+                <input
+                  className="mt-2 h-4 w-4 accent-zinc-950"
+                  type="checkbox"
+                  checked={draft.workflow_rework_enabled}
+                  onChange={(event) =>
+                    update("workflow_rework_enabled", event.target.checked)
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-zinc-500">回边上限</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  max={5}
+                  min={0}
+                  type="number"
+                  value={draft.workflow_rework_max_passes}
+                  onChange={(event) =>
+                    update("workflow_rework_max_passes", Number(event.target.value))
+                  }
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+      </SettingsCard>
+    </div>
+  );
+}
 
 const INTENT_ENGINE_OPTIONS: CardOption[] = [
   {
@@ -2849,24 +3222,23 @@ type PipelineStage = {
   summary: string;
   muted?: boolean;
   dirty?: boolean;
-  anchor?: string; // 滚动目标元素 id（多节点指向同一卡时与 id 不同）
+  anchor?: string; // 页内滚动目标元素 id（多节点指向同一卡时与 id 不同）
+  external?: { section: SettingsSection; anchor?: string }; // 出页跳转（③④ → RAG）
 };
 
-function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
-  const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.scrollIntoView({
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        ? "auto"
-        : "smooth",
-      block: "start",
-    });
-    el.classList.add("ring-2", "ring-zinc-950", "ring-offset-2");
-    window.setTimeout(
-      () => el.classList.remove("ring-2", "ring-zinc-950", "ring-offset-2"),
-      800,
-    );
+function PipelineOverviewRail({
+  onGoToSection,
+  stages,
+}: {
+  onGoToSection: (next: SettingsSection, anchor?: string) => void;
+  stages: PipelineStage[];
+}) {
+  const onNodeClick = (stage: PipelineStage) => {
+    if (stage.external) {
+      onGoToSection(stage.external.section, stage.external.anchor);
+      return;
+    }
+    revealAnchor(stage.anchor ?? stage.id);
   };
   return (
     <div
@@ -2883,7 +3255,8 @@ function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
         ) : null}
       </div>
       <p className="mb-3 text-xs text-zinc-500">
-        Langchain 聊天管道——消息依次流经以下阶段，点击任一阶段跳转到对应配置。
+        Langchain 聊天管道——消息依次流经以下阶段，点击任一阶段跳转到对应配置（③④ 在「通用 ·
+        RAG」页）。
       </p>
       <ol className="flex list-none flex-col gap-2 md:flex-row md:items-center">
         {stages.map((stage, i) => (
@@ -2892,8 +3265,8 @@ function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
               type="button"
               aria-label={`${stage.label}，当前 ${stage.summary}${
                 stage.dirty ? "，未保存更改" : ""
-              }，点击跳转`}
-              onClick={() => scrollTo(stage.anchor ?? stage.id)}
+              }，${stage.external ? "跳转到通用 · RAG 配置" : "点击跳转"}`}
+              onClick={() => onNodeClick(stage)}
               className={`relative flex min-w-[92px] flex-1 flex-col rounded-lg border px-3 py-2 text-left transition hover:border-zinc-400 ${
                 stage.muted
                   ? "border-zinc-200 bg-white/60"
@@ -2911,8 +3284,15 @@ function PipelineOverviewRail({ stages }: { stages: PipelineStage[] }) {
                 <span className="text-xs font-medium text-zinc-700">
                   {stage.label}
                 </span>
+                {stage.external ? (
+                  <ArrowUpRight aria-hidden className="ml-auto h-3 w-3 text-zinc-400" size={11} />
+                ) : null}
                 {stage.dirty ? (
-                  <span className="absolute right-1.5 top-1.5 inline-block h-1 w-1 rounded-full bg-rose-500" />
+                  <span
+                    className={`inline-block h-1 w-1 rounded-full bg-rose-500 ${
+                      stage.external ? "" : "absolute right-1.5 top-1.5"
+                    }`}
+                  />
                 ) : null}
               </span>
               <span
@@ -2944,9 +3324,9 @@ function OrchestrationPage({
   ragConfig,
   ragChatConfig,
   onGoToAgent,
+  onGoToSection,
   onSaved,
   onSaveOrchRagChat,
-  onSaveOrchRag,
   onSaveOrchAgent,
 }: {
   busy: boolean;
@@ -2954,9 +3334,9 @@ function OrchestrationPage({
   ragConfig: RagConfig;
   ragChatConfig: RagChatConfig;
   onGoToAgent: () => void;
+  onGoToSection: (next: SettingsSection, anchor?: string) => void;
   onSaved: () => void;
   onSaveOrchRagChat: (partial: Partial<RagChatConfig>) => Promise<boolean>;
-  onSaveOrchRag: (partial: Partial<RagConfig>) => Promise<boolean>;
   onSaveOrchAgent: (partial: Partial<AgentConfig>) => Promise<boolean>;
 }) {
   const locked = (agentConfig.chatbot_backend ?? "langchain") === "agent_sdk";
@@ -2971,17 +3351,6 @@ function OrchestrationPage({
   const intentBaseline = normalizeIntentConfig(ragChatConfig);
   const [intentDraft, setIntentDraft] = useState(intentBaseline);
   const [transformDraft, setTransformDraft] = useState(ragChatConfig);
-  const [retrievalDraft, setRetrievalDraft] = useState(ragConfig);
-  const [rerankDraft, setRerankDraft] = useState<RerankConfig>(() => ({
-    rerank_enabled: ragConfig.rerank_enabled,
-    rerank_top_n: ragConfig.rerank_top_n,
-    rerank_choice_batch_size: ragConfig.rerank_choice_batch_size,
-    rerank_provider: ragConfig.rerank_provider,
-    rerank_model: ragConfig.rerank_model,
-    rerank_type: ragConfig.rerank_type,
-    rerank_api_key: ragConfig.rerank_api_key,
-    rerank_base_url: ragConfig.rerank_base_url,
-  }));
   const [memoryDraft, setMemoryDraft] = useState({
     memory_compact_threshold: agentConfig.memory_compact_threshold,
     memory_recent_keep: agentConfig.memory_recent_keep,
@@ -3001,10 +3370,6 @@ function OrchestrationPage({
     key: K,
     value: RagChatConfig[K],
   ) => setTransformDraft((c) => ({ ...c, [key]: value }));
-  const updateRerank = <K extends keyof RerankConfig>(
-    key: K,
-    value: RerankConfig[K],
-  ) => setRerankDraft((c) => ({ ...c, [key]: value }));
 
   const typesafeSelected =
     intentDraft.intent_engine === "typesafe" &&
@@ -3042,19 +3407,6 @@ function OrchestrationPage({
       hyde_fallback_threshold: transformDraft.hyde_fallback_threshold,
       condense_enabled: transformDraft.condense_enabled,
     });
-    if (ok) onSaved();
-  }
-
-  async function saveRetrieval() {
-    const ok = await onSaveOrchRag({
-      retrieval_method: retrievalDraft.retrieval_method,
-      hybrid_vector_weight: retrievalDraft.hybrid_vector_weight,
-    });
-    if (ok) onSaved();
-  }
-
-  async function saveRerank() {
-    const ok = await onSaveOrchRag(rerankDraft);
     if (ok) onSaved();
   }
 
@@ -3118,33 +3470,23 @@ function OrchestrationPage({
       id: "stage-retrieval",
       no: "03",
       label: "检索",
-      summary: `${retrievalDraft.retrieval_method}${
-        retrievalDraft.retrieval_method === "hybrid"
-          ? `·${retrievalDraft.hybrid_vector_weight}`
+      summary: `${ragConfig.retrieval_method}${
+        ragConfig.retrieval_method === "hybrid"
+          ? `·${ragConfig.hybrid_vector_weight}`
           : ""
       }`,
-      dirty:
-        retrievalDraft.retrieval_method !== ragConfig.retrieval_method ||
-        retrievalDraft.hybrid_vector_weight !== ragConfig.hybrid_vector_weight,
+      // ③④ 编辑点已外迁到 RAG 页（共享配置单一编辑点），节点点击出页跳转
+      external: { section: "rag", anchor: "rag-retrieval" },
     },
     {
       id: "stage-rerank",
       no: "04",
       label: "重排",
-      summary: rerankDraft.rerank_enabled
-        ? `${rerankDraft.rerank_type}·top${rerankDraft.rerank_top_n}`
+      summary: ragConfig.rerank_enabled
+        ? `${ragConfig.rerank_type}·top${ragConfig.rerank_top_n}`
         : "关闭",
-      muted: !rerankDraft.rerank_enabled,
-      dirty: JSON.stringify(rerankDraft) !== JSON.stringify({
-        rerank_enabled: ragConfig.rerank_enabled,
-        rerank_top_n: ragConfig.rerank_top_n,
-        rerank_choice_batch_size: ragConfig.rerank_choice_batch_size,
-        rerank_provider: ragConfig.rerank_provider,
-        rerank_model: ragConfig.rerank_model,
-        rerank_type: ragConfig.rerank_type,
-        rerank_api_key: ragConfig.rerank_api_key,
-        rerank_base_url: ragConfig.rerank_base_url,
-      }),
+      muted: !ragConfig.rerank_enabled,
+      external: { section: "rag", anchor: "rag-rerank" },
     },
     {
       id: "stage-memory",
@@ -3168,6 +3510,7 @@ function OrchestrationPage({
 
   return (
     <div className="max-w-3xl">
+      <ScopeBadge scope="chat" />
       {locked ? (
         <div
           role="note"
@@ -3195,7 +3538,7 @@ function OrchestrationPage({
         }`}
         disabled={locked}
       >
-        <PipelineOverviewRail stages={stages} />
+        <PipelineOverviewRail onGoToSection={onGoToSection} stages={stages} />
 
         {/* 01 意图路由 */}
         <SettingsCard
@@ -3515,220 +3858,36 @@ function OrchestrationPage({
           </div>
         </SettingsCard>
 
-        {/* 03 检索 */}
-        <SettingsCard
-          busy={busy}
-          saveLabel="保存检索设置"
-          title="03 · 检索（Retrieval）"
-          onSave={saveRetrieval}
+        {/* 03 检索 · 04 重排 已外迁至「通用 · RAG」（共享配置单一编辑点） */}
+        <div
+          className="group rounded-xl border border-dashed border-zinc-300 bg-zinc-50/60 p-4 transition-colors duration-120 ease-standard hover:border-zinc-400"
+          data-testid="moved-to-rag-card"
         >
-          <div className="space-y-4" id="stage-retrieval" data-testid="stage-retrieval">
-            <label className="block">
-              <span className="text-xs text-zinc-500">检索算法</span>
-              <select
-                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                value={retrievalDraft.retrieval_method}
-                onChange={(event) =>
-                  setRetrievalDraft((c) => ({
-                    ...c,
-                    retrieval_method: event.target
-                      .value as RagConfig["retrieval_method"],
-                  }))
-                }
-              >
-                <option value="vector">Vector（语义向量）</option>
-                <option value="bm25">BM25（关键词）</option>
-                <option value="hybrid">Hybrid（向量 + BM25 融合）</option>
-              </select>
-            </label>
-            {retrievalDraft.retrieval_method === "hybrid" ? (
-              <label className="block">
-                <span className="text-xs text-zinc-500">
-                  融合权重（向量 vs BM25）：{retrievalDraft.hybrid_vector_weight}
-                </span>
-                <input
-                  className="mt-2 w-full accent-zinc-950"
-                  max={1}
-                  min={0}
-                  step={0.1}
-                  type="range"
-                  value={retrievalDraft.hybrid_vector_weight}
-                  onChange={(event) =>
-                    setRetrievalDraft((c) => ({
-                      ...c,
-                      hybrid_vector_weight: Number(event.target.value),
-                    }))
-                  }
-                />
-                <span className="flex justify-between text-xs text-zinc-400">
-                  <span>0 偏 BM25</span>
-                  <span>1 偏向量</span>
-                </span>
-              </label>
-            ) : null}
-            <p className="text-xs text-zinc-400">
-              Embedding、分块与 Top-K 等完整检索参数在「知识检索 · RAG」页配置。
-            </p>
-          </div>
-        </SettingsCard>
-
-        {/* 04 重排 */}
-        <SettingsCard
-          busy={busy}
-          saveLabel="保存重排序设置"
-          title="04 · 重排（Rerank）"
-          onSave={saveRerank}
-        >
-          <div className="space-y-3" id="stage-rerank" data-testid="stage-rerank">
-            <label className="flex items-center gap-2">
-              <input
-                checked={rerankDraft.rerank_enabled}
-                type="checkbox"
-                onChange={(event) =>
-                  updateRerank("rerank_enabled", event.target.checked)
-                }
-              />
-              <span className="text-sm font-medium text-zinc-700">
-                启用重排序（检索候选后二次精排）
-              </span>
-            </label>
-            <p className="text-xs text-zinc-500">
-              对 Chat 与 Workflow 两个场景同时生效。LLM 模式缺省复用 Agent
-              设置；Cross-Encoder 模式调用专用 reranker API（Jina / Cohere /
-              Voyage）。
-            </p>
-            <label className="block">
-              <span className="text-xs text-zinc-500">重排序类型</span>
-              <select
-                className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                disabled={!rerankDraft.rerank_enabled}
-                value={rerankDraft.rerank_type}
-                onChange={(event) =>
-                  updateRerank(
-                    "rerank_type",
-                    event.target.value as RerankConfig["rerank_type"],
-                  )
-                }
-              >
-                <option value="llm">LLM 提示重排</option>
-                <option value="cross_encoder">
-                  Cross-Encoder 专用 Reranker（Jina / Cohere / Voyage）
-                </option>
-              </select>
-            </label>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="block">
-                <span className="text-xs text-zinc-500">保留数量（Top N）</span>
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  type="number"
-                  min={1}
-                  disabled={!rerankDraft.rerank_enabled}
-                  value={rerankDraft.rerank_top_n}
-                  onChange={(event) =>
-                    updateRerank("rerank_top_n", Number(event.target.value))
-                  }
-                />
-              </label>
-              {rerankDraft.rerank_type === "llm" ? (
-                <>
-                  <label className="block">
-                    <span className="text-xs text-zinc-500">
-                      批大小（choice_batch_size）
-                    </span>
-                    <input
-                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                      type="number"
-                      min={1}
-                      disabled={!rerankDraft.rerank_enabled}
-                      value={rerankDraft.rerank_choice_batch_size}
-                      onChange={(event) =>
-                        updateRerank(
-                          "rerank_choice_batch_size",
-                          Number(event.target.value),
-                        )
-                      }
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-xs text-zinc-500">
-                      Provider（留空复用 Agent）
-                    </span>
-                    <select
-                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                      disabled={!rerankDraft.rerank_enabled}
-                      value={rerankDraft.rerank_provider ?? ""}
-                      onChange={(event) =>
-                        updateRerank(
-                          "rerank_provider",
-                          (event.target.value || null) as RerankConfig["rerank_provider"],
-                        )
-                      }
-                    >
-                      <option value="">（复用 Agent 设置）</option>
-                      <option value="openai">openai</option>
-                      <option value="anthropic">anthropic</option>
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="text-xs text-zinc-500">
-                      Model（留空复用 Agent）
-                    </span>
-                    <input
-                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                      disabled={!rerankDraft.rerank_enabled}
-                      placeholder="可选"
-                      value={rerankDraft.rerank_model ?? ""}
-                      onChange={(event) =>
-                        updateRerank("rerank_model", event.target.value || null)
-                      }
-                    />
-                  </label>
-                </>
-              ) : (
-                <>
-                  <label className="block">
-                    <span className="text-xs text-zinc-500">Reranker Model</span>
-                    <input
-                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                      disabled={!rerankDraft.rerank_enabled}
-                      placeholder="jina-reranker-v2-base-multilingual"
-                      value={rerankDraft.rerank_model ?? ""}
-                      onChange={(event) =>
-                        updateRerank("rerank_model", event.target.value || null)
-                      }
-                    />
-                  </label>
-                  <label className="block md:col-span-2">
-                    <span className="text-xs text-zinc-500">Reranker Base URL</span>
-                    <input
-                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                      disabled={!rerankDraft.rerank_enabled}
-                      placeholder="https://api.jina.ai/v1"
-                      value={rerankDraft.rerank_base_url ?? ""}
-                      onChange={(event) =>
-                        updateRerank("rerank_base_url", event.target.value || null)
-                      }
-                    />
-                  </label>
-                  <label className="block md:col-span-2">
-                    <span className="text-xs text-zinc-500">Reranker API Key</span>
-                    <input
-                      className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                      type="password"
-                      disabled={!rerankDraft.rerank_enabled}
-                      placeholder="jina-..."
-                      value={rerankDraft.rerank_api_key ?? ""}
-                      onChange={(event) =>
-                        updateRerank("rerank_api_key", event.target.value || null)
-                      }
-                    />
-                  </label>
-                </>
-              )}
+          <div className="flex items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white">
+              <ArrowUpRight size={16} className="text-zinc-500" />
             </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-zinc-900">
+                03 检索 · 04 重排 已移至「通用 · RAG」
+              </p>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                这两层与 chunk / embedding 共享同一份 RAG 配置，已集中到 RAG 页统一管理。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onGoToSection("rag", "rag-retrieval")}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 transition-colors duration-120 ease-standard hover:border-zinc-400 hover:text-zinc-950"
+            >
+              前往 RAG 配置
+              <ArrowRight
+                size={14}
+                className="transition-transform duration-120 ease-standard group-hover:translate-x-0.5"
+              />
+            </button>
           </div>
-        </SettingsCard>
+        </div>
 
         {/* 05/06 记忆与 Prompt 预算 */}
         <SettingsCard

@@ -9,12 +9,12 @@ async function openSettings(page: Page) {
   // Next dev 水合竞态：过早点击不生效，断言失败时重试一次
   await page.getByRole("button", { name: "Settings" }).click();
   try {
-    await expect(page.getByText("对话引擎", { exact: true })).toBeVisible({
+    await expect(page.getByText("通用", { exact: true })).toBeVisible({
       timeout: 15_000,
     });
   } catch {
     await page.getByRole("button", { name: "Settings" }).click();
-    await expect(page.getByText("对话引擎", { exact: true })).toBeVisible({
+    await expect(page.getByText("通用", { exact: true })).toBeVisible({
       timeout: 10_000,
     });
   }
@@ -22,7 +22,7 @@ async function openSettings(page: Page) {
 
 async function openOrchestration(page: Page) {
   await openSettings(page);
-  await page.getByRole("button", { name: "编排", exact: true }).click();
+  await page.getByRole("button", { name: /^编排/ }).click();
   await expect(page.getByTestId("pipeline-overview")).toBeVisible();
 }
 
@@ -50,9 +50,11 @@ test("sidebar shows four grouped sections and navigates to orchestration", async
   page,
 }) => {
   await openOrchestration(page);
-  for (const group of ["对话引擎", "编排 · 仅 Langchain", "知识检索", "运行环境"]) {
+  // text-transform:uppercase 只改渲染不改 DOM 文本，getByText 匹配原始大小写
+  for (const group of ["通用", "Chat · 对话调优", "Workflow · 流程调优"]) {
     await expect(page.getByText(group, { exact: true })).toBeVisible();
   }
+  await expect(page.getByText("仅 Langchain", { exact: true })).toBeVisible();
   for (const stage of ["意图路由", "检索前变换", "重排"]) {
     await expect(
       page.getByTestId("pipeline-overview").getByText(stage),
@@ -98,7 +100,7 @@ test("orchestration locks under agent_sdk and recovers after switching back", as
   page,
 }) => {
   await selectChatbotEngine(page, /Claude Agent SDK/);
-  await page.getByRole("button", { name: "编排", exact: true }).click();
+  await page.getByRole("button", { name: /^编排/ }).click();
   const banner = page.getByTestId("orchestration-locked-banner");
   await expect(banner).toBeVisible();
   await expect(banner).toContainText("Claude Agent SDK");
@@ -107,7 +109,7 @@ test("orchestration locks under agent_sdk and recovers after switching back", as
   await expect(page.getByText("Chatbot 引擎")).toBeVisible();
 
   await selectChatbotEngine(page, /Langchain RAG/);
-  await page.getByRole("button", { name: "编排", exact: true }).click();
+  await page.getByRole("button", { name: /^编排/ }).click();
   await expect(page.getByTestId("orchestration-locked-banner")).toHaveCount(0);
   await expect(page.getByTestId("pipeline-overview")).toBeVisible();
 });
@@ -131,4 +133,12 @@ test("inspector hides on settings page and pin keeps it visible", async ({
   ).toBeVisible();
   // 还原：取消固定（避免影响其他用例与本地持久化状态）
   await page.getByTestId("inspector-pin").click();
+});
+
+
+test("orchestration link card jumps to RAG retrieval card", async ({ page }) => {
+  await openOrchestration(page);
+  await page.getByRole("button", { name: /前往 RAG 配置/ }).click();
+  await expect(page.getByTestId("scope-badge").first()).toContainText("共享");
+  await expect(page.getByTestId("rag-retrieval")).toBeVisible();
 });
