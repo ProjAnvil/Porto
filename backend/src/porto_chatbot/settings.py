@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     chunk_overlap: int = 180
     top_k: int = 6
 
+    # --- SCV Vectra 结构图（第二检索通道）---
+    graph_enabled: bool = True
+    graph_mcp_enabled: bool = True  # Tier 1；False 则强制走 Tier 0
+    graph_mcp_binary: str | None = None  # 显式指定二进制路径；None = PATH 发现
+    graph_mcp_timeout: float = Field(default=10.0, ge=1.0)
+    graph_max_nodes: int = Field(default=300_000, ge=1)
+    graph_max_depth: int = Field(default=2, ge=1, le=5)
+    graph_edge_labels: list[str] = Field(default_factory=lambda: ["INJECTS"])
+    graph_context_max_nodes: int = Field(default=20, ge=1, le=200)
+
     # --- Agent 引擎选择 ---
     chatbot_backend: ChatbotBackend = ChatbotBackend.LANGCHAIN
     workflow_backend: ChatbotBackend = ChatbotBackend.LANGCHAIN

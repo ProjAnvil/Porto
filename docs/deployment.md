@@ -90,6 +90,23 @@ PORTO_CHATBOT_DOCUMENT_MAX_PDF_PAGES=200
 
 需要完全本地的扫描页 OCR、表格与布局恢复时，可运行 `uv sync --extra document-ai` 并设置 `PORTO_CHATBOT_DOCUMENT_LOCAL_PARSER=docling`。Docling 解析仍作为原生视觉模型之前的确定性基线；流程图和原型图的非文字语义建议保留 `hybrid` 模式交给视觉模型补全。
 
+> **知识库目录的正确键名是 `PORTO_CHATBOT_KB_DIRS`**（JSON 数组，如 `PORTO_CHATBOT_KB_DIRS=["~/.scv/analysis"]`）。上面示例里的 `PORTO_CHATBOT_KB_PATH` 与 `settings.kb_dirs` 不匹配，实际不生效。
+
+### 2.1 结构图（SCV Vectra）
+
+除向量检索外，后端可把知识库目录下各仓库的 `structure.vg`（SCV 产出的 Vectra 结构图）作为**第二检索通道**：按仓库名/BM25 命中锚点做 BFS，把依赖邻域渲染成一段上下文随行注入。全部关闭时不影响原有检索路径。
+
+| 配置项 | 默认值 | 含义 |
+|--------|--------|------|
+| `PORTO_CHATBOT_GRAPH_ENABLED` | `true` | 结构图通道总开关。关闭后不发现、不加载任何 `.vg` |
+| `PORTO_CHATBOT_GRAPH_MCP_ENABLED` | `true` | Tier 1（Vectra MCP 二进制，支持 Cypher）。置 `false` 则强制走 Tier 0（零额外依赖的内置解码） |
+| `PORTO_CHATBOT_GRAPH_MCP_BINARY` | 空 | 显式指定 MCP 二进制路径；留空则从 `PATH` 发现 |
+| `PORTO_CHATBOT_GRAPH_MCP_TIMEOUT` | `10.0` | 单次 MCP 调用超时（秒，`>=1`） |
+| `PORTO_CHATBOT_GRAPH_MAX_NODES` | `300000` | 单张图允许加载的最大节点数，超出则跳过该图 |
+| `PORTO_CHATBOT_GRAPH_MAX_DEPTH` | `2` | BFS 展开深度（1-5） |
+| `PORTO_CHATBOT_GRAPH_EDGE_LABELS` | `["INJECTS"]` | BFS 允许经过的边标签（JSON 数组），默认只看注入依赖 |
+| `PORTO_CHATBOT_GRAPH_CONTEXT_MAX_NODES` | `20` | 单次注入上下文的最大节点数（1-200） |
+
 ---
 
 ## 3. 测试

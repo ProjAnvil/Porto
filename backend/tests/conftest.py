@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -74,6 +75,19 @@ def _isolate_llm_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_kb_dirs(monkeypatch, tmp_path):
+    """Point kb_dirs at a temp dir so tests never touch the real ~/.scv.
+
+    graph_enabled 默认 True，而 kb_dirs 默认指向真实 ~/.scv/analysis；开发者机器上
+    若真有 structure.vg，测试会加载几十 MB 的图（慢且非确定性）。显式传 kb_dirs=
+    的 fixture（如 sample_settings）优先于 env，不受影响。
+    """
+    kb = tmp_path / "kb"
+    kb.mkdir(exist_ok=True)
+    monkeypatch.setenv("PORTO_CHATBOT_KB_DIRS", json.dumps([str(kb)]))
+
+
+@pytest.fixture(autouse=True)
 def _reset_rag_singletons():
     """每个测试前后重置 IndexSupervisor / HealthMonitor 单例，保证 data_dir 隔离。"""
     from porto_chatbot.api.deps import reset_rag_singletons
@@ -99,7 +113,7 @@ def _reset_logging_state():
 @pytest.fixture()
 def sample_settings(tmp_path: Path) -> Settings:
     kb = tmp_path / "kb"
-    kb.mkdir()
+    kb.mkdir(exist_ok=True)  # _isolate_kb_dirs 已建该目录
     (kb / "payment-platform.md").write_text(
         """
 # Payment Platform
