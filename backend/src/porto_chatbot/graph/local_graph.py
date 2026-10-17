@@ -14,6 +14,8 @@ from .snapshot import SnapshotData
 _DIRECTIONS = ("out", "in", "both")
 # 默认只走 INJECTS：双面加载下不过滤 label 会从 Bean 经 CONTAINS 扩散到全仓 Method。
 _DEFAULT_LABELS: tuple[str, ...] = ("INJECTS",)
+# 与 SCV perception/loader 的 fatalVia 一致：构造器注入在环里 Spring 无法满足。
+_FATAL_VIA = frozenset({"constructor", "lombok-constructor", "beanMethod"})
 
 
 class LocalStructureGraph:
@@ -29,12 +31,12 @@ class LocalStructureGraph:
     def __init__(self, data: SnapshotData) -> None:
         self._nodes: dict[str, GraphNode] = {n.key: n for n in data.nodes}
         self._edges: tuple[GraphEdge, ...] = tuple(data.edges)
-        self._out: dict[str, list[tuple[str, str]]] = {}
-        self._in: dict[str, list[tuple[str, str]]] = {}
+        self._out: dict[str, list[GraphEdge]] = {}
+        self._in: dict[str, list[GraphEdge]] = {}
         for edge in self._edges:
-            # 值为 (对方 key, 边 label)：props 走 edge 对象，邻接表只存遍历需要的字段。
-            self._out.setdefault(edge.src, []).append((edge.dst, edge.label))
-            self._in.setdefault(edge.dst, []).append((edge.src, edge.label))
+            self._out.setdefault(edge.src, []).append(edge)
+            self._in.setdefault(edge.dst, []).append(edge)
+        self._scc_cache: list[list[str]] | None = None
 
     def node(self, key: str) -> GraphNode | None:
         """Return the node with ``key``, or ``None`` when absent."""
@@ -63,13 +65,18 @@ class LocalStructureGraph:
             raise ValueError(f"unknown direction {direction!r}, expected one of {_DIRECTIONS}")
         if key not in self._nodes:
             return []
-        pairs: list[tuple[str, str]] = []
+        adjacent: list[GraphEdge] = []
         if direction in ("out", "both"):
-            pairs.extend(self._out.get(key, ()))
+            adjacent.extend(self._out.get(key, ()))
         if direction in ("in", "both"):
-            pairs.extend(self._in.get(key, ()))
+            adjacent.extend(self._in.get(key, ()))
         wanted = None if labels is None else set(labels)
-        keys = {k for k, label in pairs if wanted is None or label in wanted}
+        keys = set()
+        for edge in adjacent:
+            if wanted is not None and edge.label not in wanted:
+                continue
+            # 同一对节点可能有多条不同 label 的边，按对方 key 去重。
+            keys.add(edge.dst if edge.src == key else edge.src)
         return [self._nodes[k] for k in sorted(keys) if k in self._nodes]
 
     def bfs(
@@ -108,8 +115,9 @@ class LocalStructureGraph:
         for depth in range(1, max_depth + 1):
             nxt: list[str] = []
             for key in frontier:
-                for other, label in self._out.get(key, ()):
-                    if label in wanted and other in self._nodes and other not in visited:
+                for edge in self._out.get(key, ()):
+                    other = edge.dst
+                    if edge.label in wanted and other in self._nodes and other not in visited:
                         visited.add(other)
                         nxt.append(other)
             if not nxt:
@@ -120,6 +128,94 @@ class LocalStructureGraph:
                 break
             frontier = nxt
         return rows[:limit]
+
+    def _sccs(self) -> list[list[str]]:
+        """Return strongly connected components (Tarjan, iterative).
+
+        Iterative on purpose: a repository graph easily exceeds CPython's
+        recursion limit. The result is cached — ``cycles()`` and ``stats()``
+        both need it.
+        """
+        if self._scc_cache is None:
+            index_of: dict[str, int] = {}
+            low: dict[str, int] = {}
+            on_stack: set[str] = set()
+            pending: list[str] = []
+            components: list[list[str]] = []
+            counter = 0
+            for root in self._nodes:
+                if root in index_of:
+                    continue
+                index_of[root] = low[root] = counter
+                counter += 1
+                pending.append(root)
+                on_stack.add(root)
+                work = [(root, iter(self._out.get(root, ())))]
+                while work:
+                    node, successors = work[-1]
+                    for edge in successors:
+                        other = edge.dst
+                        if other not in self._nodes:
+                            continue
+                        if other not in index_of:
+                            index_of[other] = low[other] = counter
+                            counter += 1
+                            pending.append(other)
+                            on_stack.add(other)
+                            work.append((other, iter(self._out.get(other, ()))))
+                            break
+                        if other in on_stack:
+                            low[node] = min(low[node], index_of[other])
+                    else:
+                        work.pop()
+                        if work:
+                            parent = work[-1][0]
+                            low[parent] = min(low[parent], low[node])
+                        if low[node] == index_of[node]:
+                            component: list[str] = []
+                            while True:
+                                member = pending.pop()
+                                on_stack.discard(member)
+                                component.append(member)
+                                if member == node:
+                                    break
+                            components.append(component)
+            self._scc_cache = components
+        return self._scc_cache
+
+    def cycles(self) -> list[tuple[tuple[str, ...], str]]:
+        """Return dependency cycles graded the way SCV grades them.
+
+        Only components of size >= 2 count; within a component only ``INJECTS``
+        edges are inspected, and a component without any is skipped entirely
+        (mutual ``CALLS`` recursion is not a user-facing dependency cycle).
+        A component is ``"fatal"`` when any of its inner INJECTS edges carries
+        ``via`` in {``constructor``, ``lombok-constructor``, ``beanMethod``}.
+
+        Returns
+        -------
+        list[tuple[tuple[str, ...], str]]
+            ``(members, grade)`` per cycle, members sorted for determinism.
+        """
+        found: list[tuple[tuple[str, ...], str]] = []
+        for component in self._sccs():
+            if len(component) < 2:
+                continue
+            members = frozenset(component)
+            injects = 0
+            fatal = False
+            for key in members:
+                for edge in self._out.get(key, ()):
+                    if edge.label != "INJECTS" or edge.dst not in members:
+                        continue
+                    injects += 1
+                    if edge.props.get("via") in _FATAL_VIA:
+                        fatal = True
+            if injects == 0:
+                continue
+            found.append((tuple(sorted(members)), "fatal" if fatal else "tolerated"))
+        found.sort()
+        return found
 
     def cypher(self, query: str, limit: int = 200) -> list[dict] | None:
         """Return ``None``: Tier 0 has no Cypher engine."""

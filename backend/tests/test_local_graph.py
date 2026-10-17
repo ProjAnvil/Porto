@@ -115,3 +115,66 @@ def test_bfs_returns_pairs_sorted_by_depth_then_key(graph):
 
 def test_bfs_of_an_unknown_seed_is_empty(graph):
     assert graph.bfs(["bean:nope"]) == []
+
+
+# ── cycles ──
+
+
+def test_fixture_bean_cycle_is_graded_fatal(graph):
+    cycles = graph.cycles()
+    assert len(cycles) == 1
+    (members, grade) = cycles[0]
+    assert set(members) == {"bean:orderService", "bean:payService"}
+    assert grade == "fatal"
+
+
+def test_non_injects_cycle_is_not_reported():
+    # SCV 语义：CALLS 互递归不算用户可见的循环依赖，整环跳过。
+    g = _make(
+        [("a", "Method"), ("b", "Method")],
+        [("a", "b", "CALLS", {}), ("b", "a", "CALLS", {})],
+    )
+    assert g.cycles() == []
+
+
+def test_injects_cycle_without_fatal_via_is_tolerated():
+    g = _make(
+        [("a", "Bean"), ("b", "Bean")],
+        [
+            ("a", "b", "INJECTS", {"via": "field"}),
+            ("b", "a", "INJECTS", {"via": "setter"}),
+        ],
+    )
+    assert g.cycles() == [(("a", "b"), "tolerated")]
+
+
+@pytest.mark.parametrize("via", ["constructor", "lombok-constructor", "beanMethod"])
+def test_fatal_via_grades_the_cycle_fatal(via):
+    g = _make(
+        [("a", "Bean"), ("b", "Bean")],
+        [("a", "b", "INJECTS", {"via": via}), ("b", "a", "INJECTS", {})],
+    )
+    assert g.cycles() == [(("a", "b"), "fatal")]
+
+
+def test_mixed_cycle_is_graded_on_its_injects_edge_only():
+    g = _make(
+        [("a", "Bean"), ("b", "Bean")],
+        [("a", "b", "INJECTS", {}), ("b", "a", "CALLS", {})],
+    )
+    assert g.cycles() == [(("a", "b"), "tolerated")]
+
+
+def test_self_loop_is_not_a_cycle():
+    g = _make([("a", "Bean")], [("a", "a", "INJECTS", {"via": "constructor"})])
+    assert g.cycles() == []
+
+
+def test_deep_chain_does_not_exhaust_the_recursion_limit():
+    # Tarjan 必须是迭代的：单链 5000 远超 CPython 递归上限。
+    depth = 5000
+    g = _make(
+        [(f"n{i}", "Bean") for i in range(depth)],
+        [(f"n{i}", f"n{i + 1}", "INJECTS", {}) for i in range(depth - 1)],
+    )
+    assert g.cycles() == []
