@@ -5,10 +5,25 @@ from pathlib import Path
 
 import pytest
 
+from porto_chatbot.graph.base import GraphEdge, GraphNode
 from porto_chatbot.graph.local_graph import LocalStructureGraph
-from porto_chatbot.graph.snapshot import decode_snapshot
+from porto_chatbot.graph.snapshot import SnapshotData, decode_snapshot
 
 _FIX = Path(__file__).parent / "fixtures" / "structure.vg"
+
+
+def _make(nodes, edges) -> LocalStructureGraph:
+    """Build a graph from ``(key, label)`` / ``(src, dst, label, props)`` tuples."""
+    return LocalStructureGraph(
+        SnapshotData(
+            nodes=[GraphNode(key=k, label=label, props={}) for k, label in nodes],
+            edges=[
+                GraphEdge(src=s, dst=d, label=label, props=props)
+                for s, d, label, props in edges
+            ],
+            index_keys=[],
+        )
+    )
 
 
 @pytest.fixture()
@@ -54,3 +69,49 @@ def test_neighbors_of_an_unknown_key_is_empty(graph):
 def test_neighbors_rejects_an_unknown_direction(graph):
     with pytest.raises(ValueError, match="direction"):
         graph.neighbors("bean:orderController", direction="sideways")
+
+
+# ── bfs ──
+
+
+def test_bfs_reaches_pay_service_at_depth_two(graph):
+    rows = [(n.key, d) for n, d in graph.bfs(["bean:orderController"], max_depth=2)]
+    assert rows == [("bean:orderService", 1), ("bean:payService", 2)]
+
+
+def test_bfs_excludes_the_seeds_themselves(graph):
+    keys = [n.key for n, _ in graph.bfs(["bean:orderController"])]
+    assert "bean:orderController" not in keys
+
+
+def test_bfs_respects_max_depth(graph):
+    keys = [n.key for n, _ in graph.bfs(["bean:orderController"], max_depth=1)]
+    assert keys == ["bean:orderService"]
+
+
+def test_bfs_defaults_to_injects_only(graph):
+    # 默认 label 是 INJECTS：否则会从 Type 经 CONTAINS 扩散到全仓 Method。
+    assert graph.bfs(["type:com.acme.OrderService"]) == []
+    assert len(graph.bfs(["type:com.acme.OrderService"], labels=["CONTAINS"])) == 1
+
+
+def test_bfs_filters_by_label(graph):
+    assert graph.bfs(["bean:orderController"], labels=["CALLS"]) == []
+
+
+def test_bfs_limit_is_a_hard_cap(graph):
+    assert len(graph.bfs(["bean:orderController"], limit=1)) == 1
+
+
+def test_bfs_returns_pairs_sorted_by_depth_then_key(graph):
+    # 同层内按 key 排序：插入顺序是 B→A，结果必须是 A→B。
+    synthetic = _make(
+        [("x", "Bean"), ("b", "Bean"), ("a", "Bean")],
+        [("x", "b", "INJECTS", {}), ("x", "a", "INJECTS", {})],
+    )
+    rows = [(n.key, d) for n, d in synthetic.bfs(["x"])]
+    assert rows == [("a", 1), ("b", 1)]
+
+
+def test_bfs_of_an_unknown_seed_is_empty(graph):
+    assert graph.bfs(["bean:nope"]) == []

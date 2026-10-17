@@ -132,11 +132,16 @@ class StructureGraph(Protocol):
         Parameters
         ----------
         keys:
-            Seed node keys; they are returned at depth 0.
+            Seed node keys. Seeds are expanded but never returned themselves,
+            so the result is the impact surface around them.
         max_depth:
-            Maximum hop count from a seed.
+            Maximum hop count from a seed; only depth ``1..max_depth`` is
+            returned.
         labels:
-            Edge-label filter applied to every traversal step.
+            Edge-label filter applied to every traversal step. Defaults to
+            ``("INJECTS",)`` — under two-sided loading an unfiltered walk
+            escapes from a ``Bean`` through ``CONTAINS`` into every ``Method``
+            of the repository.
         limit:
             Hard cap on returned rows.
 
