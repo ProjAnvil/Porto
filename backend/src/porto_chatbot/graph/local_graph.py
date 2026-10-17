@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .base import GraphEdge, GraphNode
+from .base import GraphEdge, GraphNode, GraphStats
 from .snapshot import SnapshotData
 
 _DIRECTIONS = ("out", "in", "both")
@@ -31,6 +31,7 @@ class LocalStructureGraph:
     def __init__(self, data: SnapshotData) -> None:
         self._nodes: dict[str, GraphNode] = {n.key: n for n in data.nodes}
         self._edges: tuple[GraphEdge, ...] = tuple(data.edges)
+        self._index_keys: tuple[str, ...] = tuple(data.index_keys)
         self._out: dict[str, list[GraphEdge]] = {}
         self._in: dict[str, list[GraphEdge]] = {}
         for edge in self._edges:
@@ -216,6 +217,53 @@ class LocalStructureGraph:
             found.append((tuple(sorted(members)), "fatal" if fatal else "tolerated"))
         found.sort()
         return found
+
+    def lookup(self, prop_key: str, prop_value: object, limit: int = 50) -> list[GraphNode]:
+        """Return nodes whose ``prop_key`` equals ``prop_value``.
+
+        The graph is already in memory, so a linear scan beats maintaining a
+        secondary index that most repositories would never pay back.
+
+        Parameters
+        ----------
+        prop_key:
+            Property name, e.g. ``"stereotype"``.
+        prop_value:
+            Value to match exactly.
+        limit:
+            Hard cap on returned rows.
+
+        Returns
+        -------
+        list[GraphNode]
+            Matching nodes in snapshot order.
+        """
+        hits: list[GraphNode] = []
+        for node in self._nodes.values():
+            if node.props.get(prop_key) == prop_value:
+                hits.append(node)
+                if len(hits) >= limit:
+                    break
+        return hits
+
+    def stats(self) -> GraphStats:
+        """Return size and health counters for this graph.
+
+        Returns
+        -------
+        GraphStats
+            ``sccs`` counts every component (singletons included) and
+            ``cyclic_nodes`` only the members of components larger than one,
+            matching Vectra's ``Stats`` so Tier 0 and Tier 1 agree.
+        """
+        components = self._sccs()
+        return GraphStats(
+            nodes=len(self._nodes),
+            edges=len(self._edges),
+            index_keys=tuple(self._index_keys),
+            sccs=len(components),
+            cyclic_nodes=sum(len(c) for c in components if len(c) > 1),
+        )
 
     def cypher(self, query: str, limit: int = 200) -> list[dict] | None:
         """Return ``None``: Tier 0 has no Cypher engine."""

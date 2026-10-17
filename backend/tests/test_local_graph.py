@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from porto_chatbot.graph.base import GraphEdge, GraphNode
+from porto_chatbot.graph.base import GraphEdge, GraphNode, StructureGraph
 from porto_chatbot.graph.local_graph import LocalStructureGraph
 from porto_chatbot.graph.snapshot import SnapshotData, decode_snapshot
 
@@ -178,3 +178,55 @@ def test_deep_chain_does_not_exhaust_the_recursion_limit():
         [(f"n{i}", f"n{i + 1}", "INJECTS", {}) for i in range(depth - 1)],
     )
     assert g.cycles() == []
+
+
+def test_acyclic_graph_has_no_cycles():
+    g = _make(
+        [("a", "Bean"), ("b", "Bean")],
+        [("a", "b", "INJECTS", {"via": "constructor"})],
+    )
+    assert g.cycles() == []
+
+
+# ── lookup / stats / protocol ──
+
+
+def test_lookup_matches_nodes_by_property(graph):
+    keys = [n.key for n in graph.lookup("stereotype", "Service")]
+    assert keys == ["bean:orderService", "bean:payService"]
+
+
+def test_lookup_respects_the_limit(graph):
+    assert len(graph.lookup("stereotype", "Service", limit=1)) == 1
+
+
+def test_lookup_returns_empty_when_nothing_matches(graph):
+    assert graph.lookup("stereotype", "Repository") == []
+
+
+def test_stats_reports_the_fixture_shape(graph):
+    stats = graph.stats()
+    assert (stats.nodes, stats.edges) == (5, 4)
+    assert stats.index_keys == ("beanName", "conditions", "stereotype", "type")
+    assert (stats.sccs, stats.cyclic_nodes) == (4, 2)
+
+
+def test_stats_index_keys_is_a_tuple(graph):
+    assert isinstance(graph.stats().index_keys, tuple)
+
+
+def test_cyclic_nodes_ignores_self_loops():
+    # 对齐 Vectra：自环所在 SCC 大小为 1，不计入 cyclic_nodes。
+    g = _make(
+        [("a", "Bean"), ("b", "Bean")],
+        [("a", "a", "INJECTS", {"via": "constructor"})],
+    )
+    assert g.stats().cyclic_nodes == 0
+
+
+def test_cypher_is_unsupported_on_tier_zero(graph):
+    assert graph.cypher("MATCH (n) RETURN n") is None
+
+
+def test_local_graph_satisfies_the_structure_graph_protocol(graph):
+    assert isinstance(graph, StructureGraph)
