@@ -63,6 +63,9 @@ class _FakeStdin:
     def flush(self) -> None:
         return None
 
+    def close(self) -> None:
+        return None
+
 
 class _FakeStdout:
     """Yields one reply per request, modelling a real line-oriented stdio peer."""
@@ -344,6 +347,17 @@ def test_read_timeout_raises_and_kills_the_child(monkeypatch):
     assert fake.terminated is True  # 挂死的子进程必须被回收，避免泄漏
 
 
+def test_missing_binary_is_unavailable_not_an_oserror(monkeypatch):
+    def _popen(argv: list[str], **kwargs: Any):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    client = McpGraphClient(target="/kb/alpha", kind="vectra", timeout=0.5)
+    with pytest.raises(McpError, match="handshake"):
+        client.start()
+    assert client.available is False
+
+
 def test_close_terminates_the_child(monkeypatch):
     client, fake, _ = _spawn(monkeypatch, payloads={"cypher": _CYPHER_RESULT})
     client.start()
@@ -372,13 +386,13 @@ def test_adapter_neighbors_walks_out_edges_with_labels(monkeypatch):
     graph = McpStructureGraph(client, repo="alpha")
     nodes = graph.neighbors("bean:orderController", labels=["INJECTS"])
     assert [n.key for n in nodes] == ["bean:orderService"]
-    assert _queries(fake)[-1] == "MATCH (a {key:'bean:orderController'})-[e:INJECTS]->(b) RETURN b"
+    assert _queries(fake)[-1] == "MATCH (a {key:'bean:orderController'})-[:INJECTS]->(b) RETURN b"
 
 
 def test_adapter_neighbors_in_direction_reverses_the_pattern(monkeypatch):
     client, fake, _ = _spawn(monkeypatch, payloads={"cypher": _CYPHER_RESULT})
     McpStructureGraph(client).neighbors("bean:orderService", direction="in")
-    assert _queries(fake)[-1] == "MATCH (b)-[e]->(a {key:'bean:orderService'}) RETURN b"
+    assert _queries(fake)[-1] == "MATCH (b)-[]->(a {key:'bean:orderService'}) RETURN b"
 
 
 def test_adapter_bfs_queries_one_depth_at_a_time(monkeypatch):
@@ -386,8 +400,8 @@ def test_adapter_bfs_queries_one_depth_at_a_time(monkeypatch):
     rows = McpStructureGraph(client).bfs(["bean:orderController"], max_depth=2, labels=["INJECTS"])
     assert rows == [(GraphNode(key=_NODE["key"], label=_NODE["label"], props=_NODE["props"]), 1)]
     assert _queries(fake) == [
-        "MATCH (a {key:'bean:orderController'})-[e:INJECTS*1..1]->(b) RETURN b",
-        "MATCH (a {key:'bean:orderController'})-[e:INJECTS*2..2]->(b) RETURN b",
+        "MATCH (a {key:'bean:orderController'})-[:INJECTS]->(b) RETURN b",
+        "MATCH (a {key:'bean:orderController'})-[:INJECTS*2..2]->(b) RETURN b",
     ]
 
 
