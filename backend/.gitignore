@@ -1,2 +1,5 @@
 .e2e-data/
 .e2e-logs/
+
+# pytest basetemp dirs (local runs use --basetemp=.pt*)
+.pt*/
