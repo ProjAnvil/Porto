@@ -30,9 +30,9 @@ _NODE = {"key": "bean:orderService", "label": "Bean", "props": {"stereotype": "S
 def _no_real_binaries(monkeypatch):
     """Neutralise host binary discovery for every test in this module.
 
-    开发机上若真装了 scv-graph-mcp / vectra-mcp，Tier 0 的用例会莫名跳到 Tier 1，
-    测试结果变成「取决于这台机器装了什么」。默认一律视为未安装；Tier 1 的用例
-    自己在函数体内 monkeypatch 覆盖（后设置的生效）。
+    A dev machine with scv-graph-mcp / vectra-mcp installed would push Tier 0 cases
+    onto Tier 1, making results depend on what the host happens to have. Default to
+    "not installed"; Tier 1 cases monkeypatch over it inside the test body.
     """
     monkeypatch.setattr(discovery, "find_scv_graph_mcp", lambda: None)
     monkeypatch.setattr(discovery, "find_vectra_mcp", lambda: None)
@@ -55,7 +55,7 @@ def kb(tmp_path: Path) -> Path:
 def _settings(kb: Path, **overrides) -> Settings:
     """Settings pinned to one temp knowledge-base directory."""
     base: dict = {"kb_dirs": [kb], "graph_enabled": True}
-    base.update(overrides)  # 允许调用方覆盖 graph_enabled 等默认值
+    base.update(overrides)  # callers may override graph_enabled and friends
     return Settings(**base)
 
 
@@ -122,7 +122,7 @@ def test_snapshot_is_served_as_the_local_tier(kb):
     assert registry.tier("alpha") == "local"
     assert isinstance(graph, LocalStructureGraph)
     assert graph.node("bean:orderService") is not None
-    assert graph.cypher("MATCH (n) RETURN n") is None  # Tier 0 的能力协商信号
+    assert graph.cypher("MATCH (n) RETURN n") is None  # Tier 0 capability signal
 
 
 def test_missing_repo_falls_back_to_an_empty_graph(kb):
@@ -160,7 +160,7 @@ def test_loaded_graph_is_cached_until_the_file_changes(kb, monkeypatch):
         ),
     )
     (folder / "structure.vg").write_text("stale", encoding="utf-8")
-    os.utime(folder / "structure.vg", None)  # 同内容不同 mtime → 必须重新加载
+    os.utime(folder / "structure.vg", None)  # same bytes, new mtime -> must reload
     second = registry.graph_for("alpha")
     assert second is not first
     assert second.node("bean:new") is not None
@@ -243,7 +243,7 @@ def test_explicit_binary_is_preferred(kb, monkeypatch, stub_client):
 
     registry.graph_for("alpha")
     assert stub_client[0].binary == "/opt/vectra-mcp"
-    assert stub_client[0].kind == "vectra"  # 名字不含 scv-graph → 单快照后端
+    assert stub_client[0].kind == "vectra"  # name lacks scv-graph -> single snapshot
 
 
 def test_timeout_setting_reaches_the_client(kb, monkeypatch, stub_client):
@@ -280,7 +280,7 @@ def test_vectra_needs_the_repo_snapshot(kb, monkeypatch, stub_client):
     monkeypatch.setattr(discovery, "find_vectra_mcp", lambda: "/usr/bin/vectra-mcp")
     registry = StructureGraphRegistry(_settings(kb))
 
-    assert registry.tier("ghost") == "empty"  # 没有 .vg 就没有 Tier 1 也没有 Tier 0
+    assert registry.tier("ghost") == "empty"  # no .vg: neither Tier 1 nor Tier 0
 
 
 def test_mcp_disabled_forces_tier_zero(kb, monkeypatch, stub_client):
@@ -308,7 +308,7 @@ def test_handshake_failure_degrades_for_this_and_later_calls(kb, monkeypatch, st
     first_client, count = stub_client[0], len(stub_client)
 
     assert registry.tier("alpha") == "local"
-    assert len(stub_client) == count  # 死掉的连接被记住，不再反复重启
+    assert len(stub_client) == count  # a dead client is remembered, not restarted
     assert first_client.available is False
 
     monkeypatch.setattr(_StubClient, "start", original_start)
@@ -337,7 +337,7 @@ def test_scv_binary_missing_yields_none(tmp_path, monkeypatch):
 
 
 def test_scv_binary_is_not_looked_up_on_path(tmp_path, monkeypatch):
-    """SCV 自己也不用 shutil.which 找它（perceive.py:323-338），我们保持一致。"""
+    """SCV itself never locates it with shutil.which (perceive.py:323-338); match it."""
     monkeypatch.setenv("SCV_PERCEPTION_DIST", str(tmp_path / "empty"))
     monkeypatch.setattr(shutil, "which", lambda _name: "/opt/scv-graph-mcp")
     assert find_scv_graph_mcp() is None

@@ -25,8 +25,8 @@ from .discovery import SNAPSHOT_NAME, StructureGraphRegistry
 
 logger = get_component_logger("graph.context")
 
-# retrieve 节点拿来检索的是 project_name + PRD 前 2000 字，整段拿来做锚点噪声极大，
-# 只取开头一小段；真正的锚点主力是 chunk 的 root / title。
+# The retrieve node searches with project_name plus the first 2000 chars of the PRD;
+# using all of it for anchors is mostly noise, so only a short prefix is taken.
 _ANCHOR_QUERY_CHARS = 200
 _PROP_KEYS = ("stereotype", "type", "beanName", "kind", "owner", "loc", "source")
 _MAX_PROPS = 4

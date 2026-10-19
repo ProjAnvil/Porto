@@ -42,7 +42,7 @@ class _LazyProps(Mapping):
     __slots__ = ("_raw", "_loaded")
 
     def __init__(self, raw: bytes | None) -> None:
-        # raw 为 None 表示写入侧的 nil props
+        # raw None mirrors the writer's nil props
         self._raw = raw
         self._loaded: dict | None = None
 
@@ -140,14 +140,16 @@ def decode_snapshot(buf: bytes) -> SnapshotData:
         raise SnapshotError("bad snapshot magic")
     version = _U16.unpack(buf[4:6])[0]
     if version != _VERSION:
-        # Porto 主动收窄到 v3：SCV 只产 v3，多支持一套格式就多一套测试。
+        # Porto narrows to v3 on purpose: SCV only emits v3, and every extra
+        # format costs another test suite.
         raise SnapshotError(f"unsupported snapshot version {version}")
 
     body, trailer = buf[:-4], buf[-4:]
     rd = _Reader(body[_HEADER_SIZE:])
     try:
         node_count, edge_count = rd.u32(), rd.u32()
-        # 计数防伪造：每条记录至少占固定字节，越界即截断，避免按假计数空跑。
+        # Guard against forged counts: each record costs a known minimum of bytes,
+        # so an out-of-range count is truncation, not a long empty walk.
         if node_count * 12 + edge_count * 16 > len(rd.b):
             raise SnapshotError("snapshot truncated")
 
@@ -164,12 +166,13 @@ def decode_snapshot(buf: bytes) -> SnapshotData:
         if key_count * 4 > len(rd.b) - rd.i:
             raise SnapshotError("snapshot truncated")
         index_keys = [rd.string() for _ in range(key_count)]
-    except ValueError as exc:  # utf-8 / json / struct 坏输入，统一成 SnapshotError
+    except ValueError as exc:  # bad utf-8 / json / struct input -> SnapshotError
         raise SnapshotError("malformed snapshot") from exc
 
     if rd.i != len(rd.b):
         raise SnapshotError("trailing garbage in snapshot")
-    # CRC 放在解析之后：被截断的文件要先报 truncated（可诊断），而不是笼统的 crc。
+    # CRC runs after parsing: a truncated file must report truncated (diagnosable),
+    # not a generic crc mismatch.
     if zlib.crc32(body) != _U32.unpack(trailer)[0]:
         raise SnapshotError("snapshot crc mismatch")
     return SnapshotData(nodes=nodes, edges=edges, index_keys=index_keys)

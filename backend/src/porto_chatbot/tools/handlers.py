@@ -17,8 +17,9 @@ from .context import (
 
 logger = get_component_logger("tools.handlers")
 
-# 一次 tool 结果最多横跨几个仓库：结构图节点动辄上万，全量渲染会把 context 撑爆，
-# 所以仓库数量封顶，且每个节点只渲染 key + label + 少量关键 props（见 _props）。
+# Cap how many repositories one tool result may span: structure graphs hold tens of
+# thousands of nodes and rendering them all would blow up the context, so the count is
+# capped and each node renders key + label + a few key props (see _props).
 _GRAPH_REPO_LIMIT = 3
 
 
@@ -94,7 +95,7 @@ def _search_code_graph(ctx: AgentToolContext, query: str, top_k: int = 10) -> st
     str
         Matching nodes (``key`` + ``label`` + key props), or a short reason why
         nothing was found. Never raises: an exception bubbling out of a tool
-        becomes a generic "工具执行失败" line, which is strictly worse than an
+        becomes a generic "tool execution failed" line, which is worse than an
         explanation the model can react to.
     """
     registry = ctx.graph_registry
@@ -122,8 +123,9 @@ def _graph_repos(ctx: AgentToolContext, registry: Any) -> list[str]:
     project = ctx.state.get("project_name")
     if isinstance(project, str) and project and project not in candidates:
         candidates.append(project)
-    # registry 没有公开仓库列表，退一步读它的 settings，复用 graph/context 的扫描：
-    # chatbot 路径的 state 是空的，只有这条路能拿到仓库名。
+    # The registry exposes no repo list; fall back to its settings and reuse the
+    # graph/context scan. On the chatbot path state is empty, so this is the only
+    # way to learn the repo name.
     for repo in _repos(getattr(registry, "_settings", None)):
         if repo not in candidates:
             candidates.append(repo)

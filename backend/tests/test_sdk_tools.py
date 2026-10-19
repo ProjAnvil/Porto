@@ -79,14 +79,14 @@ def test_build_sdk_tools_no_chatbot_tools_when_memory_absent():
 
 
 def test_build_sdk_tools_no_graph_tool_without_registry():
-    """双后端一致：无 graph_registry 时 SDK 侧也不注册 search_code_graph。"""
+    """Both backends agree: no graph_registry means no search_code_graph on the SDK side."""
     build_sdk_tools = _import_build_sdk_tools()
     names = [t.name for t in build_sdk_tools(AgentToolContext(state={}))]
     assert "search_code_graph" not in names
 
 
 def test_build_sdk_tools_includes_graph_tool_when_registry_present():
-    """双后端一致：Langchain 侧有 search_code_graph，SDK 侧也必须有。"""
+    """Both backends agree: Langchain has search_code_graph, so must the SDK side."""
     build_sdk_tools = _import_build_sdk_tools()
     ctx = AgentToolContext(state={}, graph_registry=MagicMock())
     tools = build_sdk_tools(ctx)
@@ -94,7 +94,7 @@ def test_build_sdk_tools_includes_graph_tool_when_registry_present():
 
 
 def test_search_code_graph_sdk_handler_round_trip():
-    """SDK 侧 tool 的 handler 返回 MCP text block（不可用信息也算）。"""
+    """The SDK-side handler returns an MCP text block, including the unavailable case."""
     build_sdk_tools = _import_build_sdk_tools()
     ctx = AgentToolContext(state={}, graph_registry=MagicMock())
     tool = next(

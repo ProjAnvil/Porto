@@ -181,15 +181,15 @@ def test_identify_swallows_a_broken_registry(tmp_path):
         def graph_for(self, repo):
             raise RuntimeError("registry exploded")
 
-    # identify 内部是从 graph.discovery 取 registry 的，补丁必须打在那里
+        # identify reads the registry from graph.discovery, so patch it there
     original = discovery.StructureGraphRegistry
     discovery.StructureGraphRegistry = lambda _s: _Boom()
     try:
         assert identify_node._graph_summary_block(agent) == ""
     finally:
         discovery.StructureGraphRegistry = original
-    # 日志由内层的 build_identify_summary 记（graph.context），外层只是纵深防御，
-    # 所以这里不断言 agent.logger 收到异常，只断言对外行为是空串。
+        # the inner build_identify_summary logs (graph.context); the outer try is only
+        # defence in depth, so assert the empty-string behaviour, not the logger.
 
 
 # --- generate ------------------------------------------------------------- #

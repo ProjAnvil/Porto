@@ -12,9 +12,11 @@ from .base import GraphEdge, GraphNode, GraphStats, ident_tokens
 from .snapshot import SnapshotData
 
 _DIRECTIONS = ("out", "in", "both")
-# 默认只走 INJECTS：双面加载下不过滤 label 会从 Bean 经 CONTAINS 扩散到全仓 Method。
+# Defaults to INJECTS only: under two-sided loading an unfiltered walk escapes
+# from a Bean through CONTAINS into every Method in the repository.
 _DEFAULT_LABELS: tuple[str, ...] = ("INJECTS",)
-# 与 SCV perception/loader 的 fatalVia 一致：构造器注入在环里 Spring 无法满足。
+# Matches SCV perception/loader fatalVia: constructor injection inside a cycle
+# is something Spring cannot satisfy.
 _FATAL_VIA = frozenset({"constructor", "lombok-constructor", "beanMethod"})
 
 
@@ -95,7 +97,7 @@ class LocalStructureGraph:
         for edge in adjacent:
             if wanted is not None and edge.label not in wanted:
                 continue
-            # 同一对节点可能有多条不同 label 的边，按对方 key 去重。
+            # A node pair may carry several edges with different labels; dedupe by key.
             keys.add(edge.dst if edge.src == key else edge.src)
         return [self._nodes[k] for k in sorted(keys) if k in self._nodes]
 
@@ -128,7 +130,8 @@ class LocalStructureGraph:
             at 1.
         """
         wanted = set(_DEFAULT_LABELS if labels is None else labels)
-        # 起点先入 visited：它们是锚点而非影响面，depth 0 不出现在结果里。
+        # Seeds go into visited first: they are anchors, not the impact surface,
+        # so depth 0 never appears in the result.
         visited = {k for k in keys if k in self._nodes}
         frontier = sorted(visited)
         rows: list[tuple[GraphNode, int]] = []
@@ -142,7 +145,7 @@ class LocalStructureGraph:
                         nxt.append(other)
             if not nxt:
                 break
-            nxt.sort()  # 同层按 key 排序，逐层拼接即 (depth, key) 全局有序
+            nxt.sort()  # sorted within the level, so concatenation is (depth, key) ordered
             rows.extend((self._nodes[k], depth) for k in nxt)
             if len(rows) >= limit:
                 break

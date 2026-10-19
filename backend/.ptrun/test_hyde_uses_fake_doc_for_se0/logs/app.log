@@ -1,0 +1,89 @@
+2026-10-19 13:50:36.082 | INFO     | kb_generation_store | logging:callHandlers:1737 - generation bootstrap id=1 collection=porto_kb
+2026-10-19 13:50:36.083 | INFO     | vector_store | logging:callHandlers:1737 - vector store ready backend=chroma collection=porto_kb chroma_dir=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_hyde_uses_fake_doc_for_se0/data/chroma
+2026-10-19 13:50:36.083 | INFO     | vector_store | logging:callHandlers:1737 - index build start kb_path=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_hyde_uses_fake_doc_for_se0/kb reset=True provider=local model=qwen3-embedding:0.6b chunk_size=1400 overlap=180
+2026-10-19 13:50:36.083 | INFO     | vector_stores.chroma | logging:callHandlers:1737 - collection drop skipped name=porto_kb
+2026-10-19 13:50:36.083 | INFO     | vector_store | logging:callHandlers:1737 - collection reset name=porto_kb
+2026-10-19 13:50:36.083 | INFO     | embeddings | logging:callHandlers:1737 - embed documents provider=local model=qwen3-embedding:0.6b count=1
+2026-10-19 13:50:36.083 | INFO     | embeddings | logging:callHandlers:1737 - embedding dimension probed dim=128 provider=local model=qwen3-embedding:0.6b
+2026-10-19 13:50:36.083 | INFO     | vector_store | logging:callHandlers:1737 - ensure collection name=porto_kb dim=128 (probed, not hardcoded)
+2026-10-19 13:50:36.085 | INFO     | vector_stores.chroma | logging:callHandlers:1737 - collection ensured name=porto_kb metric=l2 dim=128
+2026-10-19 13:50:36.086 | INFO     | documents | logging:callHandlers:1737 - iter documents roots=['/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_hyde_uses_fake_doc_for_se0/kb'] count=1
+2026-10-19 13:50:36.086 | INFO     | vector_store | logging:callHandlers:1737 - index documents discovered count=1
+2026-10-19 13:50:36.086 | INFO     | documents | logging:callHandlers:1737 - read document path=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_hyde_uses_fake_doc_for_se0/kb/payment-platform.md suffix=.md
+2026-10-19 13:50:36.093 | INFO     | documents | logging:callHandlers:1737 - chunk document chars=262 format=markdown max_chars=1400 overlap=180 chunks=1
+2026-10-19 13:50:36.093 | INFO     | vector_store | logging:callHandlers:1737 - embedding and adding batch size=1
+2026-10-19 13:50:36.093 | INFO     | embeddings | logging:callHandlers:1737 - embed documents provider=local model=qwen3-embedding:0.6b count=1
+2026-10-19 13:50:36.094 | INFO     | vector_store | logging:callHandlers:1737 - collection metadata updated dim=128
+2026-10-19 13:50:36.101 | INFO     | vector_store | logging:callHandlers:1737 - index batch added size=1
+2026-10-19 13:50:36.102 | INFO     | bm25_index | logging:callHandlers:1737 - bm25 index built chunks=1
+2026-10-19 13:50:36.195 | INFO     | bm25_index | logging:callHandlers:1737 - bm25 index saved dir=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_hyde_uses_fake_doc_for_se0/data/bm25s_index chunks=1
+2026-10-19 13:50:36.197 | INFO     | vector_store | logging:callHandlers:1737 - index build finish documents=1 chunks=1
+2026-10-19 13:50:36.198 | ERROR    | query_transform | logging:callHandlers:1737 - graph context failed → pass-through chunks
+Traceback (most recent call last):
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/bin/pytest", line 10, in <module>
+    sys.exit(_console_main())
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/config/__init__.py", line 253, in _console_main
+    code = _main(prog=_get_prog_name(sys.argv))
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/config/__init__.py", line 229, in _main
+    ret: ExitCode | int = config.hook.pytest_cmdline_main(config=config)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/main.py", line 377, in pytest_cmdline_main
+    return wrap_session(config, _main)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/main.py", line 330, in wrap_session
+    session.exitstatus = doit(config, session) or 0
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/main.py", line 384, in _main
+    config.hook.pytest_runtestloop(session=session)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/main.py", line 408, in pytest_runtestloop
+    item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 118, in pytest_runtest_protocol
+    runtestprotocol(item, nextitem=nextitem)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 139, in runtestprotocol
+    reports.append(call_and_report(item, "call", log))
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 249, in call_and_report
+    call = CallInfo.from_call(
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 250, in <lambda>
+    lambda: runtest_hook(item=item, **kwds),
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 184, in pytest_runtest_call
+    item.runtest()
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/python.py", line 1707, in runtest
+    self.ihook.pytest_pyfunc_call(pyfuncitem=self)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.venv/lib/python3.14/site-packages/_pytest/python.py", line 167, in pytest_pyfunc_call
+    result = testfunction(**testargs)
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/tests/test_query_transform.py", line 74, in test_hyde_uses_fake_doc_for_search
+    result = retrieve_with_transform(
+  File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/src/porto_chatbot/query_transform.py", line 154, in retrieve_with_transform
+    _augment_with_graph(rows, query, settings),
+> File "/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/src/porto_chatbot/query_transform.py", line 171, in _augment_with_graph
+    return chunks + build_graph_context(
+TypeError: can only concatenate str (not "list") to str

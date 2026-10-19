@@ -148,10 +148,10 @@ def test_should_stop_pass_verdict_goes_finalize(tmp_path):
 
 
 def test_should_stop_score_meets_pass_score(tmp_path):
-    """① score>=pass_score → finalize（即便 verdict 不是 PASS）。
+    """1) score >= pass_score -> finalize, even when verdict is not PASS.
 
-    rubric 加第 7 维后满分 12→14，pass_score 默认同步 10→12，
-    这里直接读默认配置而不是写死数字，避免加维时再次失配。
+    A 7th rubric dimension moved the max from 12 to 14 and the default pass score
+    from 10 to 12, so read the default instead of hardcoding it.
     """
     settings, ctx_fields = _ctx_settings(tmp_path)
     passing = settings.spec_refine_pass_score

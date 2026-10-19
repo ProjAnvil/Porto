@@ -31,11 +31,12 @@ TIER_MCP = "mcp"
 TIER_LOCAL = "local"
 TIER_EMPTY = "empty"
 
-# 计划里的注入点每个请求都 new 一个 registry，而一个 MCP 子进程是要活过单次
-# 请求的（否则每个 retrieve 都要负担一次 handshake），所以缓存必须是模块级的。
+# Injection points build a registry per request, but an MCP child process has to
+# outlive a single request (otherwise every retrieve pays for a handshake), so
+# these caches are module-level.
 _MCP_CLIENTS: dict[tuple[str, str, str | None], McpGraphClient] = {}
-# path -> (mtime_ns, size, graph)；graph 为 None 表示「判定为不可用」，同样缓存，
-# 避免每次请求都重新解码一张超限的图。
+# path -> (mtime_ns, size, graph). A None graph means "judged unusable" and is
+# cached too, so an oversized snapshot is not decoded again on every request.
 _LOCAL_GRAPHS: dict[str, tuple[int, int, LocalStructureGraph | None]] = {}
 
 __all__ = [
@@ -193,7 +194,7 @@ class StructureGraphRegistry:
             )
             _MCP_CLIENTS[key] = client
         try:
-            client.start()  # 已弃用的 client 会一直抛，后续请求直接回落 Tier 0
+            client.start()  # a retired client keeps raising; later calls fall to Tier 0
         except McpError as exc:
             logger.warning("structure mcp unavailable for %s: %s", repo, exc)
             return None
@@ -207,14 +208,14 @@ class StructureGraphRegistry:
             kind: Kind = "scv-graph" if SCV_GRAPH_MCP in Path(binary).name else "vectra"
         else:
             installed = find_scv_graph_mcp()
-            if installed is not None:  # 一个注册 Serves 所有仓库，优先
+            if installed is not None:  # one registration serves every repo; prefer it
                 return str(installed), "scv-graph", str(self._analysis_dir(repo))
             on_path = find_vectra_mcp()
             if on_path is None:
                 return None
             binary, kind = on_path, "vectra"
         if kind == "vectra":
-            snapshot = self._snapshot_path(repo)  # 单快照后端必须先有 f.vg
+            snapshot = self._snapshot_path(repo)  # single-snapshot backend needs the .vg
             if snapshot is None:
                 return None
             return binary, kind, str(snapshot)
@@ -253,7 +254,7 @@ class StructureGraphRegistry:
             graph = LocalStructureGraph(data)
             _LOCAL_GRAPHS[str(path)] = (*stamp, graph)
             return graph
-        except Exception as exc:  # noqa: BLE001 — fail-open：任何异常都降级为空图
+        except Exception as exc:  # noqa: BLE001 - fail-open: any error degrades to empty
             logger.warning("cannot load %s: %s", path, exc)
             return None
 
@@ -289,7 +290,7 @@ def reset_graph_caches() -> None:
     for client in _MCP_CLIENTS.values():
         try:
             client.close()
-        except Exception:  # noqa: BLE001 — 清理阶段不因单个子进程失败而中断
+        except Exception:  # noqa: BLE001 - cleanup must not stop on one bad child
             logger.debug("closing structure mcp client failed", exc_info=True)
     _MCP_CLIENTS.clear()
     _LOCAL_GRAPHS.clear()

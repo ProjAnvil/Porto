@@ -1,0 +1,1 @@
+2026-10-19 13:50:38.547 | INFO     | llm | logging:callHandlers:1737 - llm client ready enabled=True provider=openai model=gpt-4.1-mini base_url_set=False

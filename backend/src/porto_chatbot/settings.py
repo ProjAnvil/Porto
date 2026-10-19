@@ -56,10 +56,10 @@ class Settings(BaseSettings):
     chunk_overlap: int = 180
     top_k: int = 6
 
-    # --- SCV Vectra 结构图（第二检索通道）---
+    # --- SCV Vectra structure graph (second retrieval channel) ---
     graph_enabled: bool = True
-    graph_mcp_enabled: bool = True  # Tier 1；False 则强制走 Tier 0
-    graph_mcp_binary: str | None = None  # 显式指定二进制路径；None = PATH 发现
+    graph_mcp_enabled: bool = True  # Tier 1; False forces Tier 0
+    graph_mcp_binary: str | None = None  # explicit binary path; None = discover
     graph_mcp_timeout: float = Field(default=10.0, ge=1.0)
     graph_max_nodes: int = Field(default=300_000, ge=1)
     graph_max_depth: int = Field(default=2, ge=1, le=5)
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     spec_refine_enabled: bool = True
     spec_refine_max_iter: int = Field(default=3, ge=0, le=10)
     spec_refine_concurrency: int = Field(default=4, ge=1, le=10)
-    # 上限随 rubric 维度数走（7 维 × 2 = 14）；加维时同步放开
+    # follows the rubric dimension count (7 dims x 2 = 14); raise it when adding a dim
     spec_refine_pass_score: int = Field(default=12, ge=0, le=14)
     spec_refine_budget_tokens: int = Field(default=40000, ge=1000)
 

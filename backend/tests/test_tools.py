@@ -22,7 +22,7 @@ def graph_registry(tmp_path: Path, monkeypatch):
         reset_graph_caches,
     )
 
-    # 宿主机器上若真装了 graph MCP，Tier 1 会抢在 Tier 0 前面并尝试起子进程。
+    # On a host with a graph MCP installed, Tier 1 would win and spawn a child.
     monkeypatch.setattr(discovery, "find_scv_graph_mcp", lambda: None)
     monkeypatch.setattr(discovery, "find_vectra_mcp", lambda: None)
     kb = tmp_path / "graph_kb"
@@ -180,7 +180,7 @@ def test_get_sources_truncates_long(sample_settings):
 
 
 def test_search_code_graph_absent_without_registry(sample_settings):
-    """无 registry 时不注册该工具，免得 LLM 拿到一个只会说「不可用」的工具。"""
+    """No registry means no tool, rather than one that can only say "unavailable"."""
     names = [t.name for t in build_agent_tools(AgentToolContext(state={}))]
     assert "search_code_graph" not in names
 
@@ -198,7 +198,7 @@ def test_search_code_graph_returns_matching_nodes(graph_ctx):
         {"query": "order", "top_k": 5}
     )
     assert "bean:orderService" in out
-    assert "alpha" in out  # 仓库名出现在结果里
+    assert "alpha" in out  # the repo name shows up in the result
 
 
 def test_search_code_graph_no_match(graph_ctx):
@@ -209,7 +209,7 @@ def test_search_code_graph_no_match(graph_ctx):
 
 
 def test_search_code_graph_fail_open_on_registry_error(graph_registry, monkeypatch):
-    """graph_for 抛异常时必须降级成一段说明，绝不能让异常冒泡到 tool loop。"""
+    """A raising graph_for must degrade to a message, never bubble into the tool loop."""
 
     class _BoomRegistry:
         def __init__(self, settings):
@@ -218,14 +218,14 @@ def test_search_code_graph_fail_open_on_registry_error(graph_registry, monkeypat
         def graph_for(self, repo):
             raise RuntimeError("boom")
 
-    boom = _BoomRegistry(graph_registry._settings)  # 测试替身直接借用真实 settings
+    boom = _BoomRegistry(graph_registry._settings)  # stub borrows the real settings
     ctx = AgentToolContext(state={}, graph_registry=boom)
     out = _by_name(build_agent_tools(ctx), "search_code_graph").handler({"query": "order"})
     assert "失败" in out
 
 
 def test_search_code_graph_skips_empty_graphs(tmp_path):
-    """registry 存在但没有任何快照时，工具照常注册并返回说明。"""
+    """A registry with no snapshots still registers the tool and explains itself."""
     registry = MagicMock()
     registry._settings = Settings(kb_dirs=[tmp_path], graph_enabled=True)
     ctx = AgentToolContext(state={}, graph_registry=registry)

@@ -131,7 +131,7 @@ def test_identify_summary_reports_the_structure_shape(kb):
 
     assert summary
     assert "alpha" in summary
-    assert "Service" in summary  # stereotype 普查
+    assert "Service" in summary  # stereotype census
 
 
 def test_identify_summary_is_empty_without_a_snapshot(kb):

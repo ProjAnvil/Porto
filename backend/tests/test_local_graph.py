@@ -90,7 +90,7 @@ def test_bfs_respects_max_depth(graph):
 
 
 def test_bfs_defaults_to_injects_only(graph):
-    # 默认 label 是 INJECTS：否则会从 Type 经 CONTAINS 扩散到全仓 Method。
+        # default label is INJECTS: otherwise Type reaches every Method via CONTAINS
     assert graph.bfs(["type:com.acme.OrderService"]) == []
     assert len(graph.bfs(["type:com.acme.OrderService"], labels=["CONTAINS"])) == 1
 
@@ -104,7 +104,7 @@ def test_bfs_limit_is_a_hard_cap(graph):
 
 
 def test_bfs_returns_pairs_sorted_by_depth_then_key(graph):
-    # 同层内按 key 排序：插入顺序是 B→A，结果必须是 A→B。
+        # sorted by key within a level: inserted B then A, result must be A then B
     synthetic = _make(
         [("x", "Bean"), ("b", "Bean"), ("a", "Bean")],
         [("x", "b", "INJECTS", {}), ("x", "a", "INJECTS", {})],
@@ -129,7 +129,7 @@ def test_fixture_bean_cycle_is_graded_fatal(graph):
 
 
 def test_non_injects_cycle_is_not_reported():
-    # SCV 语义：CALLS 互递归不算用户可见的循环依赖，整环跳过。
+        # SCV semantics: mutual CALLS recursion is not a user-visible cycle; skip it
     g = _make(
         [("a", "Method"), ("b", "Method")],
         [("a", "b", "CALLS", {}), ("b", "a", "CALLS", {})],
@@ -171,7 +171,7 @@ def test_self_loop_is_not_a_cycle():
 
 
 def test_deep_chain_does_not_exhaust_the_recursion_limit():
-    # Tarjan 必须是迭代的：单链 5000 远超 CPython 递归上限。
+        # Tarjan must be iterative: a 5000 chain exceeds CPython's recursion limit
     depth = 5000
     g = _make(
         [(f"n{i}", "Bean") for i in range(depth)],
@@ -216,7 +216,7 @@ def test_stats_index_keys_is_a_tuple(graph):
 
 
 def test_cyclic_nodes_ignores_self_loops():
-    # 对齐 Vectra：自环所在 SCC 大小为 1，不计入 cyclic_nodes。
+        # matches Vectra: a self-loop SCC has size 1 and is not a cyclic node
     g = _make(
         [("a", "Bean"), ("b", "Bean")],
         [("a", "a", "INJECTS", {"via": "constructor"})],

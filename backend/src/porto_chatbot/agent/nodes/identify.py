@@ -70,12 +70,12 @@ def identify_subsystems(state, *, config):
 def _graph_summary_block(agent) -> str:
     """Render the code-structure summary appended to the identify prompt.
 
-    identify 此前是纯语言推理：输入只有 understanding + PRD 节选，
-    state["sources"] 在 LLM 路径下完全不参与。结构图是这一步唯一的代码信号，
-    强耦合簇（SCC）本身就是天然的子系统边界。
+    identify used to be pure language reasoning: its only inputs were the
+    understanding report and a PRD excerpt, and state["sources"] never reached it.
+    The structure graph is this step's only code signal, and a strongly connected
 
-    失败一律降级为空串。注意用 agent.logger——本模块没有模块级 logger，
-    写裸 logger 会抛 NameError 并被下面的 except 吞掉，变成静默失效。
+    cluster is itself a natural subsystem boundary.
+    Degrade to "" on any failure. Use agent.logger: this module has no module-level
     """
     settings = getattr(agent, "settings", None)
     if settings is None or not getattr(settings, "graph_enabled", False):

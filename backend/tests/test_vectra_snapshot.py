@@ -40,7 +40,7 @@ def test_decode_hydrates_props_and_labels():
 
 def test_props_stay_lazy_until_first_access():
     node = next(n for n in _data().nodes if n.key == "bean:orderController")
-    # 惰性解码：存的是原始 bytes，首次取值才 json.loads，对外仍是只读 Mapping。
+        # lazy: raw bytes until first access, still exposed as a read-only Mapping
     assert isinstance(node.props, Mapping)
     assert node.props["beanName"] == "orderController"
     assert dict(node.props)["type"] == "com.acme.OrderController"

@@ -31,18 +31,18 @@ _TRUNCATED_NOTICE_SPEC_TOKENS = (
 
 
 def _pass_score(ctx: SpecContext) -> int:
-    """PASS 门槛。由 settings 提供，prompt 与 loop 判定共用同一个值。"""
+    """PASS threshold. Comes from settings so the prompt and the loop agree."""
     return int(getattr(ctx.settings, "spec_refine_pass_score", 12) or 12)
 
 
 def _graph_impact_block(ctx: SpecContext, sub: Subsystem) -> str:
     """Render the subsystem's structure-graph impact surface for the prompt.
 
-    generate 的 system prompt 原本只有子系统三个字段加章节清单，规格里的
-    模块与 API 全靠 LLM 从知识库文本里猜。结构图把「改这个子系统会波及哪些
-    组件」直接摆到 prompt 里。
+    generate's system prompt used to carry only three subsystem fields plus the
+    section list, so the modules and APIs were guessed from knowledge-base prose.
+    The structure graph puts "what this subsystem touches" straight into the prompt.
 
-    失败一律降级为空串；本模块在此前没有模块级 logger，故顶部新增。
+    Degrades to "" on any failure. This package had no module-level logger before,
     """
     if not getattr(ctx.settings, "graph_enabled", False):
         return ""

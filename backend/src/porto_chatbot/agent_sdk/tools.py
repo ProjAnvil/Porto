@@ -131,8 +131,8 @@ def build_sdk_tools(ctx: AgentToolContext, tool_timeout: int = 60) -> list:
         [get_prd, get_understanding, list_subs, get_sub, search_kb, get_srcs]
     )
 
-    # 双后端一致：Langchain 侧注册了 search_code_graph，SDK 侧也必须注册，
-    # 否则走 SDK 的会话拿不到结构图，行为随后端漂移。
+    # Keep both backends aligned: Langchain registers search_code_graph, so the SDK
+    # must too, or SDK sessions silently drift from the Langchain path.
     if ctx.graph_registry is not None:
         @tool(
             "search_code_graph",

@@ -159,8 +159,8 @@ def retrieve_with_transform(
 def _augment_with_graph(chunks, query, settings):
     """Append SCV structure-graph context to retrieved chunks.
 
-    图上下文是检索的增强，不是前置条件：任何异常都 fail-open 返回原 chunks，
-    绝不向上抛——chat 与 workflow 链路都不应因为一张图挂掉。
+    Graph context enriches retrieval; it is never a precondition. Any exception
+    fails open to the original chunks: neither chat nor workflow should break
     """
     if not getattr(settings, "graph_enabled", False):
         return chunks

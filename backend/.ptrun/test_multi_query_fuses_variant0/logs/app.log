@@ -1,0 +1,20 @@
+2026-10-19 13:50:36.322 | INFO     | kb_generation_store | logging:callHandlers:1737 - generation bootstrap id=1 collection=porto_kb
+2026-10-19 13:50:36.322 | INFO     | vector_store | logging:callHandlers:1737 - vector store ready backend=chroma collection=porto_kb chroma_dir=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_multi_query_fuses_variant0/data/chroma
+2026-10-19 13:50:36.322 | INFO     | vector_store | logging:callHandlers:1737 - index build start kb_path=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_multi_query_fuses_variant0/kb reset=True provider=local model=qwen3-embedding:0.6b chunk_size=1400 overlap=180
+2026-10-19 13:50:36.323 | INFO     | vector_stores.chroma | logging:callHandlers:1737 - collection drop skipped name=porto_kb
+2026-10-19 13:50:36.323 | INFO     | vector_store | logging:callHandlers:1737 - collection reset name=porto_kb
+2026-10-19 13:50:36.323 | INFO     | embeddings | logging:callHandlers:1737 - embed documents provider=local model=qwen3-embedding:0.6b count=1
+2026-10-19 13:50:36.323 | INFO     | embeddings | logging:callHandlers:1737 - embedding dimension probed dim=128 provider=local model=qwen3-embedding:0.6b
+2026-10-19 13:50:36.323 | INFO     | vector_store | logging:callHandlers:1737 - ensure collection name=porto_kb dim=128 (probed, not hardcoded)
+2026-10-19 13:50:36.324 | INFO     | vector_stores.chroma | logging:callHandlers:1737 - collection ensured name=porto_kb metric=l2 dim=128
+2026-10-19 13:50:36.325 | INFO     | documents | logging:callHandlers:1737 - iter documents roots=['/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_multi_query_fuses_variant0/kb'] count=1
+2026-10-19 13:50:36.325 | INFO     | vector_store | logging:callHandlers:1737 - index documents discovered count=1
+2026-10-19 13:50:36.325 | INFO     | documents | logging:callHandlers:1737 - read document path=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_multi_query_fuses_variant0/kb/payment-platform.md suffix=.md
+2026-10-19 13:50:36.330 | INFO     | documents | logging:callHandlers:1737 - chunk document chars=262 format=markdown max_chars=1400 overlap=180 chunks=1
+2026-10-19 13:50:36.330 | INFO     | vector_store | logging:callHandlers:1737 - embedding and adding batch size=1
+2026-10-19 13:50:36.330 | INFO     | embeddings | logging:callHandlers:1737 - embed documents provider=local model=qwen3-embedding:0.6b count=1
+2026-10-19 13:50:36.331 | INFO     | vector_store | logging:callHandlers:1737 - collection metadata updated dim=128
+2026-10-19 13:50:36.336 | INFO     | vector_store | logging:callHandlers:1737 - index batch added size=1
+2026-10-19 13:50:36.336 | INFO     | bm25_index | logging:callHandlers:1737 - bm25 index built chunks=1
+2026-10-19 13:50:36.421 | INFO     | bm25_index | logging:callHandlers:1737 - bm25 index saved dir=/Users/yuhaochen/Documents/codebase/projanvil/Porto/backend/.ptrun/test_multi_query_fuses_variant0/data/bm25s_index chunks=1
+2026-10-19 13:50:36.423 | INFO     | vector_store | logging:callHandlers:1737 - index build finish documents=1 chunks=1

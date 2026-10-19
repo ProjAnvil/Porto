@@ -201,7 +201,7 @@ def test_spec_rubric_has_seven_dimensions():
 
 
 def test_rubric_max_follows_the_dimension_count():
-    """满分由维度数派生，加维时不必再翻找散落的字面量。"""
+    """The maximum derives from the dimension count; no scattered literals to hunt."""
     assert SPEC_RUBRIC_MAX == len(SPEC_RUBRIC) * 2
 
 

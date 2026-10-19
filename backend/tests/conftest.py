@@ -78,12 +78,12 @@ def _isolate_llm_env(monkeypatch):
 def _isolate_kb_dirs(monkeypatch, tmp_path):
     """Point kb_dirs at a temp dir so tests never touch the real ~/.scv.
 
-    graph_enabled 默认 True，而 kb_dirs 默认指向真实 ~/.scv/analysis；开发者机器上
-    若真有 structure.vg，测试会加载几十 MB 的图（慢且非确定性）。显式传 kb_dirs=
-    的 fixture（如 sample_settings）优先于 env，不受影响。
+    graph_enabled defaults to True while kb_dirs defaults to the real ~/.scv/analysis;
+    on a machine that actually has structure.vg files, tests would load tens of MB
+    (slow, non-deterministic). Fixtures passing kb_dirs= explicitly win over env.
 
-    目录名刻意用 `_isolated_kb_root` 而非 `kb`：测试自身普遍约定用
-    `tmp_path / "kb"` 建自己的知识库目录，同名会撞 mkdir 的 FileExistsError。
+    The directory is deliberately `_isolated_kb_root`, not `kb`: tests conventionally
+    create their own tmp_path / "kb", and the same name trips FileExistsError.
     """
     kb = tmp_path / "_isolated_kb_root"
     kb.mkdir(exist_ok=True)

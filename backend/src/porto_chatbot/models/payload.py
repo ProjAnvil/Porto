@@ -60,7 +60,7 @@ class AgentSettingsPayload(BaseModel):
     spec_refine_enabled: bool | None = None
     spec_refine_max_iter: int | None = Field(default=None, ge=0, le=10)
     spec_refine_concurrency: int | None = Field(default=None, ge=1, le=10)
-    # 上限随 rubric 维度数走（7 维 × 2 = 14）
+    # follows the rubric dimension count (7 dims x 2 = 14)
     spec_refine_pass_score: int | None = Field(default=None, ge=0, le=14)
     spec_refine_budget_tokens: int | None = Field(default=None, ge=1000)
     agent_request_timeout: int | None = Field(default=None, ge=10)

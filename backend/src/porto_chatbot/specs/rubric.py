@@ -4,7 +4,7 @@ from __future__ import annotations
 from ..models.enums import SpecVerdict
 
 # ----------------------------- Rubric ----------------------------- #
-# 7 维 × 0-2 分，满分 14。≥ spec_refine_pass_score(默认12) 为 PASS。
+# 7 dimensions x 0-2 points, max 14. >= spec_refine_pass_score (default 12) is PASS.
 
 SPEC_RUBRIC: list[dict[str, str]] = [
     {"key": "coverage", "name": "需求覆盖度", "desc": "PRD/understanding 中与本子系统职责相关的需求是否都映射成了能力项"},
@@ -16,7 +16,7 @@ SPEC_RUBRIC: list[dict[str, str]] = [
     {"key": "module_coverage", "name": "模块覆盖度", "desc": "结构图影响面中的模块/组件是否在规格中被显式提及或声明依赖（未提及不算满分；无结构图时按其他维度判定）"},
 ]
 
-# 满分由维度数派生：加维时只需改 SPEC_RUBRIC，不必再翻找散落的 12。
+# The maximum is derived from the dimension count, so adding a dimension means
 SPEC_RUBRIC_MAX = len(SPEC_RUBRIC) * 2
 
 _SPEC_SECTIONS = ["执行摘要", "业务能力", "API 需求", "数据模型需求", "集成需求", "验收标准"]

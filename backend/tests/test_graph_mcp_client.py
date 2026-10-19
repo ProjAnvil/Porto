@@ -238,7 +238,7 @@ def test_handshake_happens_once_for_many_calls(monkeypatch):
     client.cypher("MATCH (n) RETURN n")
     client.cypher("MATCH (n) RETURN n")
 
-    assert len(argv) == 1  # 一个仓库会话只起一个子进程
+    assert len(argv) == 1  # one repo session spawns exactly one child
     assert [m["method"] for m in fake.received] == [
         "initialize",
         "notifications/initialized",
@@ -329,7 +329,7 @@ def test_tool_error_raises_and_disables_the_client(monkeypatch):
     seen = len(fake.received)
     with pytest.raises(McpError):
         client.cypher("MATCH (n) RETURN n")
-    assert len(fake.received) == seen  # 坏掉的服务不再被打扰
+    assert len(fake.received) == seen  # a broken server is left alone
 
 
 def test_missing_structured_content_is_an_error(monkeypatch):
@@ -344,7 +344,7 @@ def test_read_timeout_raises_and_kills_the_child(monkeypatch):
     with pytest.raises(McpError, match="timeout"):
         client.cypher("MATCH (n) RETURN n")
     assert client.available is False
-    assert fake.terminated is True  # 挂死的子进程必须被回收，避免泄漏
+    assert fake.terminated is True  # a hung child must be reaped, no leak
 
 
 def test_missing_binary_is_unavailable_not_an_oserror(monkeypatch):

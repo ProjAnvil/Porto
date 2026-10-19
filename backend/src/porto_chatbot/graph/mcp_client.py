@@ -126,7 +126,7 @@ class _LineReader:
         try:
             for line in stream:
                 self._lines.put(line)
-        except Exception:  # pipe closed / decode error → 一律按 EOF 处理
+        except Exception:  # pipe closed / decode error -> treat as EOF
             pass
         finally:
             self._lines.put(None)
@@ -212,8 +212,9 @@ class McpGraphClient:
             return
         if not self._available:
             raise McpError(f"mcp server {self._binary} is unavailable")
-        # 整个握手（含 spawn）都在 try 内：二进制缺失同理其中一种“不可用”，
-        # 冒 raw FileNotFoundError 出去就破坏了 fail-open 约定。
+        # The whole handshake (spawn included) sits inside try: a missing binary is
+        # just another flavour of "unavailable", and letting FileNotFoundError escape
+        # would break the fail-open contract.
         try:
             self._proc = self._spawn()
             self._reader = _LineReader(self._proc.stdout)
@@ -222,7 +223,7 @@ class McpGraphClient:
             self._tools = self._list_tools()
         except McpError:
             raise
-        except Exception as exc:  # noqa: BLE001 — 二进制缺失/stdout 不可读等一律降级
+        except Exception as exc:  # noqa: BLE001 - missing binary / unreadable stdout
             self._disable(f"handshake failed: {exc}")
             raise McpError(f"mcp handshake failed for {self._binary}: {exc}") from exc
 
@@ -325,7 +326,7 @@ class McpGraphClient:
     def _await_id(self, request_id: int, deadline: float) -> dict[str, Any]:
         """Read until the frame addressed to ``request_id`` arrives."""
         reader = self._reader
-        if reader is None:  # pragma: no cover — start() 保证非空
+        if reader is None:  # pragma: no cover - start() guarantees non-None
             raise McpError(f"mcp server {self._binary} is not running")
         while True:
             wait = deadline - time.monotonic()
@@ -338,9 +339,9 @@ class McpGraphClient:
             try:
                 frame = json.loads(line)
             except ValueError:
-                continue  # 服务器偶发打印非 JSON 行（panic 日志等），跳过
+                continue  # servers occasionally print non-JSON lines (panic logs)
             if not isinstance(frame, dict) or frame.get("id") != request_id:
-                continue  # 通知与过期应答都跳过，只认自己的 id
+                continue  # skip notifications and stale replies; match on id
             return frame
 
     def _write(self, frame: dict[str, Any]) -> None:
@@ -376,7 +377,7 @@ class McpGraphClient:
 
     def _spawn(self) -> subprocess.Popen:
         argv = mcp_argv(self._binary, self._kind, self._target)
-        return subprocess.Popen(  # noqa: S603 — argv 由本模块按后端契约装配
+        return subprocess.Popen(  # noqa: S603 - argv comes from our own config
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -400,11 +401,11 @@ class McpGraphClient:
         for closer in (proc.stdin.close, proc.terminate):
             try:
                 closer()
-            except Exception:  # noqa: BLE001 — 子进程已死，回收失败无需上报
+            except Exception:  # noqa: BLE001 - child already gone; reaping is best-effort
                 pass
         try:
             proc.wait(timeout=1.0)
-        except Exception:  # noqa: BLE001 — 卡住的子进程最后用 kill 兜底
+        except Exception:  # noqa: BLE001 - last resort for a stuck child
             try:
                 proc.kill()
             except Exception:  # noqa: BLE001

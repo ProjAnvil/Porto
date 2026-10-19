@@ -26,7 +26,7 @@ class SpecContext:
     vector_store: LocalVectorStore | None = None
     critic_llm: LLMClient | None = None  # spec loop 评判模型，缺省用 llm
     file_service: Any = None  # FileService（final review I-1）：注入后 generate_initial_spec 的 read_file 工具可读 PRD
-    graph_registry: Any = None  # StructureGraphRegistry：注入后 generate 的 search_code_graph 工具可用
+    graph_registry: Any = None  # StructureGraphRegistry; enables search_code_graph in generate
 
     def __post_init__(self) -> None:
         # 向后兼容：只传了 llm 就自动包一层 LangchainBackend
