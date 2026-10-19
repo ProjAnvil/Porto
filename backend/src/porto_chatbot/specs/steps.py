@@ -11,9 +11,9 @@ from ..tools import AgentToolContext
 from ..tools.context import _graph_registry_for
 from .context import SpecContext
 from .rubric import (
+    _SPEC_SECTIONS,
     SPEC_RUBRIC,
     SPEC_RUBRIC_MAX,
-    _SPEC_SECTIONS,
     _critique_schema,
     _rubric_text,
 )
