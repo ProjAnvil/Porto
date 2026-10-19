@@ -7,8 +7,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..logging_utils import get_component_logger
 from ..models import SourceChunk
 from ..vector_store import LocalVectorStore
+
+logger = get_component_logger("tools.context")
 
 State = dict[str, Any]
 
@@ -33,6 +36,25 @@ def _format_chunks(chunks: list[SourceChunk], *, per_chunk: int = _MAX_SOURCE_CH
     return "\n\n".join(lines)
 
 
+def _graph_registry_for(settings: Any) -> Any | None:
+    """Build a ``StructureGraphRegistry`` for ``settings``, or ``None``.
+
+    三处 AgentToolContext 构造点都要注入同一个 registry，与其各写一遍 import +
+    ``graph_enabled`` 守卫，不如收敛在这里。返回 ``None`` 表示「没有代码结构图可用」：
+    功能关闭、settings 缺失、构造失败都走这条，tools/registry.py 见到 ``None``
+    就不注册 search_code_graph —— 不给 LLM 挂一个只会说「不可用」的工具。
+    """
+    if settings is None or not getattr(settings, "graph_enabled", False):
+        return None
+    try:
+        from ..graph.discovery import StructureGraphRegistry
+
+        return StructureGraphRegistry(settings)
+    except Exception:
+        logger.exception("structure graph registry unavailable → no graph tools")
+        return None
+
+
 @dataclass
 class AgentToolContext:
     """工具执行上下文：持有可变的 workflow state 与向量库句柄。
@@ -46,3 +68,4 @@ class AgentToolContext:
     facts_store: Any = None        # chatbot 专属（SessionFactsStore），workflow 为 None
     file_service: Any = None       # FileService（files/service.py），未注入时为 None
     session_id: str | None = None  # chatbot 专属（当前会话 id），供 search_memory 工具使用
+    graph_registry: Any = None     # StructureGraphRegistry（graph/discovery.py），未启用时为 None

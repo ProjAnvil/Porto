@@ -11,6 +11,7 @@ from .handlers import (
     _list_subsystems,
     _read_file_info,
     _read_file_pages,
+    _search_code_graph,
     _search_file,
     _search_knowledgebase,
 )
@@ -71,6 +72,35 @@ def build_agent_tools(ctx: AgentToolContext) -> list[ToolDef]:
             handler=lambda args: _get_sources(ctx, str(args.get("query", ""))),
         ),
     ]
+
+    if ctx.graph_registry is not None:
+        tools.append(
+            ToolDef(
+                name="search_code_graph",
+                description=(
+                    "按关键词检索代码结构图（类/Bean/方法/文件节点及其属性），"
+                    "用于确认某个组件是否存在、叫什么名字、被谁依赖。"
+                    "只传关键词，不要写查询语句。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "关键词，如 orderService"},
+                        "top_k": {
+                            "type": "integer",
+                            "description": "每个仓库返回节点数，默认 10",
+                            "default": 10,
+                        },
+                    },
+                    "required": ["query"],
+                },
+                handler=lambda args: _search_code_graph(
+                    ctx,
+                    str(args.get("query", "")),
+                    int(args.get("top_k", 10) or 10),
+                ),
+            )
+        )
 
     if ctx.file_service is not None:
         tools.extend(

@@ -4,6 +4,9 @@
 """
 from __future__ import annotations
 
+from typing import Any
+
+from ..logging_utils import get_component_logger
 from .context import (
     _MAX_PRD_CHARS,
     _MAX_TOOL_RESULT_CHARS,
@@ -11,6 +14,12 @@ from .context import (
     _format_chunks,
     _truncate,
 )
+
+logger = get_component_logger("tools.handlers")
+
+# 一次 tool 结果最多横跨几个仓库：结构图节点动辄上万，全量渲染会把 context 撑爆，
+# 所以仓库数量封顶，且每个节点只渲染 key + label + 少量关键 props（见 _props）。
+_GRAPH_REPO_LIMIT = 3
 
 
 def _get_prd_text(ctx: AgentToolContext) -> str:
@@ -64,6 +73,78 @@ def _search_knowledgebase(ctx: AgentToolContext, query: str, top_k: int = 6) -> 
     results = ctx.vector_store.search(query, top_k=top_k)
     ctx.state.setdefault("tool_sources", []).extend(results)
     return _truncate(_format_chunks(results), _MAX_TOOL_RESULT_CHARS)
+
+
+def _search_code_graph(ctx: AgentToolContext, query: str, top_k: int = 10) -> str:
+    """Search the code-structure graph for nodes matching ``query``.
+
+    Parameters
+    ----------
+    ctx:
+        Tool context; ``graph_registry`` holds the structure-graph registry.
+    query:
+        Keywords — identifiers, class or bean names. Never Cypher: the query
+        templates live behind ``StructureGraph.find``, so the model cannot hand
+        us a broken query and get stuck retrying it.
+    top_k:
+        Maximum nodes rendered per repository.
+
+    Returns
+    -------
+    str
+        Matching nodes (``key`` + ``label`` + key props), or a short reason why
+        nothing was found. Never raises: an exception bubbling out of a tool
+        becomes a generic "工具执行失败" line, which is strictly worse than an
+        explanation the model can react to.
+    """
+    registry = ctx.graph_registry
+    if registry is None:
+        return "代码结构图不可用（未注入 registry）。"
+    try:
+        repos = _graph_repos(ctx, registry)
+        if not repos:
+            return "代码结构图不可用（知识库中没有可用的结构快照）。"
+        return _render_graph_hits(registry, repos, query, top_k)
+    except Exception:
+        logger.exception("search_code_graph failed → degrade")
+        return "代码结构图查询失败，已跳过；可用 search_knowledgebase 检索文档代替。"
+
+
+def _graph_repos(ctx: AgentToolContext, registry: Any) -> list[str]:
+    """Repositories worth searching: state clues first, then every snapshot repo."""
+    from ..graph.context import _repos
+
+    candidates: list[str] = []
+    for chunk in ctx.state.get("sources") or []:
+        root = (getattr(chunk, "metadata", None) or {}).get("root")
+        if isinstance(root, str) and root and root not in candidates:
+            candidates.append(root)
+    project = ctx.state.get("project_name")
+    if isinstance(project, str) and project and project not in candidates:
+        candidates.append(project)
+    # registry 没有公开仓库列表，退一步读它的 settings，复用 graph/context 的扫描：
+    # chatbot 路径的 state 是空的，只有这条路能拿到仓库名。
+    for repo in _repos(getattr(registry, "_settings", None)):
+        if repo not in candidates:
+            candidates.append(repo)
+    return candidates[:_GRAPH_REPO_LIMIT]
+
+
+def _render_graph_hits(registry: Any, repos: list[str], query: str, top_k: int) -> str:
+    """Render ``find()`` hits for each repository, or say nothing matched."""
+    from ..graph.context import _props
+
+    limit = max(1, int(top_k or 10))
+    lines: list[str] = []
+    for repo in repos:
+        nodes = registry.graph_for(repo).find(query, limit=limit)
+        if not nodes:
+            continue
+        lines.append(f"[结构图] repo={repo}")
+        lines.extend(f"  - {node.key} [{node.label}] {_props(node)}" for node in nodes)
+    if not lines:
+        return f"结构图中未找到与 {query!r} 相关的节点。"
+    return _truncate("\n".join(lines), _MAX_TOOL_RESULT_CHARS)
 
 
 def _get_sources(ctx: AgentToolContext, query: str = "") -> str:

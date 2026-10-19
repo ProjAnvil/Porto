@@ -78,6 +78,37 @@ def test_build_sdk_tools_no_chatbot_tools_when_memory_absent():
     assert not any("fact" in n.lower() for n in names)
 
 
+def test_build_sdk_tools_no_graph_tool_without_registry():
+    """双后端一致：无 graph_registry 时 SDK 侧也不注册 search_code_graph。"""
+    build_sdk_tools = _import_build_sdk_tools()
+    names = [t.name for t in build_sdk_tools(AgentToolContext(state={}))]
+    assert "search_code_graph" not in names
+
+
+def test_build_sdk_tools_includes_graph_tool_when_registry_present():
+    """双后端一致：Langchain 侧有 search_code_graph，SDK 侧也必须有。"""
+    build_sdk_tools = _import_build_sdk_tools()
+    ctx = AgentToolContext(state={}, graph_registry=MagicMock())
+    tools = build_sdk_tools(ctx)
+    assert "search_code_graph" in [t.name for t in tools]
+
+
+def test_search_code_graph_sdk_handler_round_trip():
+    """SDK 侧 tool 的 handler 返回 MCP text block（不可用信息也算）。"""
+    build_sdk_tools = _import_build_sdk_tools()
+    ctx = AgentToolContext(state={}, graph_registry=MagicMock())
+    tool = next(
+        t for t in build_sdk_tools(ctx) if t.name == "search_code_graph"
+    )
+
+    async def _call():
+        return await tool.handler({"query": "order", "top_k": 3})
+
+    result = _run(_call())
+    assert result["content"][0]["type"] == "text"
+    assert result["content"][0]["text"]
+
+
 # --------------------------------------------------------------------------- #
 # Chatbot context (memory_store + facts_store present)
 # --------------------------------------------------------------------------- #

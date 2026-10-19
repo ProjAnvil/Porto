@@ -8,6 +8,7 @@ from ..logging_utils import get_component_logger
 from ..models import Critique, Subsystem
 from ..models.enums import SpecVerdict, TruncationReason
 from ..tools import AgentToolContext
+from ..tools.context import _graph_registry_for
 from .context import SpecContext
 from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
 
@@ -63,6 +64,7 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
         state=ctx.state,
         vector_store=ctx.vector_store,
         file_service=ctx.file_service,
+        graph_registry=ctx.graph_registry or _graph_registry_for(ctx.settings),
     )
     result = asyncio.run(
         ctx.backend.execute_node(

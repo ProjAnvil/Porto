@@ -4,6 +4,7 @@ import asyncio
 
 from ...models.enums import TruncationReason
 from ...tools import AgentToolContext
+from ...tools.context import _graph_registry_for
 from ..heuristics import extract_bullets, extract_entities, matched_domains, summary_sentence
 from ..state import PortoAgentState
 from ._prd import read_prd_text
@@ -28,6 +29,7 @@ def understand_prd(state, *, config):
             state=state,
             vector_store=agent.vector_store,
             file_service=getattr(agent, "file_service", None),
+            graph_registry=_graph_registry_for(getattr(agent, "settings", None)),
         )
         result = asyncio.run(
             agent.backend.execute_node(

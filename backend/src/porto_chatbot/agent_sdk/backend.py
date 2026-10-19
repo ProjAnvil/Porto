@@ -35,7 +35,7 @@ from ..memory import (
 from ..models import ChatRequest, ChatResponse
 from ..models.enums import StepStatus
 from ..settings import Settings
-from ..tools.context import AgentToolContext
+from ..tools.context import AgentToolContext, _graph_registry_for
 from .tools import build_sdk_tools
 
 
@@ -336,6 +336,7 @@ class AgentSDKBackend:
             facts_store=facts_store,
             file_service=file_service,
             session_id=req.session_id,  # NEW: inject for search_memory tool
+            graph_registry=_graph_registry_for(settings),
         )
         sdk_tools = build_sdk_tools(ctx, tool_timeout=settings.agent_tool_timeout)
         server = create_sdk_mcp_server(

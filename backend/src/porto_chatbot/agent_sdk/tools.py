@@ -25,6 +25,7 @@ from ..tools.handlers import (
     _list_subsystems,
     _read_file_info,
     _read_file_pages,
+    _search_code_graph,
     _search_file,
     _search_knowledgebase,
 )
@@ -58,6 +59,7 @@ def build_sdk_tools(ctx: AgentToolContext, tool_timeout: int = 60) -> list:
     - Workflow ctx (``memory_store is None``): registers the 6 core tools
       (``get_prd_text``, ``get_understanding``, ``list_subsystems``,
       ``get_subsystem``, ``search_knowledgebase``, ``get_sources``).
+      ``search_code_graph`` joins whenever ``ctx.graph_registry`` is set.
     - Chatbot ctx (``memory_store``/``facts_store`` present): additionally
       registers ``search_memory`` and ``get_session_facts``.
 
@@ -128,6 +130,24 @@ def build_sdk_tools(ctx: AgentToolContext, tool_timeout: int = 60) -> list:
     tools.extend(
         [get_prd, get_understanding, list_subs, get_sub, search_kb, get_srcs]
     )
+
+    # 双后端一致：Langchain 侧注册了 search_code_graph，SDK 侧也必须注册，
+    # 否则走 SDK 的会话拿不到结构图，行为随后端漂移。
+    if ctx.graph_registry is not None:
+        @tool(
+            "search_code_graph",
+            "按关键词检索代码结构图（类/Bean/方法/文件节点及其属性），用于确认某个组件"
+            "是否存在、叫什么名字。只传关键词，不要写查询语句。",
+            {"query": str, "top_k": int},
+        )
+        async def search_graph(args):  # noqa: ANN001
+            top_k = int(args.get("top_k", 10) or 10)
+            return await _run_tool(
+                _search_code_graph, ctx, str(args.get("query", "")), top_k,
+                timeout=tool_timeout,
+            )
+
+        tools.append(search_graph)
 
     # ------------------------------------------------------------------ #
     # File tools (only when file_service present)
