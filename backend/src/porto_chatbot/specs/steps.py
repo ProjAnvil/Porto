@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
+from ..logging_utils import get_component_logger
 from ..models import Critique, Subsystem
 from ..models.enums import SpecVerdict, TruncationReason
 from ..tools import AgentToolContext
 from .context import SpecContext
 from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
+
+logger = get_component_logger("specs.steps")
 
 # ----------------------------- LLM 驱动的三步 ----------------------------- #
 
@@ -18,6 +21,27 @@ _TRUNCATED_NOTICE_SPEC_TOOL = (
 _TRUNCATED_NOTICE_SPEC_TOKENS = (
     "⚠️ 规格生成未能完成：输出长度已达上限（max_tokens），自动升级 + 续写仍未收敛。建议重跑本步。"
 )
+
+
+def _graph_impact_block(ctx: SpecContext, sub: Subsystem) -> str:
+    """Render the subsystem's structure-graph impact surface for the prompt.
+
+    generate 的 system prompt 原本只有子系统三个字段加章节清单，规格里的
+    模块与 API 全靠 LLM 从知识库文本里猜。结构图把「改这个子系统会波及哪些
+    组件」直接摆到 prompt 里。
+
+    失败一律降级为空串；本模块在此前没有模块级 logger，故顶部新增。
+    """
+    if not getattr(ctx.settings, "graph_enabled", False):
+        return ""
+    try:
+        from ..graph.context import build_subsystem_impact
+
+        impact = build_subsystem_impact(ctx.settings, sub)
+    except Exception:
+        logger.exception("generate graph impact failed → pass-through")
+        return ""
+    return f"\n\n代码结构图影响面:\n{impact}" if impact else ""
 
 
 def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
@@ -47,7 +71,7 @@ def generate_initial_spec(ctx: SpecContext, sub: Subsystem) -> tuple[str, dict]:
                 f"子系统职责：{sub.responsibility}；能力：{', '.join(sub.capabilities) or '（待识别）'}。"
                 f"必须包含这些章节：{', '.join(_SPEC_SECTIONS)}。"
                 "API 需求要给出具体端点/方法/输入输出/错误码；数据模型要列实体与关键字段；验收标准要具体可测。"
-                "可调用工具检索知识库以参考现有系统约定。"
+                "可调用工具检索知识库以参考现有系统约定。" + _graph_impact_block(ctx, sub)
             ),
             user=f"请生成 {sub.name} 的规格文档。",
             tools=ctx.backend.build_tools(tools_ctx),

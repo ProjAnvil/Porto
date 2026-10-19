@@ -116,8 +116,9 @@ def retrieve_with_transform(
 
     if strategy == QueryTransformStrategy.NONE:
         # 零行为变化：完全走 store.search 原路径（含其内部 rerank 逻辑）
+        rows = store.search(query, top_k)
         return TransformResult(
-            store.search(query, top_k),
+            _augment_with_graph(rows, query, settings),
             condense_applied=condense_applied,
             condensed_query=condensed,
         )
@@ -142,15 +143,37 @@ def retrieve_with_transform(
         logger.exception("transform failed strategy=%s → fallback raw", strategy)
         rows = store._search_raw(query, top_k)
         return TransformResult(
-            rows, degraded=True, degrade_reason="llm_call_failed",
+            _augment_with_graph(rows, query, settings),
+            degraded=True, degrade_reason="llm_call_failed",
             condense_applied=condense_applied, condensed_query=condensed,
         )
 
     if settings.rerank_enabled:
         rows = rerank_chunks(rows, query, settings)
     return TransformResult(
-        rows, condense_applied=condense_applied, condensed_query=condensed,
+        _augment_with_graph(rows, query, settings),
+        condense_applied=condense_applied, condensed_query=condensed,
     )
+
+
+def _augment_with_graph(chunks, query, settings):
+    """Append SCV structure-graph context to retrieved chunks.
+
+    图上下文是检索的增强，不是前置条件：任何异常都 fail-open 返回原 chunks，
+    绝不向上抛——chat 与 workflow 链路都不应因为一张图挂掉。
+    """
+    if not getattr(settings, "graph_enabled", False):
+        return chunks
+    try:
+        from .graph.context import build_graph_context
+        from .graph.discovery import StructureGraphRegistry
+
+        return chunks + build_graph_context(
+            chunks, query, settings, StructureGraphRegistry(settings)
+        )
+    except Exception:
+        logger.exception("graph context failed → pass-through chunks")
+        return chunks
 
 
 # --- condense 门控节点（检索前指代消解）+ 各策略 LLM 生成函数（Task 6 实现）--- #

@@ -32,6 +32,7 @@ def identify_subsystems(state, *, config):
                 user=(
                     f"业务理解报告:\n{state['understanding']}\n\n"
                     f"PRD 节选:\n{prd_text}"
+                    + _graph_summary_block(agent)
                 ),
                 structured_schema=subsystem_schema(),
             )
@@ -64,6 +65,30 @@ def identify_subsystems(state, *, config):
             },
         ),
     }
+
+
+def _graph_summary_block(agent) -> str:
+    """Render the code-structure summary appended to the identify prompt.
+
+    identify 此前是纯语言推理：输入只有 understanding + PRD 节选，
+    state["sources"] 在 LLM 路径下完全不参与。结构图是这一步唯一的代码信号，
+    强耦合簇（SCC）本身就是天然的子系统边界。
+
+    失败一律降级为空串。注意用 agent.logger——本模块没有模块级 logger，
+    写裸 logger 会抛 NameError 并被下面的 except 吞掉，变成静默失效。
+    """
+    settings = getattr(agent, "settings", None)
+    if settings is None or not getattr(settings, "graph_enabled", False):
+        return ""
+    try:
+        from ...graph.context import build_identify_summary
+        from ...graph.discovery import StructureGraphRegistry
+
+        summary = build_identify_summary(settings, StructureGraphRegistry(settings))
+    except Exception:
+        agent.logger.exception("identify graph summary failed → pass-through")
+        return ""
+    return f"\n\n代码结构图摘要:\n{summary}" if summary else ""
 
 
 def _fallback_identify(state: PortoAgentState, file_service=None) -> list[Subsystem]:
