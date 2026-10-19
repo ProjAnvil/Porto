@@ -95,7 +95,8 @@ class Settings(BaseSettings):
     spec_refine_enabled: bool = True
     spec_refine_max_iter: int = Field(default=3, ge=0, le=10)
     spec_refine_concurrency: int = Field(default=4, ge=1, le=10)
-    spec_refine_pass_score: int = Field(default=10, ge=0, le=12)
+    # 上限随 rubric 维度数走（7 维 × 2 = 14）；加维时同步放开
+    spec_refine_pass_score: int = Field(default=12, ge=0, le=14)
     spec_refine_budget_tokens: int = Field(default=40000, ge=1000)
 
     # --- Agentic workflow 回边（Phase 3）---

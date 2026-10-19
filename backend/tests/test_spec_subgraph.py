@@ -148,13 +148,20 @@ def test_should_stop_pass_verdict_goes_finalize(tmp_path):
 
 
 def test_should_stop_score_meets_pass_score(tmp_path):
-    """① score>=pass_score（10）→ finalize（即便 verdict 不是 PASS）。"""
+    """① score>=pass_score → finalize（即便 verdict 不是 PASS）。
+
+    rubric 加第 7 维后满分 12→14，pass_score 默认同步 10→12，
+    这里直接读默认配置而不是写死数字，避免加维时再次失配。
+    """
     settings, ctx_fields = _ctx_settings(tmp_path)
+    passing = settings.spec_refine_pass_score
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
         "iteration": 1,
-        "attempts": [SpecAttempt(version=1, score=10, verdict=SpecVerdict.NEEDS_IMPROVEMENT)],
-        "best_score": 10,
+        "attempts": [
+            SpecAttempt(version=1, score=passing, verdict=SpecVerdict.NEEDS_IMPROVEMENT)
+        ],
+        "best_score": passing,
         "used_chars": 100,
         "best_improved": True,
     }

@@ -4,7 +4,7 @@ from __future__ import annotations
 from ..models.enums import SpecVerdict
 
 # ----------------------------- Rubric ----------------------------- #
-# 6 维 × 0-2 分，满分 12。≥ spec_refine_pass_score(默认10) 为 PASS。
+# 7 维 × 0-2 分，满分 14。≥ spec_refine_pass_score(默认12) 为 PASS。
 
 SPEC_RUBRIC: list[dict[str, str]] = [
     {"key": "coverage", "name": "需求覆盖度", "desc": "PRD/understanding 中与本子系统职责相关的需求是否都映射成了能力项"},
@@ -13,7 +13,11 @@ SPEC_RUBRIC: list[dict[str, str]] = [
     {"key": "dependency", "name": "依赖与边界", "desc": "与其他子系统的同步/异步依赖是否显式声明，数据所有权是否清晰"},
     {"key": "verifiability", "name": "可验证性", "desc": "验收标准是否具体可测（不是空话）"},
     {"key": "consistency", "name": "一致性", "desc": "与 understanding 报告、知识库片段是否冲突"},
+    {"key": "module_coverage", "name": "模块覆盖度", "desc": "结构图影响面中的模块/组件是否在规格中被显式提及或声明依赖（未提及不算满分；无结构图时按其他维度判定）"},
 ]
+
+# 满分由维度数派生：加维时只需改 SPEC_RUBRIC，不必再翻找散落的 12。
+SPEC_RUBRIC_MAX = len(SPEC_RUBRIC) * 2
 
 _SPEC_SECTIONS = ["执行摘要", "业务能力", "API 需求", "数据模型需求", "集成需求", "验收标准"]
 
@@ -27,7 +31,7 @@ def _critique_schema() -> dict:
         "type": "object",
         "properties": {
             "verdict": {"type": "string", "enum": [e.value for e in SpecVerdict]},
-            "score": {"type": "integer", "minimum": 0, "maximum": 12},
+            "score": {"type": "integer", "minimum": 0, "maximum": SPEC_RUBRIC_MAX},
             "feedback": {"type": "string", "description": "针对未满分维度的具体改进建议"},
             "per_dimension": {
                 "type": "object",

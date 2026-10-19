@@ -7,6 +7,7 @@ from porto_chatbot.models import Subsystem
 from porto_chatbot.settings import Settings
 from porto_chatbot.specs import (
     SPEC_RUBRIC,
+    SPEC_RUBRIC_MAX,
     SpecContext,
     generate_spec_with_loop,
     render_template_spec,
@@ -189,11 +190,19 @@ def test_loop_budget_truncation(tmp_path):
 # ----------------------------- rubric ----------------------------- #
 
 
-def test_spec_rubric_has_six_dimensions():
+def test_spec_rubric_has_seven_dimensions():
     keys = {r["key"] for r in SPEC_RUBRIC}
-    assert keys == {"coverage", "api", "data_model", "dependency", "verifiability", "consistency"}
+    assert keys == {
+        "coverage", "api", "data_model", "dependency", "verifiability",
+        "consistency", "module_coverage",
+    }
     for r in SPEC_RUBRIC:
         assert r["name"] and r["desc"]
+
+
+def test_rubric_max_follows_the_dimension_count():
+    """满分由维度数派生，加维时不必再翻找散落的字面量。"""
+    assert SPEC_RUBRIC_MAX == len(SPEC_RUBRIC) * 2
 
 
 def test_render_template_spec_contains_required_sections(tmp_path):

@@ -10,7 +10,13 @@ from ..models.enums import SpecVerdict, TruncationReason
 from ..tools import AgentToolContext
 from ..tools.context import _graph_registry_for
 from .context import SpecContext
-from .rubric import _SPEC_SECTIONS, _critique_schema, _rubric_text
+from .rubric import (
+    SPEC_RUBRIC,
+    SPEC_RUBRIC_MAX,
+    _SPEC_SECTIONS,
+    _critique_schema,
+    _rubric_text,
+)
 
 logger = get_component_logger("specs.steps")
 
@@ -22,6 +28,11 @@ _TRUNCATED_NOTICE_SPEC_TOOL = (
 _TRUNCATED_NOTICE_SPEC_TOKENS = (
     "⚠️ 规格生成未能完成：输出长度已达上限（max_tokens），自动升级 + 续写仍未收敛。建议重跑本步。"
 )
+
+
+def _pass_score(ctx: SpecContext) -> int:
+    """PASS 门槛。由 settings 提供，prompt 与 loop 判定共用同一个值。"""
+    return int(getattr(ctx.settings, "spec_refine_pass_score", 12) or 12)
 
 
 def _graph_impact_block(ctx: SpecContext, sub: Subsystem) -> str:
@@ -111,9 +122,12 @@ def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | Non
     result = asyncio.run(
         ctx.backend.execute_node(
             system=(
-                "你是严格的系统规格评审专家。只评审、不重写。依据如下 6 维 rubric 打分，每维 0-2 分，满分 12：\n"
+                f"你是严格的系统规格评审专家。只评审、不重写。依据如下 {len(SPEC_RUBRIC)} 维 rubric 打分，"
+                f"每维 0-2 分，满分 {SPEC_RUBRIC_MAX}：\n"
                 f"{_rubric_text()}\n\n"
-                "判定规则：score≥10 且无重大缺陷 → PASS；7-9 → NEEDS_IMPROVEMENT；≤6 → FAIL。"
+                f"判定规则：score≥{_pass_score(ctx)} 且无重大缺陷 → PASS；"
+                f"{_pass_score(ctx) - 3}-{_pass_score(ctx) - 1} → NEEDS_IMPROVEMENT；"
+                f"≤{_pass_score(ctx) - 4} → FAIL。"
                 "feedback 必须针对未满分维度给出具体、可执行的改进方向。"
             ),
             user=(
@@ -132,7 +146,7 @@ def critique_spec(ctx: SpecContext, sub: Subsystem, spec: str) -> Critique | Non
         score = int(parsed.get("score", 0))
     except (TypeError, ValueError):
         score = 0
-    score = max(0, min(12, score))
+    score = max(0, min(SPEC_RUBRIC_MAX, score))
     per_dim = parsed.get("per_dimension")
     per_dim = per_dim if isinstance(per_dim, dict) else {}
     return Critique(
