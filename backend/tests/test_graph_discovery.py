@@ -27,6 +27,18 @@ _NODE = {"key": "bean:orderService", "label": "Bean", "props": {"stereotype": "S
 
 
 @pytest.fixture(autouse=True)
+def _no_real_binaries(monkeypatch):
+    """Neutralise host binary discovery for every test in this module.
+
+    开发机上若真装了 scv-graph-mcp / vectra-mcp，Tier 0 的用例会莫名跳到 Tier 1，
+    测试结果变成「取决于这台机器装了什么」。默认一律视为未安装；Tier 1 的用例
+    自己在函数体内 monkeypatch 覆盖（后设置的生效）。
+    """
+    monkeypatch.setattr(discovery, "find_scv_graph_mcp", lambda: None)
+    monkeypatch.setattr(discovery, "find_vectra_mcp", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _clean_caches():
     """module-level caches would otherwise leak between tests."""
     yield
@@ -42,7 +54,9 @@ def kb(tmp_path: Path) -> Path:
 
 def _settings(kb: Path, **overrides) -> Settings:
     """Settings pinned to one temp knowledge-base directory."""
-    return Settings(kb_dirs=[kb], graph_enabled=True, **overrides)
+    base: dict = {"kb_dirs": [kb], "graph_enabled": True}
+    base.update(overrides)  # 允许调用方覆盖 graph_enabled 等默认值
+    return Settings(**base)
 
 
 def _repo(kb: Path, name: str = "alpha") -> Path:

@@ -81,8 +81,11 @@ def _isolate_kb_dirs(monkeypatch, tmp_path):
     graph_enabled 默认 True，而 kb_dirs 默认指向真实 ~/.scv/analysis；开发者机器上
     若真有 structure.vg，测试会加载几十 MB 的图（慢且非确定性）。显式传 kb_dirs=
     的 fixture（如 sample_settings）优先于 env，不受影响。
+
+    目录名刻意用 `_isolated_kb_root` 而非 `kb`：测试自身普遍约定用
+    `tmp_path / "kb"` 建自己的知识库目录，同名会撞 mkdir 的 FileExistsError。
     """
-    kb = tmp_path / "kb"
+    kb = tmp_path / "_isolated_kb_root"
     kb.mkdir(exist_ok=True)
     monkeypatch.setenv("PORTO_CHATBOT_KB_DIRS", json.dumps([str(kb)]))
 
@@ -113,7 +116,7 @@ def _reset_logging_state():
 @pytest.fixture()
 def sample_settings(tmp_path: Path) -> Settings:
     kb = tmp_path / "kb"
-    kb.mkdir(exist_ok=True)  # _isolate_kb_dirs 已建该目录
+    kb.mkdir(exist_ok=True)
     (kb / "payment-platform.md").write_text(
         """
 # Payment Platform
