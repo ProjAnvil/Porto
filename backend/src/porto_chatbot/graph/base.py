@@ -6,6 +6,7 @@ snapshot decoder, MCP client) are interchangeable implementations of
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -16,7 +17,33 @@ __all__ = [
     "GraphStats",
     "SnapshotError",
     "StructureGraph",
+    "ident_tokens",
 ]
+
+_NON_IDENT = re.compile(r"[^A-Za-z0-9]+")
+_MIN_TOKEN = 3
+
+
+def ident_tokens(text: str) -> list[str]:
+    """Split ``text`` into lower-case identifier-like tokens.
+
+    Structure-graph keys are identifiers (``bean:orderService``), so matching on
+    whole prose words would drag in half the graph. Tokens shorter than three
+    characters are dropped for the same reason — ``fn``, ``of`` and ``a`` match
+    almost everything.
+
+    Parameters
+    ----------
+    text:
+        Free text: a subsystem name, a chunk title, or a query fragment.
+
+    Returns
+    -------
+    list[str]
+        Lower-case tokens, longest first so callers can prefer the specific.
+    """
+    raw = [t for t in _NON_IDENT.split(text.lower()) if len(t) >= _MIN_TOKEN]
+    return sorted(set(raw), key=lambda t: (-len(t), t))
 
 
 @dataclass(frozen=True)
@@ -99,6 +126,28 @@ class StructureGraph(Protocol):
 
     def node(self, key: str) -> GraphNode | None:
         """Return the node with ``key``, or ``None`` when absent."""
+
+    def find(self, text: str, limit: int = 20) -> list[GraphNode]:
+        """Return nodes whose key mentions ``text``.
+
+        Anchor discovery for prompt rendering: callers hold a subsystem name or
+        a query fragment and need the node keys it refers to. Tier 0 answers
+        with a scan over its keys, Tier 1 with a ``CONTAINS`` Cypher template —
+        both case-insensitive, both capped at ``limit``.
+
+        Parameters
+        ----------
+        text:
+            Free text; only identifier-like tokens of three characters or more
+            are matched, so prose does not drag in half the graph.
+        limit:
+            Hard cap on returned nodes.
+
+        Returns
+        -------
+        list[GraphNode]
+            Matching nodes, most specific (shortest key) first.
+        """
 
     def neighbors(
         self, key: str, direction: str = "out", labels: Sequence[str] | None = None

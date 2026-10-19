@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .base import GraphEdge, GraphNode, GraphStats
+from .base import GraphEdge, GraphNode, GraphStats, ident_tokens
 from .snapshot import SnapshotData
 
 _DIRECTIONS = ("out", "in", "both")
@@ -42,6 +42,25 @@ class LocalStructureGraph:
     def node(self, key: str) -> GraphNode | None:
         """Return the node with ``key``, or ``None`` when absent."""
         return self._nodes.get(key)
+
+    def find(self, text: str, limit: int = 20) -> list[GraphNode]:
+        """Return nodes whose key mentions ``text``.
+
+        Tier 0 has no index to lean on, so this is a scan over the keys; the
+        graph is already in memory and the result is capped early, which makes
+        the scan cheaper than maintaining an inverted index for it.
+        """
+        tokens = ident_tokens(text)
+        if not tokens:
+            return []
+        hits: list[GraphNode] = []
+        for key in sorted(self._nodes, key=lambda k: (len(k), k)):
+            lowered = key.lower()
+            if any(token in lowered for token in tokens):
+                hits.append(self._nodes[key])
+                if len(hits) >= limit:
+                    break
+        return hits
 
     def neighbors(
         self, key: str, direction: str = "out", labels: Sequence[str] | None = None

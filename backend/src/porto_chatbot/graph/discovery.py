@@ -86,6 +86,10 @@ class EmptyStructureGraph:
         """Return ``None``: an empty graph has no nodes."""
         return None
 
+    def find(self, text: str, limit: int = 20) -> list[GraphNode]:
+        """Return no nodes: an empty graph has nothing to match."""
+        return []
+
     def neighbors(
         self, key: str, direction: str = "out", labels: Sequence[str] | None = None
     ) -> list[GraphNode]:

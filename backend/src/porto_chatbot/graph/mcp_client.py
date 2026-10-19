@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..logging_utils import get_component_logger
-from .base import GraphNode, GraphStats
+from .base import GraphNode, GraphStats, ident_tokens
 
 logger = get_component_logger("graph.mcp")
 
@@ -487,6 +487,30 @@ class McpStructureGraph:
             logger.warning("mcp get_node failed: %s", exc)
             return None
         return _as_node(raw)
+
+    def find(self, text: str, limit: int = 20) -> list[GraphNode]:
+        """Return nodes whose key mentions ``text``.
+
+        The Cypher subset has no ``toLower()``, and ``CONTAINS`` is
+        case-sensitive (verified against a live server: ``'order'`` hits
+        ``bean:orderController`` while ``'Order'`` hits ``type:com.acme.
+        OrderService``). Each token is therefore tried in its lower-case and
+        capitalised form and the hits are unioned. That still misses keys whose
+        inner casing differs from the query's, so this is best-effort anchor
+        discovery, not a search guarantee — callers degrade to fewer anchors.
+        """
+        tokens = ident_tokens(text)
+        if not tokens:
+            return []
+        needs = [t for token in tokens[:3] for t in (token, token.capitalize())]
+        merged: dict[str, GraphNode] = {}
+        for needle in dict.fromkeys(needs):
+            pattern = f"MATCH (n) WHERE n.key CONTAINS {_lit(needle)} RETURN n"
+            for node in self._query_nodes(pattern, limit=limit):
+                merged.setdefault(node.key, node)
+            if len(merged) >= limit:
+                break
+        return sorted(merged.values(), key=lambda n: (len(n.key), n.key))[:limit]
 
     def neighbors(
         self, key: str, direction: str = "out", labels: Sequence[str] | None = None
