@@ -4,7 +4,8 @@ name: eval
 #   PR / push  → unit（非集成单测）+ retrieval-gate（零 LLM 硬门禁）
 #   nightly    → e2e（LLM judge 六指标，report-only）+ refusal（拒答硬门禁）
 #                + multiturn（多轮会话）+ spec-baseline（独立 judge 基线）
-# 集成门禁缺 LANGCHAIN_API_KEY secret 时自动 skip（conftest 语义），不会假红。
+# nightly 缺 LANGCHAIN_API_KEY secret 时整个 job skip（secrets 预检 job 判定），不会假红；
+# 未配置的 secret 不导出空串（否则 LANGCHAIN_AGENT_PROVIDER='' 会让 Settings 在 import 时校验失败）。
 
 on:
   pull_request:
@@ -31,7 +32,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e . pytest pytest-asyncio
+      # tests/rag_eval/conftest.py 在收集阶段 import deepeval，非集成单测也需要 eval extra
+      - run: pip install -e ".[eval]" pytest pytest-asyncio
       - run: python -m pytest -m "not integration"
 
   retrieval-gate:
@@ -57,21 +59,34 @@ jobs:
         env:
           RAG_EVAL_RETRIEVAL_PROFILE: baseline
 
+  nightly-secrets:
+    name: Nightly secrets 预检
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      # secrets 不能直接用于 job 级 if，经 output 传给 nightly
+      - name: 检查 LANGCHAIN_API_KEY
+        id: check
+        env:
+          LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+        run: |
+          if [ -n "$LANGCHAIN_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=eval nightly::未配置 LANGCHAIN_API_KEY secret，跳过 nightly LLM 评估"
+          fi
+
   nightly:
     name: Nightly 端到端评估（需 secrets）
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: nightly-secrets
+    # 仅在 secrets 预检通过时运行；push / PR 下预检 job 被 skip，本 job 随之 skip
+    if: needs.nightly-secrets.outputs.configured == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      LANGCHAIN_AGENT_PROVIDER: ${{ secrets.LANGCHAIN_AGENT_PROVIDER }}
-      LANGCHAIN_MODEL: ${{ secrets.LANGCHAIN_MODEL }}
-      LANGCHAIN_BASE_URL: ${{ secrets.LANGCHAIN_BASE_URL }}
-      LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
-      # 独立 judge（缺省回退 generator）：解锁「便宜模型生成、强模型评审」
-      RAG_EVAL_JUDGE_PROVIDER: ${{ secrets.RAG_EVAL_JUDGE_PROVIDER }}
-      RAG_EVAL_JUDGE_MODEL: ${{ secrets.RAG_EVAL_JUDGE_MODEL }}
-      RAG_EVAL_JUDGE_API_KEY: ${{ secrets.RAG_EVAL_JUDGE_API_KEY }}
-      RAG_EVAL_JUDGE_BASE_URL: ${{ secrets.RAG_EVAL_JUDGE_BASE_URL }}
       DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE: "300"
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +94,26 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      # 只导出非空 secret：留空会让 Settings 读到空串而校验失败，不导出则回退默认值
+      # （provider=openai / model=gpt-4.1-mini）
+      - name: 注入 LLM secrets
+        env:
+          LANGCHAIN_AGENT_PROVIDER: ${{ secrets.LANGCHAIN_AGENT_PROVIDER }}
+          LANGCHAIN_MODEL: ${{ secrets.LANGCHAIN_MODEL }}
+          LANGCHAIN_BASE_URL: ${{ secrets.LANGCHAIN_BASE_URL }}
+          LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+          # 独立 judge（缺省回退 generator）：解锁「便宜模型生成、强模型评审」
+          RAG_EVAL_JUDGE_PROVIDER: ${{ secrets.RAG_EVAL_JUDGE_PROVIDER }}
+          RAG_EVAL_JUDGE_MODEL: ${{ secrets.RAG_EVAL_JUDGE_MODEL }}
+          RAG_EVAL_JUDGE_API_KEY: ${{ secrets.RAG_EVAL_JUDGE_API_KEY }}
+          RAG_EVAL_JUDGE_BASE_URL: ${{ secrets.RAG_EVAL_JUDGE_BASE_URL }}
+        run: |
+          for name in LANGCHAIN_AGENT_PROVIDER LANGCHAIN_MODEL LANGCHAIN_BASE_URL LANGCHAIN_API_KEY \
+              RAG_EVAL_JUDGE_PROVIDER RAG_EVAL_JUDGE_MODEL RAG_EVAL_JUDGE_API_KEY RAG_EVAL_JUDGE_BASE_URL; do
+            if [ -n "${!name}" ]; then
+              echo "$name=${!name}" >> "$GITHUB_ENV"
+            fi
+          done
       - run: pip install -e ".[eval]"
       - name: 缓存 DomainRAG 数据集
         uses: actions/cache@v4

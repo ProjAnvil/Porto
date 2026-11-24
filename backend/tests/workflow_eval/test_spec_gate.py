@@ -16,9 +16,22 @@ pytestmark = pytest.mark.integration
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "spec_baseline_eval.py"
 _REPORT_DIR = Path(__file__).resolve().parent / "reports"
+# Same families tests/conftest.py::_isolate_llm_env deletes for the duration of every test.
+_LLM_ENV_PREFIXES = ("LANGCHAIN_", "PORTO_CHATBOT_CRITIC_")
 
 
-def test_spec_baseline_gate():
+@pytest.fixture(scope="session")
+def process_llm_env() -> dict[str, str]:
+    """LLM config from the process env, snapshotted before the per-test isolation runs."""
+    return {k: v for k, v in os.environ.items() if k.startswith(_LLM_ENV_PREFIXES)}
+
+
+def test_spec_baseline_gate(monkeypatch, process_llm_env):
+    # CI injects secrets through the environment (there is no .env file), but
+    # tests/conftest.py::_isolate_llm_env delenv's LANGCHAIN_* inside every test. Restore
+    # them here, otherwise Settings() never sees the key and this gate skips forever.
+    for key, value in process_llm_env.items():
+        monkeypatch.setenv(key, value)
     # 先按脚本同款方式加载 .env/.env.test 到 os.environ（pytest conftest 会隔离
     # LANGCHAIN_* 并禁用 env_file，直接 Settings() 会误判「无 LLM」而永久 skip）
     import importlib.util

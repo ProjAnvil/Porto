@@ -93,6 +93,7 @@ def test_api_chat_greeting_skips_rag(monkeypatch, sample_settings):
 
 def test_chat_stream_native_streaming_when_llm_enabled(monkeypatch, sample_settings):
     """LLM enabled + agent_stream_enabled 时走原生 token 流（多个 text-delta 分片）。"""
+    from porto_chatbot.agent import langchain_chat_stream as stream_mod
     from porto_chatbot.llm import LLMClient
 
     sample_settings.agent_api_key = "k"
@@ -102,6 +103,13 @@ def test_chat_stream_native_streaming_when_llm_enabled(monkeypatch, sample_setti
     # intent router 固定返回 rag；stream 返回多个分片
     monkeypatch.setattr(LLMClient, "complete_structured", lambda self, *a, **k: {"intent": "rag", "reason": "领域问题"})
     monkeypatch.setattr(LLMClient, "stream", lambda self, *a, **k: iter(["流", "式", "回答"]))
+    # The LLM is "enabled" with a fake key, so every LLM entry point on this path must be
+    # stubbed or the call goes to the real api.openai.com. `complete` is what
+    # maybe_generate_title calls from a daemon thread: unstubbed, the 401 + retry kept that
+    # thread alive for seconds and it leaked into later tests (breaking tests that count
+    # ChatOpenAI.invoke calls). Stub the trigger as well so no thread outlives this test.
+    monkeypatch.setattr(LLMClient, "complete", lambda self, *a, **k: "title")
+    monkeypatch.setattr(stream_mod, "maybe_generate_title", lambda *a, **k: None)
 
     with TestClient(main.app) as client:
         client.post("/api/kb/index")
