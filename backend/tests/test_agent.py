@@ -1,44 +1,49 @@
-"""PortoAgent 容器单元测试。
+"""Unit tests for the PortoAgent container.
 
-Task 9 之后 PortoAgent 瘦身为纯容器(构造/_build_critic_llm/_step),
-graph/run/_persist/_route_after_evaluate/各 node 委托方法已删除:
-- 端到端编排(run)由 langgraph StateGraph + WorkflowExecutor 覆盖
-  (见 test_workflow_executor.py)。
-- 节点级委托(retrieve_knowledge/understand_prd/...)已删除,直接调 nodes。
+Since Task 9 PortoAgent is a slim pure container (constructor / _build_critic_llm /
+_step); graph / run / _persist / _route_after_evaluate and the per-node delegation methods
+are gone:
+- End-to-end orchestration (run) is covered by the langgraph StateGraph +
+  WorkflowExecutor (see test_workflow_executor.py).
+- Node-level delegation (retrieve_knowledge / understand_prd / ...) is gone; nodes are
+  called directly.
 
-Task 10:evaluate 节点已删(从 graph 移除于 Task 9,文件清理于 Task 10),
-原 evaluate 节点的 rubric 聚合 + 条件回边决策测试一并删除。
+Task 10: the evaluate node is gone (removed from the graph in Task 9, file cleanup in
+Task 10); the tests of the former evaluate node (rubric aggregation + the conditional
+back-edge decision) were removed with it.
 
-本文件覆盖:
-1. critic_llm 容器行为(base_url/api_key 回退、独立 client、未配置回退 generator)。
+This file covers:
+1. critic_llm container behavior (base_url / api_key fallback, separate client, falling
+   back to the generator when not configured).
 """
 
 from __future__ import annotations
 
 from porto_chatbot.agent import PortoAgent
 
-# ----------------------------- critic 模型 base_url/api_key 回退 ----------------------------- #
+# --------------------- critic model base_url / api_key fallback --------------------- #
 
 
 def test_critic_llm_inherits_generator_base_url_and_key(sample_settings):
-    """critic_base_url / critic_api_key 未配时，必须复用 generator 的 base_url / api_key。"""
+    """When critic_base_url / critic_api_key are not configured, the generator's base_url /
+    api_key must be reused."""
     sample_settings.agent_api_key = "gen-key"
     sample_settings.agent_base_url = "https://gen-proxy.example.com/v1"
     sample_settings.agent_model = "gen-model"
     sample_settings.critic_provider = "openai"
     sample_settings.critic_model = "critic-model"
-    # critic_base_url / critic_api_key 故意不配
+    # critic_base_url / critic_api_key deliberately left unset
     agent = PortoAgent(sample_settings)
 
-    assert agent.critic_llm is not agent.llm  # 独立 client
-    assert agent.critic_llm.settings.agent_base_url == "https://gen-proxy.example.com/v1"  # 回退 generator
-    assert agent.critic_llm.settings.agent_api_key == "gen-key"  # 回退 generator
-    assert agent.critic_llm.settings.agent_model == "critic-model"  # critic 自己的
+    assert agent.critic_llm is not agent.llm  # a separate client
+    assert agent.critic_llm.settings.agent_base_url == "https://gen-proxy.example.com/v1"  # falls back to the generator
+    assert agent.critic_llm.settings.agent_api_key == "gen-key"  # falls back to the generator
+    assert agent.critic_llm.settings.agent_model == "critic-model"  # the critic's own
     assert agent.critic_llm.settings.agent_provider == "openai"
 
 
 def test_critic_llm_uses_own_base_url_when_provided(sample_settings):
-    """配了 critic_base_url 时用它，不被 generator 覆盖。"""
+    """A configured critic_base_url is used as is and is not overridden by the generator."""
     sample_settings.agent_api_key = "gen-key"
     sample_settings.agent_base_url = "https://gen-proxy.example.com/v1"
     sample_settings.critic_provider = "anthropic"
@@ -52,6 +57,6 @@ def test_critic_llm_uses_own_base_url_when_provided(sample_settings):
 
 
 def test_critic_llm_falls_back_to_generator_when_unconfigured(sample_settings):
-    """未配 critic_provider 时，critic_llm 就是 generator（self.llm）。"""
+    """Without critic_provider, critic_llm is the generator (self.llm)."""
     agent = PortoAgent(sample_settings)
     assert agent.critic_llm is agent.llm

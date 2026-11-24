@@ -1,8 +1,9 @@
-"""specs/subgraph.py 的单元 + 集成测试。
+"""Unit + integration tests for specs/subgraph.py.
 
-- 单元：``_should_stop`` 四分支 + ``init_spec`` 降级路径（M8）
-- 集成：真跑子图（mock LLM），2 个 subsystem → ``spec_results`` 有 2 个 key，
-  SpecResult 字段完整（验证 ``_dict_merge`` reducer 合并生效，B1 阻断项）
+- Unit: the four branches of ``_should_stop`` + the ``init_spec`` fallback path (M8)
+- Integration: actually run the subgraph (mock LLM), 2 subsystems → ``spec_results`` has
+  2 keys with complete SpecResult fields (verifies the ``_dict_merge`` reducer merge, audit
+  blocker B1)
 """
 
 from __future__ import annotations
@@ -49,12 +50,14 @@ def _make_llm(
     critiques: list[Any] | None = None,
     refine_texts: list[str] | None = None,
 ) -> LLMClient:
-    """构造一个 mock 过 complete_with_tools / complete_structured / complete 的 LLMClient。
+    """Build an LLMClient with complete_with_tools / complete_structured / complete mocked.
 
-    generate_initial_spec 走 ctx.backend.execute_node(tools=...) → llm.complete_with_tools
-    critique_spec       走 ctx.backend.execute_node(structured_schema=...) → llm.complete_structured
-    refine_spec         走 ctx.backend.execute_node() → llm.complete
-    SpecContext.__post_init__ 自动包 LangchainBackend，所以 ctx_backend 可以不传。
+    generate_initial_spec goes through ctx.backend.execute_node(tools=...) →
+    llm.complete_with_tools; critique_spec through
+    ctx.backend.execute_node(structured_schema=...) → llm.complete_structured; refine_spec
+    through ctx.backend.execute_node() → llm.complete.
+    SpecContext.__post_init__ wraps a LangchainBackend automatically, so ctx_backend can be
+    left out.
     """
     llm = LLMClient(settings)
     cwt_iter = iter(cwt_texts or [])
@@ -75,7 +78,7 @@ def _make_state(
     refine_texts: list[str] | None = None,
     **settings_kw,
 ) -> dict:
-    """构造子图输入 state（SpecContext 展开为 ctx_* 字段）。"""
+    """Build the subgraph input state (SpecContext expanded into ctx_* fields)."""
     settings = _settings(tmp_path, **settings_kw)
     llm = _make_llm(
         settings, cwt_texts=cwt_texts, critiques=critiques, refine_texts=refine_texts
@@ -94,7 +97,7 @@ def _crit(verdict: str, score: int, feedback: str = "fix") -> dict:
 
 
 def _ctx_settings(tmp_path, **overrides) -> tuple[Settings, dict]:
-    """构造一个最小 ctx_* 字段集合，用于 _should_stop / init_spec 单元测试。"""
+    """Build a minimal set of ctx_* fields for the _should_stop / init_spec unit tests."""
     settings = _settings(tmp_path, **overrides)
     llm = LLMClient(settings)
     return settings, {
@@ -104,11 +107,12 @@ def _ctx_settings(tmp_path, **overrides) -> tuple[Settings, dict]:
     }
 
 
-# ----------------------------- 单元：init_spec 降级 ----------------------------- #
+# -------------------------- Unit: init_spec fallback -------------------------- #
 
 
 def test_init_spec_disabled_llm_uses_template(tmp_path):
-    """LLM 未启用 → 模板降级，best/current 都填模板，truncated=False。"""
+    """LLM disabled → template fallback: best and current are both the template,
+    truncated=False."""
     settings, ctx_fields = _ctx_settings(tmp_path, agent_api_key=None)
     state: SpecSubgraphState = {"sub": _sub(), **ctx_fields}  # type: ignore[typeddict-item]
     result = init_spec(state)
@@ -122,7 +126,7 @@ def test_init_spec_disabled_llm_uses_template(tmp_path):
 
 
 def test_init_spec_refine_disabled_uses_template(tmp_path):
-    """spec_refine_enabled=False → 同样走模板降级路径。"""
+    """spec_refine_enabled=False → takes the same template fallback path."""
     settings, ctx_fields = _ctx_settings(tmp_path, spec_refine_enabled=False)
     state: SpecSubgraphState = {"sub": _sub(), **ctx_fields}  # type: ignore[typeddict-item]
     result = init_spec(state)
@@ -130,11 +134,11 @@ def test_init_spec_refine_disabled_uses_template(tmp_path):
     assert result["truncated"] is False
 
 
-# ----------------------------- 单元：_should_stop 四分支 ----------------------------- #
+# ------------------------- Unit: _should_stop branches ------------------------- #
 
 
 def test_should_stop_pass_verdict_goes_finalize(tmp_path):
-    """① verdict==PASS → finalize。"""
+    """1) verdict == PASS → finalize."""
     settings, ctx_fields = _ctx_settings(tmp_path)
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
@@ -169,9 +173,9 @@ def test_should_stop_score_meets_pass_score(tmp_path):
 
 
 def test_should_stop_max_iter(tmp_path):
-    """② iteration>=max_iter → finalize。"""
+    """2) iteration >= max_iter → finalize."""
     settings, ctx_fields = _ctx_settings(tmp_path)
-    # max_iter 默认 3；构造一个未达标但已达上限的场景
+    # max_iter defaults to 3; build a case that has not passed yet but has hit the limit
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
         "iteration": settings.spec_refine_max_iter,
@@ -182,13 +186,13 @@ def test_should_stop_max_iter(tmp_path):
         ],
         "best_score": 8,
         "used_chars": 100,
-        "best_improved": True,  # 本次仍提升，但已到 max_iter
+        "best_improved": True,  # still improved this round, but max_iter is reached
     }
     assert _should_stop(state) == "finalize"
 
 
 def test_should_stop_score_degradation(tmp_path):
-    """③ 本次 score 未超越 best（持平或下降）→ finalize。"""
+    """3) This round's score did not beat best (flat or lower) → finalize."""
     settings, ctx_fields = _ctx_settings(tmp_path)
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
@@ -197,7 +201,7 @@ def test_should_stop_score_degradation(tmp_path):
             SpecAttempt(version=1, score=8, verdict=SpecVerdict.NEEDS_IMPROVEMENT),
             SpecAttempt(version=2, score=5, verdict=SpecVerdict.NEEDS_IMPROVEMENT),
         ],
-        "best_score": 8,  # 本次 5 < 历史 8 → best_improved=False
+        "best_score": 8,  # this round 5 < previous 8 → best_improved=False
         "used_chars": 100,
         "best_improved": False,
     }
@@ -205,7 +209,8 @@ def test_should_stop_score_degradation(tmp_path):
 
 
 def test_should_stop_score_plateau_counts_as_degradation(tmp_path):
-    """③ 持平也算退化（与 loop.py 的 ``score <= best_score`` 一致）。"""
+    """3) A flat score also counts as regressing (same as ``score <= best_score`` in
+    loop.py)."""
     settings, ctx_fields = _ctx_settings(tmp_path)
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
@@ -216,15 +221,15 @@ def test_should_stop_score_plateau_counts_as_degradation(tmp_path):
         ],
         "best_score": 7,
         "used_chars": 100,
-        "best_improved": False,  # 持平 → 不更新 best → 退化
+        "best_improved": False,  # flat → best not updated → regression
     }
     assert _should_stop(state) == "finalize"
 
 
 def test_should_stop_budget_exceeded(tmp_path):
-    """④ used_chars > budget*4 → finalize。"""
+    """4) used_chars > budget*4 → finalize."""
     settings, ctx_fields = _ctx_settings(tmp_path, spec_refine_budget_tokens=1)
-    # budget_tokens=1 → budget_chars=4，used_chars=5000 远超
+    # budget_tokens=1 → budget_chars=4, and used_chars=5000 is far above it
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
         "iteration": 1,
@@ -237,21 +242,21 @@ def test_should_stop_budget_exceeded(tmp_path):
 
 
 def test_should_stop_continues_to_refine(tmp_path):
-    """四重都不满足 → refine。"""
+    """None of the four conditions holds → refine."""
     settings, ctx_fields = _ctx_settings(tmp_path)
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
         "iteration": 1,  # < max_iter=3
         "attempts": [SpecAttempt(version=1, score=5, verdict=SpecVerdict.NEEDS_IMPROVEMENT)],
-        "best_score": 5,  # 本次 5 > 历史 -1 → 提升
-        "used_chars": 100,  # 远低于 budget
+        "best_score": 5,  # this round 5 > previous -1 → improvement
+        "used_chars": 100,  # far below the budget
         "best_improved": True,
     }
     assert _should_stop(state) == "refine"
 
 
 def test_should_stop_truncated_short_circuits(tmp_path):
-    """工具截断 → 直接 finalize，不再 critique。"""
+    """Tool truncation → finalize right away, no critique."""
     _, ctx_fields = _ctx_settings(tmp_path)
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
@@ -263,7 +268,7 @@ def test_should_stop_truncated_short_circuits(tmp_path):
 
 
 def test_should_stop_critic_failed(tmp_path):
-    """critic 不可用 → finalize（接受当前 spec）。"""
+    """Critic unavailable → finalize (the current spec is accepted)."""
     settings, ctx_fields = _ctx_settings(tmp_path)
     state: SpecSubgraphState = {
         **ctx_fields,  # type: ignore[typeddict-item]
@@ -278,11 +283,11 @@ def test_should_stop_critic_failed(tmp_path):
     assert _should_stop(state) == "finalize"
 
 
-# ----------------------------- 集成：真跑子图 ----------------------------- #
+# --------------------------- Integration: run the subgraph --------------------------- #
 
 
 def test_subgraph_pass_on_first_critique(tmp_path):
-    """首轮 PASS → spec_results 有 1 个 key，attempts 长度=1。"""
+    """PASS on the first round → spec_results has 1 key and attempts has length 1."""
     state = _make_state(
         tmp_path,
         cwt_texts=["INITIAL SPEC"],
@@ -303,7 +308,7 @@ def test_subgraph_pass_on_first_critique(tmp_path):
 
 
 def test_subgraph_refines_until_pass(tmp_path):
-    """critique→refine→critique 循环到 PASS。"""
+    """Loops critique → refine → critique until PASS."""
     state = _make_state(
         tmp_path,
         cwt_texts=["V0"],
@@ -321,7 +326,7 @@ def test_subgraph_refines_until_pass(tmp_path):
 
 
 def test_subgraph_max_iter_truncation(tmp_path):
-    """持续未达标 → 到 max_iter 截断，truncated=True。"""
+    """Never reaches the bar → stops at max_iter, truncated=True."""
     state = _make_state(
         tmp_path,
         cwt_texts=["V0"],
@@ -338,11 +343,11 @@ def test_subgraph_max_iter_truncation(tmp_path):
     sr: SpecResult = result["spec_results"]["billing-service"]
     assert sr.truncated is True
     assert sr.iterations == 3
-    assert sr.final == "V2"  # 最高分版本
+    assert sr.final == "V2"  # the highest-scoring version
 
 
 def test_subgraph_degradation_keeps_best(tmp_path):
-    """③ 退化 → 保留 best（第一次的版本）。"""
+    """3) Regression → keeps best (the first version)."""
     state = _make_state(
         tmp_path,
         cwt_texts=["V0"],
@@ -355,18 +360,18 @@ def test_subgraph_degradation_keeps_best(tmp_path):
     sr: SpecResult = result["spec_results"]["billing-service"]
     assert sr.iterations == 2
     assert sr.truncated is False
-    assert sr.final == "V0"  # 回退 best（score 8 那版）
+    assert sr.final == "V0"  # falls back to best (the score-8 version)
 
 
 def test_subgraph_budget_truncation(tmp_path):
-    """④ 极小预算 → 首次 critique 后即触发预算截断。"""
+    """4) Tiny budget → the budget truncation fires right after the first critique."""
     state = _make_state(
         tmp_path,
         cwt_texts=["V0"],
         critiques=[_crit("NEEDS_IMPROVEMENT", 5, "x" * 5000)],
         refine_texts=["V1"],
         spec_refine_max_iter=3,
-        spec_refine_budget_tokens=1,  # 4 字符预算
+        spec_refine_budget_tokens=1,  # a budget of 4 characters
     )
     graph = build_spec_subgraph()
     result = graph.invoke(state)
@@ -376,7 +381,7 @@ def test_subgraph_budget_truncation(tmp_path):
 
 
 def test_subgraph_critic_none_accepts_current(tmp_path):
-    """critique_spec 返回 None → 接受当前 spec。"""
+    """critique_spec returns None → the current spec is accepted."""
     state = _make_state(
         tmp_path,
         cwt_texts=["V0"],
@@ -391,7 +396,7 @@ def test_subgraph_critic_none_accepts_current(tmp_path):
 
 
 def test_subgraph_disabled_llm_uses_template(tmp_path):
-    """LLM 未启用 → 整个子图走降级模板，used_llm=False。"""
+    """LLM disabled → the whole subgraph takes the template fallback, used_llm=False."""
     state = _make_state(tmp_path, agent_api_key=None)
     graph = build_spec_subgraph()
     result = graph.invoke(state)
@@ -403,24 +408,25 @@ def test_subgraph_disabled_llm_uses_template(tmp_path):
 
 
 def test_subgraph_generate_empty_falls_back_to_template(tmp_path):
-    """generate_initial_spec 返回空 → 模板兜底，critic 仍跑。"""
+    """generate_initial_spec returns empty → template fallback, and the critic still runs."""
     state = _make_state(
         tmp_path,
-        cwt_texts=[""],  # 生成空
+        cwt_texts=[""],  # generates an empty spec
         critiques=[_crit("PASS", 10)],
     )
     graph = build_spec_subgraph()
     result = graph.invoke(state)
     sr: SpecResult = result["spec_results"]["billing-service"]
     assert sr.used_llm is True
-    assert "系统需求" in sr.final  # 模板兜底
+    assert "系统需求" in sr.final  # template fallback
 
 
 def test_subgraph_tool_truncation_skips_critique(tmp_path):
-    """工具截断 → 跳过 critique/refine，直接 finalize。"""
+    """Tool truncation → critique/refine are skipped and it finalizes right away."""
     settings = _settings(tmp_path)
     llm = LLMClient(settings)
-    # generate_initial_spec 走 complete_with_tools，截断标记从 ToolLoopResult 来
+    # generate_initial_spec goes through complete_with_tools; the truncation flag comes from
+    # ToolLoopResult
     llm.complete_with_tools = lambda *a, **k: ToolLoopResult(
         text="⚠️ 规格生成超限",
         truncated=True,
@@ -437,35 +443,37 @@ def test_subgraph_tool_truncation_skips_critique(tmp_path):
     graph = build_spec_subgraph()
     result = graph.invoke(state)
     sr: SpecResult = result["spec_results"]["billing-service"]
-    assert sr.attempts == []          # critique 被跳过
+    assert sr.attempts == []          # critique was skipped
     assert sr.iterations == 0
-    assert sr.truncated is False       # tool 截断不触发 refine truncated
+    assert sr.truncated is False       # a tool truncation does not set the refine truncated flag
     assert sr.used_llm is True
     assert sr.tool_meta["truncated"] is True
     assert sr.tool_meta["reason"] == "tool_loop_truncated"
-    assert "规格生成未能完成" in sr.final  # steps.py 重新格式化截断提示
+    assert "规格生成未能完成" in sr.final  # steps.py reformats the truncation notice
 
 
-# ----------------------------- 集成：多子系统 reducer 合并（M8 关键）----------------------------- #
+# ------------------ Integration: multi-subsystem reducer merge (key for M8) ------------------ #
 
 
 def test_subgraph_reducer_merges_two_subsystems(tmp_path):
-    """两个子系统各自跑子图 → _dict_merge 合并 spec_results，两个 key 都在。
+    """Two subsystems each run the subgraph → _dict_merge merges spec_results and both keys
+    are present.
 
-    这是审计 B1 的回归测试：如果 SpecSubgraphState 未声明
-    ``spec_results: Annotated[dict, _dict_merge]``，父图合并时后写会覆盖先写，
-    只剩一个 key。本测试直接对子图输出做 reducer 合并，验证数据结构正确。
+    Regression test for audit item B1: if SpecSubgraphState does not declare
+    ``spec_results: Annotated[dict, _dict_merge]``, a later write overwrites an earlier one
+    when the parent graph merges and only one key is left. This test applies the reducer merge
+    to the subgraph outputs directly and checks the data structure.
     """
     graph = build_spec_subgraph()
 
-    # 子系统 1：billing-service，首轮 PASS
+    # Subsystem 1: billing-service, PASS on the first round
     state_a = _make_state(
         tmp_path,
         sub=_sub("billing-service"),
         cwt_texts=["BILLING SPEC"],
         critiques=[_crit("PASS", 11)],
     )
-    # 子系统 2：payment-service，refine 一次后 PASS
+    # Subsystem 2: payment-service, PASS after one refine
     state_b = _make_state(
         tmp_path,
         sub=_sub("payment-service"),
@@ -477,16 +485,16 @@ def test_subgraph_reducer_merges_two_subsystems(tmp_path):
     result_a = graph.invoke(state_a)
     result_b = graph.invoke(state_b)
 
-    # 模拟父图 Send fan-out 的 reducer 合并
+    # Emulate the reducer merge of the parent graph's Send fan-out
     merged_spec_results = _dict_merge(
         result_a.get("spec_results", {}),
         result_b.get("spec_results", {}),
     )
 
-    # 两个 key 都在（B1 阻断项的核心断言）
+    # Both keys are present (the core assertion of audit blocker B1)
     assert set(merged_spec_results) == {"billing-service", "payment-service"}
 
-    # 字段完整：SpecResult 实例 + 关键字段
+    # Complete fields: SpecResult instances + the key fields
     billing: SpecResult = merged_spec_results["billing-service"]
     payment: SpecResult = merged_spec_results["payment-service"]
     assert isinstance(billing, SpecResult)
@@ -502,11 +510,12 @@ def test_subgraph_reducer_merges_two_subsystems(tmp_path):
     assert payment.iterations == 2
     assert payment.truncated is False
     assert [a.score for a in payment.attempts] == [6, 10]
-    assert payment.tool_meta  # 非 tool 截断也有 meta（turns/tool_calls 等）
+    assert payment.tool_meta  # a non-tool truncation also has meta (turns / tool_calls, ...)
 
 
 def test_subgraph_reducer_preserves_keys_across_many_subsystems(tmp_path):
-    """5 个子系统 → reducer 后 5 个 key 都在（覆盖更接近真实 fan-out 的规模）。"""
+    """5 subsystems → all 5 keys are present after the reducer (covers a fan-out closer to
+    the real scale)."""
     graph = build_spec_subgraph()
     names = [f"svc-{i}" for i in range(5)]
     merged: dict[str, SpecResult] = {}

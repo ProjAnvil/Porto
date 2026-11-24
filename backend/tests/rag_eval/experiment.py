@@ -1,33 +1,34 @@
-"""RAG 检索优化实验编排器——按 profile 构建 KB → 跑 RAG → deepeval 裁判 → 出报告。
+"""RAG retrieval-optimization experiment runner: build the KB for a profile → run RAG →
+deepeval judge → write the report.
 
-剥离 pytest 的纯函数 runner；pytest 门禁（test_rag_gate.py 等）和本 CLI 都调
-``run_experiment()``。
+A pytest-free runner built from plain functions; the pytest gates (test_rag_gate.py, ...)
+and this CLI both call ``run_experiment()``.
 
-双轨评估（2026-08 改进）::
+Dual-track evaluation (2026-08 improvement)::
 
-    --track retrieval  检索轨：只跑检索，用 gold_doc_ids 算 recall@k/MRR/hit@k，
-                        零 LLM、秒级 → PR 硬门禁（test_retrieval_gate.py）
-    --track e2e        端到端轨：检索→生成→LLM judge 六指标 + 拒答 + 归因
-                        （nightly，RAG_EVAL_REPORT_ONLY 软门禁）
+    --track retrieval  Retrieval track: retrieval only; recall@k/MRR/hit@k from gold_doc_ids,
+                        no LLM, seconds to run → hard PR gate (test_retrieval_gate.py)
+    --track e2e        End-to-end track: retrieval → generation → the six LLM-judge metrics
+                        + refusal + attribution (nightly, soft gate via RAG_EVAL_REPORT_ONLY)
 
-CLI 用法::
+CLI usage::
 
-    # 列出所有 profile / 数据集
+    # list every profile / dataset
     python -m tests.rag_eval.experiment --list
     python -m tests.rag_eval.experiment --list-datasets
 
-    # 检索轨（零 LLM，快速回归）
+    # retrieval track (no LLM, fast regression check)
     python -m tests.rag_eval.experiment baseline --track retrieval
     python -m tests.rag_eval.experiment baseline --dataset domainrag:multidoc --track retrieval
 
-    # 端到端（默认前 20 case）
+    # end to end (the first 20 cases by default)
     python -m tests.rag_eval.experiment rerank
     python -m tests.rag_eval.experiment baseline --dataset conversation --max-cases 10
 
-    # 拒答评估（生成 + 规则判定，无 judge LLM）
+    # refusal evaluation (generation + rule verdict, no judge LLM)
     python -m tests.rag_eval.experiment baseline --dataset refusal
 
-    # 批量扫多个 profile / 对比历史报告
+    # sweep several profiles / compare past reports
     python -m tests.rag_eval.experiment --sweep baseline rerank semantic
     python -m tests.rag_eval.experiment --compare reports/baseline_*.json reports/rerank_*.json
 """
@@ -76,13 +77,14 @@ _REPORTS = _DIR / "reports"
 
 
 # ────────────────────────────────────────────────────────────────────────── #
-# 共享 helper（conftest.py 也 import 复用）
+# Shared helpers (conftest.py imports and reuses them too)
 # ────────────────────────────────────────────────────────────────────────── #
 
 
 def read_env_test() -> dict[str, str]:
-    """读 backend/.env.test 并与进程环境合并；**已有环境变量优先**（与该文件
-    头注释的优先级一致），CI 直接注入的 secrets / RAG_EVAL_JUDGE_* 由此生效。"""
+    """Read backend/.env.test and merge it with the process environment; **existing environment
+    variables win** (same precedence as described in that file's header), so secrets injected
+    directly by CI and RAG_EVAL_JUDGE_* take effect."""
     out: dict[str, str] = dict(os.environ)
     if not _ENV_TEST.exists():
         return out
@@ -96,9 +98,10 @@ def read_env_test() -> dict[str, str]:
 
 
 def build_llm(env: dict[str, str]) -> LLMClient:
-    # 注意：Settings 字段带 validation_alias 且未开 populate_by_name，按字段名
-    # （agent_api_key=...）传参会被 pydantic 静默忽略——必须按 alias 传。
-    # （旧实现按字段名传参从未生效，一直靠 Settings 读生产 .env「碰巧」工作。）
+    # Note: Settings fields carry a validation_alias and populate_by_name is off, so passing
+    # field names (agent_api_key=...) is silently ignored by pydantic: they must be passed by
+    # alias. (The old implementation passed field names, which never took effect, and only
+    # "worked" because Settings happened to read the production .env.)
     settings = Settings(
         LANGCHAIN_AGENT_PROVIDER=env.get("LANGCHAIN_AGENT_PROVIDER", "openai"),
         LANGCHAIN_API_KEY=env["LANGCHAIN_API_KEY"],
@@ -109,13 +112,16 @@ def build_llm(env: dict[str, str]) -> LLMClient:
 
 
 def build_judge_model(env: dict[str, str]):
-    """构造 deepeval judge LLM 实例——独立配置 + 显式 base_url + 温度 0。
+    """Build the deepeval judge LLM instance: its own config + an explicit base_url + temperature
+    0.
 
-    - 独立性：优先 ``RAG_EVAL_JUDGE_PROVIDER/MODEL/API_KEY/BASE_URL``（缺省回退
-      LANGCHAIN_*，即与 generator 同配置）。「强模型评审、便宜模型生成」在此配置。
-    - 401 陷阱：deepeval 4.x 对字符串模型名 fallback ``GPTModel`` 不传 base_url，
-      自建端点必 401 —— 因此显式构造实例。
-    - 确定性：温度 0（judge 抖动是阈值边缘指标 flaky 的主因）。
+    - Independence: ``RAG_EVAL_JUDGE_PROVIDER/MODEL/API_KEY/BASE_URL`` wins, falling back to
+      LANGCHAIN_* (the same config as the generator). "A strong model judges, a cheap model
+      generates" is configured here.
+    - 401 trap: for a string model name deepeval 4.x falls back to ``GPTModel`` without passing
+      base_url, and a self-hosted endpoint then always answers 401, hence the explicit instance.
+    - Determinism: temperature 0 (judge jitter is the main reason metrics near a threshold
+      flake).
     """
     from deepeval.models.llms.openai_model import GPTModel
 
@@ -130,7 +136,7 @@ def build_judge_model(env: dict[str, str]):
         return AnthropicModel(model=model_name, api_key=api_key)
     try:
         return GPTModel(model=model_name, api_key=api_key, base_url=base_url, temperature=0.0)
-    except TypeError:  # 旧版本 GPTModel 无 temperature 参数
+    except TypeError:  # older GPTModel has no temperature parameter
         return GPTModel(model=model_name, api_key=api_key, base_url=base_url)
 
 
@@ -140,11 +146,13 @@ def precheck(
     need_judge: bool = True,
     need_generation: bool | None = None,
 ) -> tuple[LLMClient | None, object | None]:
-    """预检生成 LLM（+ 按需 judge LLM）可用；不可达时 raise RuntimeError。
+    """Precheck that the generation LLM (+ the judge LLM when asked for) is usable; raises
+    RuntimeError when it is unreachable.
 
-    - ``need_generation`` 缺省跟随 ``need_judge``。检索轨传 ``need_judge=False``：
-      纯 NONE 策略且无 rerank 时传 ``need_generation=False`` → 零密钥可跑
-      （返回 ``(None, None)``）；开了变换/rerank 则仍需生成 LLM。
+    - ``need_generation`` follows ``need_judge`` by default. The retrieval track passes
+      ``need_judge=False``: with a pure NONE strategy and no rerank, pass ``need_generation=False``
+      → it runs with zero credentials (returning ``(None, None)``); with a transform or rerank
+      on, the generation LLM is still required.
     """
     if need_generation is None:
         need_generation = need_judge
@@ -158,7 +166,7 @@ def precheck(
         llm.complete("ping", user="reply: ok")
     if not need_judge:
         return llm, None
-    # deepeval metric 实例化兜底
+    # Fallback for instantiating deepeval metrics
     os.environ["OPENAI_API_KEY"] = env["LANGCHAIN_API_KEY"]
     judge_model = build_judge_model(env)
     from deepeval.test_case import LLMTestCase
@@ -170,12 +178,13 @@ def precheck(
 
 
 # ────────────────────────────────────────────────────────────────────────── #
-# 聚合 helper
+# Aggregation helpers
 # ────────────────────────────────────────────────────────────────────────── #
 
 
 def _by_category(case_rows: list[dict], metric_keys: list[str]) -> dict[str, dict]:
-    """按 category 分组求各指标均值（category 维度让报告能定位弱项）。"""
+    """Mean of each metric grouped by category (the category dimension lets the report locate
+    weak spots)."""
     groups: dict[str, list[dict]] = {}
     for row in case_rows:
         groups.setdefault(row.get("category", "default"), []).append(row)
@@ -191,7 +200,7 @@ def _by_category(case_rows: list[dict], metric_keys: list[str]) -> dict[str, dic
 
 
 # ────────────────────────────────────────────────────────────────────────── #
-# 核心 runner
+# Core runner
 # ────────────────────────────────────────────────────────────────────────── #
 
 
@@ -203,14 +212,16 @@ def run_experiment(
     dataset: str = "domainrag",
     track: str = "e2e",
 ) -> dict:
-    """按 ``profile`` 跑 RAG eval 并出报告（写入 ``output_dir/<profile>_<ts>.json``）。
+    """Run the RAG eval for ``profile`` and produce the report (written to
+    ``output_dir/<profile>_<ts>.json``).
 
     Parameters
     ----------
     dataset:
-        数据集名（见 ``loaders.available_datasets``；默认 domainrag extractive）。
+        Dataset name (see ``loaders.available_datasets``; domainrag extractive by default).
     track:
-        ``retrieval``（零 LLM 确定性检索指标）或 ``e2e``（检索→生成→judge）。
+        ``retrieval`` (deterministic retrieval metrics, no LLM) or ``e2e`` (retrieval → generation
+        → judge).
     """
     from tempfile import mkdtemp
 
@@ -235,7 +246,8 @@ def run_experiment(
     print(f"  数据集: {len(corpus.docs)} docs, {len(goldens)} goldens")
     id_map = doc_id_map(corpus)
 
-    # 检索轨：NONE 策略且无 rerank 时零 LLM；否则检索本身需要 LLM（变换/rerank/condense）
+    # Retrieval track: no LLM with the NONE strategy and no rerank; otherwise retrieval itself
+    # needs an LLM (transform / rerank / condense)
     has_multiturn = any(g.turns for g in goldens)
     need_llm_for_retrieval = (
         profile.strategy != QueryTransformStrategy.NONE
@@ -259,8 +271,8 @@ def run_experiment(
     strategy = profile.strategy
     metrics = build_metrics(judge_model) if (track == "e2e" and judge_model is not None) else {}
 
-    per_case: list[dict[str, float]] = []       # e2e judge 指标
-    retrieval_case: list[dict[str, float]] = []  # 确定性检索指标（两轨都算）
+    per_case: list[dict[str, float]] = []       # per-case e2e judge metrics
+    retrieval_case: list[dict[str, float]] = []  # deterministic retrieval metrics (computed on both tracks)
     case_reports: list[dict] = []
     timings: list[dict] = []
     errored: list[str] = []
@@ -268,8 +280,9 @@ def run_experiment(
     attribution_rows: list[dict] = []
 
     def _record_retrieval(gold_ids: list[str], chunks: list) -> dict[str, float]:
-        # 无 gold 标注（拒答负样本/未解析出 gold id 的 golden）检索质量不可测，
-        # 不计入检索轨——否则 recall 恒 0 会把拒答实验误判为检索回归。
+        # Without a gold annotation (refusal negatives / goldens whose gold id could not be resolved)
+        # retrieval quality cannot be measured, so they are left out of the retrieval track; otherwise
+        # a recall that is always 0 would make a refusal experiment look like a retrieval regression.
         if not gold_ids:
             return {}
         scores = retrieval_case_metrics(gold_ids, retrieved_doc_ids(chunks, id_map))
@@ -277,8 +290,9 @@ def run_experiment(
         return scores
 
     def _retrieve(question: str, history: list[tuple[str, str]] | None = None):
-        """检索轨/e2e 共用的检索入口。history 经生产 condense 门控节点生效
-        （settings.condense_enabled 由 profile 注入；LLM 判定需要才改写）。"""
+        """Retrieval entry point shared by the retrieval track and e2e. history takes effect through
+        the production condense gate node (settings.condense_enabled is injected from the profile;
+        the LLM rewrites only when it decides it is needed)."""
         t0 = time.perf_counter()
         result = retrieve_with_transform(
             question, strategy, eval_kb.store, eval_kb.settings, llm, profile.top_k,
@@ -291,9 +305,10 @@ def run_experiment(
         try:
             if track == "retrieval":
                 if is_multiturn:
-                    # 多轮 golden 展平：每轮独立检索。condense 开启时，用「前序轮次
-                    # 问题 + 参考答案」模拟生产对话历史传入生产门控节点（检索轨不跑
-                    # 生成，golden 答案是「助手上一轮会说什么」的合理替身）。
+                    # Multi-turn goldens are flattened: each turn is retrieved on its own. With condense on, the
+                    # earlier turns' questions + reference answers stand in for the production conversation history
+                    # that is passed to the production gate node (the retrieval track does no generation, and the
+                    # golden answer is a reasonable stand-in for "what the assistant would have said last turn").
                     sim_history: list[tuple[str, str]] = []
                     for ti, turn in enumerate(g.turns):
                         result, dt = _retrieve(turn.question, history=sim_history or None)
@@ -328,7 +343,7 @@ def run_experiment(
                       + f"| {g.question[:30]}")
                 continue
 
-            # ── e2e 轨 ──
+            # ── e2e track ──
             if is_multiturn:
                 mt = run_rag_multiturn(g, eval_kb, llm, strategy=strategy, top_k=profile.top_k)
                 turn_retr = [
@@ -377,7 +392,7 @@ def run_experiment(
             retr_scores = _record_retrieval(g.gold_doc_ids, result.chunks)
 
             if g.expected_behavior == "refuse":
-                # 拒答样本：规则判定（零 judge LLM），不进六指标均值
+                # Refusal sample: rule verdict (no judge LLM), not included in the six-metric means
                 v = refusal_verdict(tc.actual_output, g.expected_behavior)
                 refusal_rows.append({"question": g.question, "correct": v,
                                      "refused": v > 0, "answer": tc.actual_output[:120]})
@@ -397,7 +412,8 @@ def run_experiment(
                 tc.actual_output, tc.retrieval_context, g.gold_doc_ids,
                 retrieved_doc_ids(result.chunks, id_map),
             ))
-            # over-refusal 诊断：应答样本误拒率（只报告不门禁）
+            # Over-refusal diagnostic: the rate of wrongly refused answerable samples (reported only,
+            # not gated)
             over_refused = refusal_verdict(tc.actual_output, "answer") == 0.0
         except Exception as e:  # noqa: BLE001
             errored.append(f"case#{idx} {g.question[:30]}: {e}")
@@ -424,12 +440,13 @@ def run_experiment(
               + f"chunks={timing['n_chunks']} "
               f"judge={timing.get('judge_s', 0):.0f}s | {g.question[:30]}")
 
-    # ── 聚合与门禁 ──
+    # ── Aggregation and gating ──
     if retrieval_case:
         retr_mean = aggregate_retrieval(retrieval_case)
         retr_passed, retr_detail = judge_retrieval(retr_mean)
     else:
-        # 全部 golden 无 gold 标注（如拒答集）：检索轨不可测，不拦截
+        # No golden has a gold annotation (e.g. the refusal set): the retrieval track cannot be
+        # measured and does not block
         retr_mean, retr_passed, retr_detail = {}, True, {}
     latency = latency_summary(timings)
     latency_passed, latency_detail = judge_latency(latency)
@@ -472,7 +489,7 @@ def run_experiment(
         "n": len(goldens),
         "n_success": len(case_reports),
         "passed": passed,
-        "invalid": invalid,          # errored > MAX_ERROR_RATE → 均值不可信
+        "invalid": invalid,          # errored > MAX_ERROR_RATE → the means cannot be trusted
         "error_rate": round(error_rate, 4),
         "mean": mean,
         "detail": detail,
@@ -508,12 +525,13 @@ def run_experiment(
 
 
 # ────────────────────────────────────────────────────────────────────────── #
-# 报告对比
+# Report comparison
 # ────────────────────────────────────────────────────────────────────────── #
 
 
 def compare_reports(report_paths: list[Path]) -> None:
-    """并排对比多份报告的核心指标（e2e 指标 + 检索轨指标 + 拒答 + 归因）。"""
+    """Compare the key metrics of several reports side by side (e2e metrics + retrieval-track
+    metrics + refusal + attribution)."""
     reports = []
     for p in report_paths:
         reports.append(json.loads(Path(p).read_text(encoding="utf-8")))
@@ -558,7 +576,7 @@ def compare_reports(report_paths: list[Path]) -> None:
             deltas = [v - nums[0] for v in nums[1:]]
             row += "  " + " ".join(f"{'+' if d >= 0 else ''}{d:.3f}" for d in deltas)
         print(row)
-    # 拒答 / 归因 / 延迟 / 判定
+    # Refusal / attribution / latency / verdict
     if any(r.get("refusal") for r in reports):
         print(f"{'refusal_accuracy':<24}" + "".join(
             f"{(r['refusal'] or {}).get('accuracy', '—'):>18}" for r in reports))
@@ -640,7 +658,7 @@ def main():
             if args.max_cases:
                 profile.max_cases = args.max_cases
             run_experiment(profile, dataset=args.dataset, track=args.track)
-        # 自动对比：取每个 profile 的最新报告
+        # Automatic comparison: take the latest report of each profile
         for f in _REPORTS.glob("*.json"):
             data = json.loads(f.read_text(encoding="utf-8"))
             pn = data.get("profile", "")

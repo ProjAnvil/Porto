@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""下载 DomainRAG（corpus + QA）到 tests/rag_eval/data/domainrag/。
+"""Download DomainRAG (corpus + QA) to tests/rag_eval/data/domainrag/.
 
-两步：
-  1. gdown 拉 corpus 压缩包（Google Drive）→ 解压到 corpus/
-  2. git clone --depth=1 官方仓库 → _repo/（含 BCM/labeled_data/ 的 QA goldens）
+Two steps:
+  1. gdown fetches the corpus archive (Google Drive) → extract into corpus/
+  2. git clone --depth=1 of the official repository → _repo/ (holds the QA goldens in
+     BCM/labeled_data/)
 
-首次运行后 loader 会自动发现 corpus 与 basic_qa.jsonl。
+After the first run the loader discovers the corpus and basic_qa.jsonl automatically.
 """
 from __future__ import annotations
 

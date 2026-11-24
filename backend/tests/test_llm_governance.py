@@ -1,8 +1,11 @@
-"""LLM 治理层测试：InMemoryRateLimiter 限流 + .with_retry 指数退避重试。
+"""Tests for the LLM governance layer: InMemoryRateLimiter rate limiting + .with_retry
+exponential backoff.
 
-均使用 langchain-core 原生原语，挂接点：
-- 限流：构造 chat model 时传 ``rate_limiter``（``agent_rate_limit_rps``，None 关闭）
-- 重试：调用点 ``_with_retry()`` 包装（``agent_retry_attempts`` 总尝试次数，1 关闭）
+Both use native langchain-core primitives. Attachment points:
+- Rate limiting: ``rate_limiter`` is passed when the chat model is built
+  (``agent_rate_limit_rps``; None disables it)
+- Retry: the call sites are wrapped with ``_with_retry()`` (``agent_retry_attempts`` total
+  attempts; 1 disables it)
 """
 
 from __future__ import annotations
@@ -17,7 +20,8 @@ from porto_chatbot.settings import Settings
 
 
 def _settings(tmp_path, **over):
-    """与 tests/test_llm_langchain.py 同模式：alias 字段走 model_copy(update=...)。"""
+    """Same pattern as tests/test_llm_langchain.py: alias fields go through
+    model_copy(update=...)."""
     base = Settings(
         kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
@@ -32,7 +36,7 @@ def _settings(tmp_path, **over):
     return base.model_copy(update=over)
 
 
-# ------------------------------- settings 默认值 ------------------------- #
+# ----------------------------- Settings defaults ----------------------------- #
 
 
 def test_governance_settings_defaults(tmp_path):
@@ -41,7 +45,7 @@ def test_governance_settings_defaults(tmp_path):
     assert s.agent_rate_limit_rps == 2.0
 
 
-# ------------------------------- 限流 ------------------------------------ #
+# ------------------------------- Rate limiting ------------------------------- #
 
 
 def test_rate_limiter_attached_by_default(tmp_path):
@@ -55,11 +59,12 @@ def test_rate_limiter_disabled_when_rps_none(tmp_path):
     assert c._client.rate_limiter is None
 
 
-# ------------------------------- 重试 ------------------------------------ #
+# ---------------------------------- Retry ---------------------------------- #
 
 
 def test_retry_recovers_transient_error(monkeypatch, tmp_path):
-    """瞬时错误（如 429）→ .with_retry 重试成功，底层共调用 2 次。"""
+    """A transient error (e.g. 429) → .with_retry retries successfully, 2 underlying calls in
+    total."""
     calls = {"n": 0}
 
     def flaky_invoke(self, input, config=None, **kwargs):
@@ -75,7 +80,7 @@ def test_retry_recovers_transient_error(monkeypatch, tmp_path):
 
 
 def test_retry_attempts_one_disables_retry(monkeypatch, tmp_path):
-    """agent_retry_attempts=1 → 不重试，首次失败直接上抛。"""
+    """agent_retry_attempts=1 → no retry; the first failure is raised directly."""
     calls = {"n": 0}
 
     def always_fail(self, input, config=None, **kwargs):
@@ -90,7 +95,8 @@ def test_retry_attempts_one_disables_retry(monkeypatch, tmp_path):
 
 
 def test_retry_applies_in_tool_loop(monkeypatch, tmp_path):
-    """工具循环内的 LLM 调用同样走重试包装（bind_tools 之后再挂 with_retry）。"""
+    """LLM calls inside the tool loop go through the retry wrapper as well (with_retry is attached
+    after bind_tools)."""
     calls = {"n": 0}
 
     def flaky_invoke(self, input, config=None, **kwargs):

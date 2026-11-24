@@ -10,10 +10,11 @@ from porto_chatbot.vector_store import LocalVectorStore
 
 @pytest.fixture()
 def store_with_docs(sample_settings: Settings) -> LocalVectorStore:
-    """构造已索引文档的 store，供 query_transform 测试复用。
+    """Build a store with indexed documents, shared by the query_transform tests.
 
-    与 ``test_vector_store.py`` 中的同名 fixture 同形；此处本文件内独立定义，
-    避免修改 Task 4 测试代码。pytest 的 fixture 按 module 隔离，互不冲突。
+    Same shape as the fixture of the same name in ``test_vector_store.py``; defined
+    independently here so the Task 4 test code stays untouched. pytest fixtures are
+    isolated per module, so the two do not conflict.
     """
     store = LocalVectorStore(sample_settings)
     store.build()
@@ -21,7 +22,7 @@ def store_with_docs(sample_settings: Settings) -> LocalVectorStore:
 
 
 def test_none_strategy_equals_store_search(store_with_docs):
-    """NONE 策略走 store.search 原路径，行为零变化。"""
+    """The NONE strategy goes through the original store.search path with no behavior change."""
     store = store_with_docs
     expected = store.search("查询", top_k=3)
     result = retrieve_with_transform(
@@ -34,10 +35,11 @@ def test_none_strategy_equals_store_search(store_with_docs):
 
 
 def test_hyde_fallback_on_llm_failure(store_with_docs, monkeypatch):
-    """LLM 不可用/抛异常 → fail-open 回退 _search_raw + degraded=True。
+    """LLM unavailable or raising → fail open: fall back to _search_raw with degraded=True.
 
-    Task 5 中 _generate_hypothetical 是 NotImplementedError 桩；该异常被
-    ``retrieve_with_transform`` 的 try/except 捕获，验证降级路径。
+    In Task 5, _generate_hypothetical is a NotImplementedError stub; the exception is
+    caught by the try/except in ``retrieve_with_transform``, which exercises the fallback
+    path.
     """
     store = store_with_docs
 
@@ -52,12 +54,12 @@ def test_hyde_fallback_on_llm_failure(store_with_docs, monkeypatch):
     )
     assert result.degraded is True
     assert "llm_call_failed" in result.degrade_reason
-    # 仍返回基础检索结果，不崩
+    # Still returns the base retrieval results without crashing
     assert isinstance(result.chunks, list)
 
 
 def test_hyde_uses_fake_doc_for_search(store_with_docs, monkeypatch):
-    """HyDE：用 LLM 生成的假答案（而非原 query）做检索。"""
+    """HyDE: retrieves with an LLM-generated hypothetical answer instead of the original query."""
     store = store_with_docs
     captured = {}
 
@@ -75,11 +77,11 @@ def test_hyde_uses_fake_doc_for_search(store_with_docs, monkeypatch):
         "支付风控", QueryTransformStrategy.HYDE, store, store.settings, FakeLLM(), top_k=3
     )
     assert result.degraded is False
-    assert "假设性" in captured["query_used"]  # 用假答案而非原 query 检索
+    assert "假设性" in captured["query_used"]  # retrieved with the hypothetical answer, not the original query
 
 
 def test_multi_query_fuses_variants(store_with_docs, monkeypatch):
-    """Multi-Query：3 个改写变体各检索一次，再 RRF 融合。"""
+    """Multi-Query: each of the 3 rewritten variants is retrieved once, then fused with RRF."""
     store = store_with_docs
     calls = []
 
@@ -93,11 +95,11 @@ def test_multi_query_fuses_variants(store_with_docs, monkeypatch):
     retrieve_with_transform(
         "查询", QueryTransformStrategy.MULTI_QUERY, store, store.settings, FakeLLM(), top_k=3
     )
-    assert len(calls) == 3  # 3 个改写各检索一次
+    assert len(calls) == 3  # one retrieval per rewrite
 
 
 def test_decomposition_splits_and_merges(store_with_docs, monkeypatch):
-    """Decomposition：拆成 2 个子问题分别检索，再 merge_dedupe。"""
+    """Decomposition: split into 2 sub-questions, retrieve each, then merge_dedupe."""
     store = store_with_docs
     calls = []
 

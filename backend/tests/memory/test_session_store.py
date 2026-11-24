@@ -1,4 +1,4 @@
-"""SessionStore 单元测试——纯 SQLite CRUD。"""
+"""SessionStore unit tests: plain SQLite CRUD."""
 from porto_chatbot.memory.session_store import SessionStore, SessionSummary
 
 

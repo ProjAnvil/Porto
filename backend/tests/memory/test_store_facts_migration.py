@@ -7,7 +7,7 @@ from porto_chatbot.settings import Settings
 
 def test_session_facts_table_created(tmp_path):
     settings = Settings(data_dir=tmp_path)
-    # SessionStore._init_db 创建 session_facts 表
+    # SessionStore._init_db creates the session_facts table
     from porto_chatbot.memory.session_store import SessionStore
 
     SessionStore(settings)

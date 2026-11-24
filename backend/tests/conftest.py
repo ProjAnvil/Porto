@@ -8,20 +8,23 @@ import pytest
 
 from porto_chatbot.settings import Settings
 
-# F5: 测试态禁用 Settings 的 env_file,隔离生产 backend/.env(含真 LANGCHAIN_API_KEY)。
-# pydantic-settings 直读 env_file 文件,delenv(os.environ) 挡不住文件读取;patch 成 None
-# 后,测试态 Settings 只从 environ(_load_env_test / _isolate_llm_env 管控)+ defaults 读。
+# F5: disable the Settings env_file in test mode to isolate the production backend/.env
+# (which holds the real LANGCHAIN_API_KEY). pydantic-settings reads the env_file directly,
+# so delenv(os.environ) cannot block the file read; once it is patched to None, test-mode
+# Settings reads only from environ (managed by _load_env_test / _isolate_llm_env) + defaults.
 Settings.model_config["env_file"] = None
 
 
 def _load_env_test() -> None:
-    """加载 backend/.env.test 到环境变量（setdefault，不覆盖已有环境变量）。
+    """Load backend/.env.test into the environment (setdefault, existing variables win).
 
-    测试套件读 .env.test 而非 .env，与生产配置隔离。默认 .env.test 不配 LLM
-    key → 测试走降级路径（确定性，不调真 LLM）；在 .env.test 配 key 后，未 mock
-    的测试会走真 LLM（用于基线/集成测试）。
+    The test suite reads .env.test rather than .env, keeping it isolated from the production
+    config. By default .env.test has no LLM key → tests take the degraded path (deterministic,
+    no real LLM calls); once a key is set in .env.test, tests that are not mocked call the
+    real LLM (for baseline / integration testing).
 
-    优先级：已有 os.environ > .env.test > Settings 默认；fixture 显式参数最高。
+    Precedence: existing os.environ > .env.test > Settings defaults; explicit fixture
+    arguments win over all.
     """
     env_test = Path(__file__).resolve().parent.parent / ".env.test"
     if not env_test.exists():
@@ -37,10 +40,11 @@ def _load_env_test() -> None:
 _load_env_test()
 
 
-# pytest 单元测试必须确定性：隔离 LLM/critic/工作流相关 env，避免 .env.test 的
-# 真 key / 配置让测试走真 LLM 或改变行为。.env.test 的 key 仅供基线脚本
-# (scripts/spec_baseline_eval.py) 使用。pydantic-settings 的 validation_alias
-# 字段会从 env 读取并覆盖 setattr，所以必须 delenv 而非 setattr。
+# pytest unit tests must be deterministic: isolate the LLM / critic / workflow env so the
+# real key and config in .env.test cannot send tests to the real LLM or change their
+# behavior. The key in .env.test is only for the baseline script
+# (scripts/spec_baseline_eval.py). Fields with a pydantic-settings validation_alias are
+# read from env and override setattr, so this has to be delenv rather than setattr.
 _ENV_KEYS_TO_ISOLATE = [
     "LANGCHAIN_AGENT_PROVIDER",
     "LANGCHAIN_API_KEY",
@@ -65,10 +69,12 @@ _ENV_KEYS_TO_ISOLATE = [
 
 @pytest.fixture(autouse=True)
 def _isolate_llm_env(monkeypatch):
-    """所有测试隔离 LLM/critic/workflow env，避免 .env.test 的真 key 污染单元测试。
+    """Isolate the LLM / critic / workflow env for every test so the real key in .env.test never
+    leaks into unit tests.
 
-    pydantic-settings 的 validation_alias 字段会从 env 读取并覆盖 setattr，
-    故必须 delenv；用 autouse 让不依赖 sample_settings 的测试也被隔离。
+    Fields with a pydantic-settings validation_alias are read from env and override setattr,
+    so delenv is required; autouse makes sure tests that do not use sample_settings are
+    isolated too.
     """
     for key in _ENV_KEYS_TO_ISOLATE:
         monkeypatch.delenv(key, raising=False)
@@ -92,7 +98,8 @@ def _isolate_kb_dirs(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _reset_rag_singletons():
-    """每个测试前后重置 IndexSupervisor / HealthMonitor 单例，保证 data_dir 隔离。"""
+    """Reset the IndexSupervisor / HealthMonitor singletons around each test so data_dir stays
+    isolated."""
     from porto_chatbot.api.deps import reset_rag_singletons
     from porto_chatbot.vector_stores import VectorRepositoryFactory
 

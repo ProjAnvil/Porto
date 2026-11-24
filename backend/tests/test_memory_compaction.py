@@ -42,15 +42,15 @@ def test_compaction_below_threshold_returns_all(sample_settings):
     _add_n(store, "s1", 5)
     summary, records = get_compacted_history("s1", store, llm=None)
     assert summary == ""
-    assert len(records) == 5  # 未超阈值，全部原文
+    assert len(records) == 5  # below the threshold: everything verbatim
 
 
 def test_compaction_disabled_llm_keeps_only_recent(sample_settings):
     store = _store(sample_settings, memory_compact_threshold=4, memory_recent_keep=2)
     _add_n(store, "s1", 6)
     summary, recent = get_compacted_history("s1", store, llm=None)
-    assert summary == ""  # 无 LLM 无法摘要
-    assert len(recent) == 2  # 降级：只给近期原文
+    assert summary == ""  # no LLM, so no summary
+    assert len(recent) == 2  # degraded: only the recent verbatim turns
 
 
 def test_compaction_with_llm_summarizes_and_caches(sample_settings, monkeypatch, tmp_path):
@@ -77,9 +77,9 @@ def test_compaction_cache_hit_skips_llm(sample_settings, monkeypatch, tmp_path):
         return "摘要"
 
     monkeypatch.setattr(llm, "complete", fake_complete)
-    get_compacted_history("s1", store, llm)  # 首次：调 LLM
+    get_compacted_history("s1", store, llm)  # first call: LLM is invoked
     assert calls["n"] == 1
-    get_compacted_history("s1", store, llm)  # 缓存命中：不调
+    get_compacted_history("s1", store, llm)  # cache hit: not invoked
     assert calls["n"] == 1
 
 
@@ -90,9 +90,9 @@ def test_compaction_resummarizes_when_old_set_grows(sample_settings, monkeypatch
     calls = []
     monkeypatch.setattr(llm, "complete", lambda *a, **k: calls.append(1) or "摘要")
     get_compacted_history("s1", store, llm)
-    _add_n(store, "s1", 4)  # 再加 4 条，old 集合改变 → last_old_id 变化
+    _add_n(store, "s1", 4)  # 4 more turns: the old set changes → last_old_id changes
     summary, recent = get_compacted_history("s1", store, llm)
-    assert len(calls) == 2  # 重新摘要
+    assert len(calls) == 2  # re-summarized
     assert len(recent) == 2
 
 

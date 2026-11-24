@@ -258,7 +258,7 @@ def test_execute_node_omits_mcp_when_tools_empty(tmp_path):
 # Task 7 — decide_intent_from_tool_calls + AgentToolContext.session_id
 # --------------------------------------------------------------------------- #
 def test_decide_intent_from_tool_calls_with_rag():
-    """RAG 工具调用 → intent='rag', index_vector=True。"""
+    """An RAG tool call → intent='rag', index_vector=True."""
     from collections import Counter
 
     from porto_chatbot.agent_sdk.backend import decide_intent_from_tool_calls
@@ -271,7 +271,7 @@ def test_decide_intent_from_tool_calls_with_rag():
 
 
 def test_decide_intent_from_tool_calls_without_rag():
-    """无 RAG 工具调用 → intent='direct', index_vector=False。"""
+    """No RAG tool call → intent='direct', index_vector=False."""
     from collections import Counter
 
     from porto_chatbot.agent_sdk.backend import decide_intent_from_tool_calls
@@ -284,7 +284,7 @@ def test_decide_intent_from_tool_calls_without_rag():
 
 
 def test_decide_intent_search_memory_counts_as_rag():
-    """search_memory 也算 RAG 工具。"""
+    """search_memory also counts as an RAG tool."""
     from collections import Counter
 
     from porto_chatbot.agent_sdk.backend import decide_intent_from_tool_calls

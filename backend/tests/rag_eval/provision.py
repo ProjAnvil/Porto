@@ -24,11 +24,13 @@ class EvalKb:
 
 
 def _build_repo(env: dict[str, str]):
-    """按 RAG_EVAL_VECTOR_BACKEND 构造 VectorRepository（env dict 与 os.environ 双来源）。
+    """Build the VectorRepository according to RAG_EVAL_VECTOR_BACKEND (read from the env dict
+    and os.environ).
 
-    chroma（默认）：ChromaVectorRepository——与既有行为一致。
-    milvus：MilvusVectorRepository（RAG_EVAL_MILVUS_URI / RAG_EVAL_MILVUS_TOKEN，默认
-    本地 19530）。检索轨由此覆盖生产 Milvus 适配路径，而不只测 Chroma。
+    chroma (default): ChromaVectorRepository, same as the existing behavior.
+    milvus: MilvusVectorRepository (RAG_EVAL_MILVUS_URI / RAG_EVAL_MILVUS_TOKEN, local port
+    19530 by default). The retrieval track thereby covers the production Milvus adapter path
+    instead of Chroma only.
     """
     merged = {**env, **{k: v for k, v in os.environ.items() if k.startswith("RAG_EVAL_")}}
     if merged.get("RAG_EVAL_VECTOR_BACKEND", "chroma") == "milvus":
@@ -38,7 +40,7 @@ def _build_repo(env: dict[str, str]):
             uri=merged.get("RAG_EVAL_MILVUS_URI", "http://localhost:19530"),
             token=merged.get("RAG_EVAL_MILVUS_TOKEN") or None,
         )
-    return None  # ChromaVectorStore 默认自建 Chroma repo
+    return None  # ChromaVectorStore builds its own Chroma repo by default
 
 
 def build_eval_kb(
@@ -48,19 +50,21 @@ def build_eval_kb(
     *,
     env: dict[str, str] | None = None,
 ) -> EvalKb:
-    """按 ``profile`` 构建 isolation eval KB：corpus 落盘 → Settings → build()。
+    """Build an isolated eval KB for ``profile``: write the corpus to disk → Settings → build().
 
-    全程与用户真实 KB 零交集（data_dir / chroma_dir / kb_dirs / vector_collection 隔离）。
-    profile 的每个字段直接映射到 Settings 同名参数；rerank 启用时自动注入 agent
-    API 凭证（从 ``env`` 读取）。``profile.vector_backend == "milvus"``（或
-    ``RAG_EVAL_VECTOR_BACKEND=milvus``）时注入 Milvus repo，覆盖生产存储路径。
+    Never touches the user's real KB (data_dir / chroma_dir / kb_dirs / vector_collection are
+    isolated). Each profile field maps directly to the Settings parameter of the same name; with
+    rerank on, the agent API credentials are injected automatically (read from ``env``). When
+    ``profile.vector_backend == "milvus"`` (or ``RAG_EVAL_VECTOR_BACKEND=milvus``) a Milvus repo
+    is injected, replacing the production storage path.
 
     Parameters
     ----------
     profile:
-        检索优化配置组合（chunk/embedding/rerank/strategy/top_k/vector_backend）。
+        Retrieval settings combination (chunk / embedding / rerank / strategy / top_k /
+        vector_backend).
     env:
-        ``.env.test`` 解析结果；rerank 启用时需要 ``LANGCHAIN_API_KEY`` 等。
+        Parsed ``.env.test``; with rerank on it needs ``LANGCHAIN_API_KEY`` and the like.
     """
     env = env or {}
     kb_dir = tmp_dir / "eval_kb"
@@ -74,7 +78,7 @@ def build_eval_kb(
         "log_dir": tmp_dir / "eval_logs",
         "embedding_provider": profile.embedding_provider,
         "embedding_dimensions": profile.embedding_dimensions,
-        "vector_collection": f"eval_{profile.name}",  # 按 profile 隔离 collection
+        "vector_collection": f"eval_{profile.name}",  # collection isolated per profile
         "retrieval_method": profile.retrieval_method,
         "max_chunk_chars": profile.max_chunk_chars,
         "chunk_overlap": profile.chunk_overlap,
@@ -82,12 +86,12 @@ def build_eval_kb(
         "rerank_enabled": profile.rerank_enabled,
         "condense_enabled": profile.condense_history,
     }
-    # embedding model / base_url（ollama 等需要）
+    # embedding model / base_url (needed by ollama and others)
     if profile.embedding_model:
         settings_kwargs["embedding_model"] = profile.embedding_model
     if profile.embedding_base_url:
         settings_kwargs["embedding_base_url"] = profile.embedding_base_url
-    # rerank 配置：启用时注入 agent 凭证 + rerank 参数
+    # rerank config: when enabled, inject the agent credentials + rerank parameters
     if profile.rerank_enabled:
         settings_kwargs.update({
             "rerank_top_n": profile.rerank_top_n,

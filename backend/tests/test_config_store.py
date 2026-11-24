@@ -61,7 +61,8 @@ def test_config_store_persists_rag_and_agent_settings(tmp_path):
     assert reloaded.get_agent_settings().agent_provider == "anthropic"
     assert reloaded.get_agent_settings().agent_temperature == 0.4
     assert reloaded.get_agent_settings().agent_max_tokens == 4096
-    # 引擎选择需持久化并在重载后读回（GET /api/settings 依赖此往返）
+    # The engine choice must persist and be read back after a reload (GET /api/settings relies
+    # on this round-trip)
     assert reloaded.get_agent_settings().chatbot_backend == "agent_sdk"
     assert reloaded.get_agent_settings().workflow_backend == "langchain"
     document = reloaded.get_document_settings()
@@ -89,10 +90,11 @@ def test_effective_settings_default_to_qwen_and_agent_params(monkeypatch, tmp_pa
 
 
 def test_agent_backend_settings_round_trip_via_api(monkeypatch, tmp_path):
-    """引擎选择经 PUT /api/settings 保存后，PUT 响应与独立 GET 都必须回显该字段。
+    """After the engine choice is saved through PUT /api/settings, both the PUT response and a
+    separate GET must echo the field.
 
-    回归：前端 saveAgentConfig 执行 setAgentConfig(saved.agent)，若响应缺失
-    chatbot_backend/workflow_backend，卡片会立即回退为 langchain。
+    Regression: the frontend's saveAgentConfig runs setAgentConfig(saved.agent), so if the
+    response lacks chatbot_backend/workflow_backend the card immediately falls back to langchain.
     """
     settings = Settings(
         kb_dirs=[tmp_path / "kb"],
@@ -160,7 +162,7 @@ def test_rag_chat_settings_roundtrip(tmp_path):
     store = ConfigStore(
         Settings(data_dir=tmp_path / "d", log_dir=tmp_path / "l", kb_dirs=[tmp_path / "kb"])
     )
-    assert store.get_rag_chat_settings().intent_routing_mode is None  # 空库
+    assert store.get_rag_chat_settings().intent_routing_mode is None  # empty store
     saved = store.save_rag_chat_settings(
         RagChatSettingsPayload(
             intent_routing_mode="adaptive", query_transform_strategy="hyde"
@@ -168,7 +170,7 @@ def test_rag_chat_settings_roundtrip(tmp_path):
     )
     assert saved.intent_routing_mode == "adaptive"
     assert saved.query_transform_strategy == "hyde"
-    # 重新读
+    # Read back
     assert store.get_rag_chat_settings().intent_routing_mode == "adaptive"
 
 

@@ -126,8 +126,8 @@ def test_list_subsystems_empty(sample_settings):
 def test_get_subsystem_found(ctx):
     tools = build_agent_tools(ctx)
     out = _by_name(tools, "get_subsystem").handler({"name": "payment-service"})
-    assert "Payment" in out  # data entity 出现
-    assert "risk-service" in out  # dependency 出现
+    assert "Payment" in out  # the data entity shows up
+    assert "risk-service" in out  # the dependency shows up
 
 
 def test_get_subsystem_not_found(ctx):
@@ -140,7 +140,7 @@ def test_search_knowledgebase(ctx):
     tools = build_agent_tools(ctx)
     out = _by_name(tools, "search_knowledgebase").handler({"query": "payment"})
     assert "payment" in out.lower()
-    # tool 检索结果应回填到 state.tool_sources
+    # Retrieval results returned by the tool must be backfilled into state.tool_sources
     assert len(ctx.state["tool_sources"]) >= 1
 
 

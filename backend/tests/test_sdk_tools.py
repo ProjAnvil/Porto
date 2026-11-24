@@ -203,7 +203,7 @@ def test_search_knowledgebase_tool_returns_unavailable_without_store():
 def test_search_memory_tool_calls_memory_store():
     """search_memory delegates to ctx.memory_store.search with session_id from ctx."""
     fake_store = MagicMock()
-    fake_store.search.return_value = []  # empty → "无匹配记忆"
+    fake_store.search.return_value = []  # empty → the tool reports "无匹配记忆"
     ctx = AgentToolContext(state={}, memory_store=fake_store, session_id="ctx-sess-1")
     build_sdk_tools = _import_build_sdk_tools()
     tools = build_sdk_tools(ctx)

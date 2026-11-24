@@ -96,7 +96,7 @@ class TestReadFilePages:
     ):
         # file is at least 2 virtual pages (each >2000 chars)
         info_text = _read_file_info(ctx_with_files, stored_file_id)
-        # extract page count from formatted output: "页数: N"
+        # extract the page count from the formatted output: "页数: N"
         n_pages = int(info_text.split("页数:")[1].splitlines()[0].strip())
         assert n_pages >= 2
         out = _read_file_pages(ctx_with_files, stored_file_id, 1, n_pages)

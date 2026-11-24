@@ -23,7 +23,7 @@ def test_evaluation_scores_complete_workflow(sample_prd):
     assert result.passed is True
 
 
-# ── correctness 维度（ground_truth 存在时启用第五维）───────────────────── #
+# ── correctness dimension (the fifth, enabled when ground_truth exists) ────────────── #
 
 
 def _case(answer: str, ground_truth: str | None) -> EvalCase:
@@ -38,7 +38,8 @@ def _case(answer: str, ground_truth: str | None) -> EvalCase:
 def test_rag_case_without_ground_truth_keeps_four_dims():
     r = evaluate_rag_case(_case("支付服务负责支付授权与退款。", None))
     assert r.metrics.answer_correctness is None
-    # 四维权重不变：手算一次确保公式稳定（metrics 已 4 位舍入 → 近似比较）
+    # The four base weights are unchanged: compute once by hand to pin the formula (metrics
+    # are rounded to 4 places, hence the approximate comparison)
     m = r.metrics
     expected = 100 * (
         0.30 * max(0.0, m.answer_relevance)
@@ -52,12 +53,12 @@ def test_rag_case_without_ground_truth_keeps_four_dims():
 def test_rag_case_with_ground_truth_scores_correctness():
     r_same = evaluate_rag_case(_case("支付授权、退款、结算与渠道路由。",
                                      "支付授权、退款、结算与渠道路由。"))
-    assert r_same.metrics.answer_correctness == 1.0  # 完全一致 → F1=1
+    assert r_same.metrics.answer_correctness == 1.0  # exact match → F1=1
 
     r_diff = evaluate_rag_case(_case("量子隧穿效应的概率幅。", "支付授权、退款。"))
-    assert r_diff.metrics.answer_correctness == 0.0  # 完全不相干 → F1=0
+    assert r_diff.metrics.answer_correctness == 0.0  # completely unrelated → F1=0
 
-    # 同答案不同 ground_truth → correctness 有差异，且影响总分
+    # Same answer, different ground_truth → correctness differs and shifts the total score
     r_partial = evaluate_rag_case(_case("支付授权与退款。", "支付授权、退款、结算。"))
     assert 0.0 < r_partial.metrics.answer_correctness < 1.0
     assert r_partial.score != r_same.score or r_same.metrics.answer_correctness == 1.0

@@ -1,4 +1,4 @@
-"""persist_turn / index_and_mark / maybe_generate_title 测试。"""
+"""Tests for persist_turn / index_and_mark / maybe_generate_title."""
 from unittest.mock import MagicMock, patch
 
 from porto_chatbot.memory.conversation_memory import ConversationMemory

@@ -12,7 +12,7 @@ def _record(role, content):
 
 
 def test_summarize_prompt_preserves_entities():
-    """a1:摘要 system prompt 必须包含实体保留要求。"""
+    """a1: the summary system prompt must require entities to be preserved."""
     llm = MagicMock()
     llm.enabled = True
     llm.complete.return_value = "摘要"
@@ -41,7 +41,7 @@ def test_summarize_empty_records():
 
 
 def test_compaction_only_uses_indexed_messages(sample_settings):
-    """indexed_only=True: chitchat (indexed=False) 被排除出 compaction。"""
+    """indexed_only=True: chitchat (indexed=False) is excluded from compaction."""
     store = SessionStore(sample_settings)
     # Add 25 indexed messages (above threshold=20)
     for i in range(25):

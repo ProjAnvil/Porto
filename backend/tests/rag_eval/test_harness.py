@@ -51,8 +51,8 @@ def test_schema_constructs():
     assert corpus.docs[0].text == "你好"
     assert g.category == "default"
     assert g.gold_doc_ids == ["d1"]
-    assert g.expected_behavior == "answer"  # 缺省应答
-    assert g.turns is None  # 单轮 golden 无轮次
+    assert g.expected_behavior == "answer"  # answer is the default
+    assert g.turns is None  # a single-turn golden has no turns
     assert g.metadata == {}
 
 
@@ -66,7 +66,7 @@ def test_schema_refusal_and_multiturn():
     assert mt.turns[0].gold_doc_ids == ["d1"]
 
 
-# ── 确定性检索指标 ─────────────────────────────────────────────────────── #
+# ── Deterministic retrieval metrics ──────────────────────────────────── #
 
 
 def _chunks(paths: list[str]) -> list[SourceChunk]:
@@ -83,12 +83,12 @@ def test_retrieval_metrics_pure_functions():
     gold, retrieved = ["1", "2"], ["9", "1", "3", "2"]
     assert recall_at_k(gold, retrieved) == 1.0
     assert recall_at_k(["1"], ["9", "8"]) == 0.0
-    assert mrr(gold, retrieved) == 0.5  # 首个 gold 排第 2
+    assert mrr(gold, retrieved) == 0.5  # the first gold document ranks 2nd
     assert mrr(gold, ["9", "8"]) == 0.0
     assert hit_at_k(gold, retrieved) == 1.0
     assert hit_at_k(["7"], retrieved) == 0.0
-    assert noise_ratio(gold, retrieved) == 0.5  # 2/4 非 gold
-    # 空 gold / 空检索的边界
+    assert noise_ratio(gold, retrieved) == 0.5  # 2 of 4 are not gold
+    # Edge cases: empty gold / empty retrieval
     assert recall_at_k([], retrieved) == 0.0
     assert noise_ratio(gold, []) == 0.0
 
@@ -110,12 +110,12 @@ def test_aggregate_and_judge_retrieval():
     assert mean["recall_at_k"] == 0.5
     assert mean["hit_at_k"] == 0.5
     passed, detail = judge_retrieval(mean)
-    # 阈值默认 0.55：recall 0.5 应 fail
+    # The default threshold is 0.55: recall 0.5 should fail
     assert not passed
     assert detail["recall_at_k"]["passed"] is False
 
 
-# ── 延迟门禁 ───────────────────────────────────────────────────────────── #
+# ── Latency gate ─────────────────────────────────────────────────────── #
 
 
 def test_percentile_and_latency_judge():
@@ -123,48 +123,51 @@ def test_percentile_and_latency_judge():
     assert percentile([5.0], 95) == 5.0
     vals = [1.0, 2.0, 3.0, 4.0, 100.0]
     assert percentile(vals, 50) == 3.0
-    assert percentile(vals, 95) > 80.0  # 大值被 p95 捕获
+    assert percentile(vals, 95) > 80.0  # the large value is captured by p95
 
     summary = latency_summary([{"retrieve_s": 0.2, "generate_s": 5.0},
                                {"retrieve_s": 0.4, "generate_s": 50.0}])
-    assert summary["retrieve_s"]["p95"] == 0.39  # 线性插值：0.2 + 0.95×(0.4−0.2)
+    assert summary["retrieve_s"]["p95"] == 0.39  # linear interpolation: 0.2 + 0.95×(0.4−0.2)
     ok, detail = judge_latency(summary)
-    assert ok  # 默认阈值 retrieve 10s / generate 90s
+    assert ok  # default thresholds: retrieve 10s / generate 90s
     bad, _ = judge_latency({"generate_s": {"p95": 999.0}})
     assert not bad
 
 
-# ── 拒答判定 ───────────────────────────────────────────────────────────── #
+# ── Refusal detection ────────────────────────────────────────────────── #
 
 
 def test_is_refusal_and_verdict():
     assert is_refusal("抱歉，知识库中没有相关信息，无法回答该问题。")
     assert is_refusal("上下文中未提及该内容。")
-    # 正常回答含「无法」但非拒答短语 → 不算拒答（marker 收束避免误报）
+    # A normal answer that contains "无法" but no refusal phrase → not a refusal (the
+    # restrained marker list avoids false positives)
     assert not is_refusal("该专业无法转专业，需在大一末申请。")
-    # 期望拒答：拒了得 1，硬答得 0
+    # Refusal expected: refusing scores 1, answering anyway scores 0
     assert refusal_verdict("抱歉，没有相关信息。", "refuse") == 1.0
     assert refusal_verdict("光速约为 299792458 米每秒。", "refuse") == 0.0
-    # 期望作答：正常答得 1，误拒得 0
+    # Answer expected: a normal answer scores 1, refusing by mistake scores 0
     assert refusal_verdict("中法学院用汉语、法语、英语教学。", "answer") == 1.0
 
 
 def test_is_refusal_long_answer_not_counted():
-    # 超长回答即使含 marker 也不是拒答（真拒答不会长篇展开）
+    # An over-long answer is not a refusal even if it contains a marker (a real refusal does
+    # not run on at length)
     assert not is_refusal("无法忽略的是，该专业……" + "细节内容。" * 80)
 
 
-# ── claim 级归因 ────────────────────────────────────────────────────────── #
+# ── Claim-level attribution ──────────────────────────────────────────── #
 
 
 def test_attribute_answer_splits_generation_vs_retrieval_errors():
     answer = "中法学院用三种语言教学。拿破仑出生于科西嘉岛。"
     contexts = ["中法学院 汉语 法语 英语 教学 语言"]
-    # gold 未检回 → 无支持句归 retrieval_miss
+    # Gold not retrieved → unsupported claims are attributed to retrieval_miss
     r1 = attribute_answer(answer, contexts, ["159"], ["100", "101"])
     assert r1["n_unsupported"] >= 1
     assert r1["retrieval_misses"] >= 1 and r1["generation_errors"] == 0
-    # gold 已在检索结果 → 无支持句归 generation_error
+    # Gold already in the retrieved results → unsupported claims are attributed to
+    # generation_error
     r2 = attribute_answer(answer, contexts, ["159"], ["159", "100"])
     assert r2["generation_errors"] >= 1 and r2["retrieval_misses"] == 0
 
@@ -181,7 +184,7 @@ def test_aggregate_attribution_rates():
     assert agg["retrieval_miss_rate"] == 0.2
 
 
-# ── DomainRAG 子集 loader ──────────────────────────────────────────────── #
+# ── DomainRAG subset loaders ─────────────────────────────────────────── #
 
 
 def test_domainrag_registry_covers_seven_subsets():
@@ -192,7 +195,8 @@ def test_domainrag_registry_covers_seven_subsets():
 
 
 def test_domainrag_loader_normalizes():
-    # 匹配 DomainRAG 真实 schema（int id、answers 为 list of list、positive_reference 带 id）
+    # Matches the real DomainRAG schema (int id, answers as a list of lists,
+    # positive_reference with an id)
     corpus_recs = [
         {"id": 159, "title": "中法那些事儿", "url": "u", "contents": "中法学院开设法语课程。"},
     ]
@@ -218,20 +222,21 @@ def test_domainrag_subset_variants_normalize():
         {"id": 1, "title": "表格页", "url": "http://x/t", "contents": "分数线表"},
         {"id": 2, "title": "专业页", "url": "http://x/p", "contents": "专业介绍"},
     ]
-    # structured：positive_reference 是无 id 的 dict → 按 title 反查 corpus id
+    # structured: positive_reference is a dict without an id → look the corpus id up by
+    # title
     structured = [{"question": "甘肃分数线？", "answers": [["632"]],
                    "positive_reference": {"title": "表格页", "contents": "…"}}]
     _, gs = load_domainrag_from_records(corpus_recs, structured, subset="structured")
     assert gs[0].gold_doc_ids == ["1"]
     assert gs[0].category == "structured"
 
-    # multidoc：positive_references（复数 list）
+    # multidoc: positive_references (plural, a list)
     md = [{"question": "两个专业对比？", "answer": "共同点与差异。",
            "positive_references": [{"id": 1}, {"title": "专业页"}]}]
     _, gs = load_domainrag_from_records(corpus_recs, md, subset="multidoc")
     assert sorted(gs[0].gold_doc_ids) == ["1", "2"]
 
-    # faithful：answers + counterfact 元数据
+    # faithful: answers + counterfact metadata
     fa = [{"question": "截止时间？", "answers": [["12月20日"]],
            "counterfact_answers": [["12月19日"]], "commonsense": False,
            "positive_reference": {"id": 2, "title": "专业页"}}]
@@ -239,7 +244,7 @@ def test_domainrag_subset_variants_normalize():
     assert gs[0].gold_doc_ids == ["2"]
     assert gs[0].metadata["counterfact_answers"] == "12月19日"
 
-    # conversation：history_qa + 指代追问 → turns
+    # conversation: history_qa + follow-up questions with coreference → turns
     conv = [{
         "history_qa": [{"question": "文学院前身是什么", "answers": ["华北联合大学文艺学院"],
                         "positive_reference": {"title": "表格页"}}],
@@ -249,7 +254,7 @@ def test_domainrag_subset_variants_normalize():
     _, gs = load_domainrag_from_records(corpus_recs, conv, subset="conversation")
     assert len(gs[0].turns) == 2
     assert gs[0].turns[0].gold_doc_ids == ["1"]
-    assert gs[0].gold_doc_ids == ["2"]  # 末轮镜像
+    assert gs[0].gold_doc_ids == ["2"]  # mirrors the last turn
     assert gs[0].question == "它成立于哪一年"
 
 
@@ -260,7 +265,7 @@ def test_synth_loader():
     assert all(g.gold_doc_ids for g in goldens)
 
 
-# ── KB 构建 / runner ───────────────────────────────────────────────────── #
+# ── KB build / runner ────────────────────────────────────────────────── #
 
 
 def _synth_corpus(synth_dir: Path) -> RagCorpus:
@@ -277,25 +282,29 @@ def test_build_eval_kb_indexes_and_retrieves(tmp_path):
     corpus = _synth_corpus(synth_dir)
     profile = EvalProfile(name="test_build", max_chunk_chars=600)
     kb = build_eval_kb(corpus, tmp_path, profile)
-    # 索引就绪
+    # The index is ready
     assert kb.store.is_rag_ready()
-    # 已知文档可被中文查询检索命中
+    # A known document can be retrieved by a Chinese query
     hits = kb.store.search("支付退款结算", top_k=3)
     assert hits, "检索应返回结果"
     assert any("支付" in h.text for h in hits)
-    # doc id 可从 chunk 还原（检索轨的 doc 映射契约）
+    # The doc id can be recovered from a chunk (the doc-mapping contract of the retrieval
+    # track)
     id_map = doc_id_map(corpus)
     ids = retrieved_doc_ids(hits, id_map)
     assert any(i in ids for i in ("payment", "risk", "notify"))
-    # 隔离：collection 名按 profile 隔离，data_dir 不在用户家目录
+    # Isolation: the collection name is per profile and data_dir is outside the user's home
+    # directory
     assert kb.settings.vector_collection == "eval_test_build"
     assert kb.settings.data_dir != Path.home() / ".porto"
 
 
 def test_build_eval_kb_milvus_backend_injection(tmp_path, monkeypatch):
-    """vector_backend=milvus 时注入 Milvus repo（覆盖生产存储路径），默认 chroma。
+    """With vector_backend=milvus a Milvus repo is injected (replacing the production storage
+    path); the default is chroma.
 
-    用「记录 uri + chroma 实现完整 repo 接口」的替身验证注入链路，不真连 Milvus。
+    The injection chain is verified with a stand-in that records the uri and implements the
+    full repo interface on top of chroma; no real Milvus connection.
     """
     from porto_chatbot.vector_stores.chroma import ChromaVectorRepository
 
@@ -344,10 +353,10 @@ def test_run_rag_assembles_llm_test_case():
 
     tc, result, timing = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
 
-    # NONE 策略走 store.search 原路径
+    # The NONE strategy goes through the original store.search path
     eval_kb.store.search.assert_called_once_with(golden.question, 3)
     assert isinstance(result, TransformResult)
-    # LLMTestCase 字段组装正确
+    # LLMTestCase fields are assembled correctly
     assert tc.input == golden.question
     assert tc.expected_output == golden.reference_answer
     assert tc.actual_output == llm.complete.return_value
@@ -362,10 +371,10 @@ def test_run_rag_guards_disabled_llm():
     eval_kb.settings.rerank_enabled = False
     eval_kb.store.search.return_value = []
     llm = MagicMock()
-    llm.complete.return_value = None  # LLM 禁用
+    llm.complete.return_value = None  # LLM disabled
 
     tc, _, _ = run_rag(golden, eval_kb, llm, strategy=QueryTransformStrategy.NONE, top_k=3)
-    assert "未返回" in tc.actual_output  # guard 文案
+    assert "未返回" in tc.actual_output  # the guard message
     assert tc.retrieval_context == []
 
 
@@ -379,7 +388,7 @@ def test_run_rag_multiturn_feeds_history():
     eval_kb = MagicMock()
     eval_kb.settings = MagicMock()
     eval_kb.settings.rerank_enabled = False
-    eval_kb.settings.condense_enabled = False  # 本测试只验历史进 prompt，不测改写
+    eval_kb.settings.condense_enabled = False  # this test only checks that history reaches the prompt, not the rewriting
     chunk = SourceChunk(id="c1", path="eval_kb/payment.md", title="payment",
                         text="payment-service 负责支付、退款", score=0.9, metadata={})
     eval_kb.store.search.return_value = [chunk]
@@ -390,19 +399,21 @@ def test_run_rag_multiturn_feeds_history():
 
     assert len(mt.turns) == 2
     assert mt.timing["n_turns"] == 2
-    # 第二轮 prompt 含第一轮历史（指代消解的上下文）
+    # The second-turn prompt contains the first turn's history (context for coreference
+    # resolution)
     second_user = llm.complete.call_args_list[1].kwargs["user"]
     assert "对话历史" in second_user and "支付服务是什么" in second_user
-    # 末轮 test_case 组装
+    # The test_case is assembled from the last turn
     assert mt.test_case.input == "它负责什么？"
     assert mt.test_case.actual_output == "负责支付、退款。"
 
 
 def test_condense_gate_semantics():
-    """门控节点：需要才改写；PASS/无历史/LLM 空均直通。"""
+    """Gate node: rewrite only when needed; PASS / no history / empty LLM output all pass the
+    question through unchanged."""
     from porto_chatbot.query_transform import condense_question, condense_with_gate
 
-    # 需要改写：返回改写后的查询
+    # Rewrite needed: returns the rewritten query
     llm = MagicMock()
     llm.complete.return_value = "中国人民大学文学院成立于哪一年"
     r = condense_with_gate(
@@ -412,26 +423,27 @@ def test_condense_gate_semantics():
     assert r.needed is True and r.query == "中国人民大学文学院成立于哪一年"
     assert "对话历史" in llm.complete.call_args.args[1]
 
-    # 已完整：LLM 输出 PASS → 直通不改写
+    # Already self-contained: the LLM outputs PASS → passed through without rewriting
     llm_pass = MagicMock()
     llm_pass.complete.return_value = "PASS"
     r2 = condense_with_gate(llm_pass, "中国人民大学文学院前身是什么", [("q1", "a1")])
     assert r2.needed is False and r2.query == "中国人民大学文学院前身是什么"
 
-    # 无历史：零成本直通（不调 LLM）
+    # No history: passes through at zero cost (no LLM call)
     llm_none = MagicMock()
     r3 = condense_with_gate(llm_none, "任何问题", [])
     assert r3.needed is False and r3.reason == "no_history_or_no_llm"
     llm_none.complete.assert_not_called()
 
-    # fail-open：LLM 返回空 → 原问题
+    # fail-open: the LLM returns empty → the original question
     llm_empty = MagicMock()
     llm_empty.complete.return_value = ""
     assert condense_question(llm_empty, "Q", [("a", "b")]) == "Q"
 
 
 def test_retrieve_with_transform_condense_node_wiring():
-    """condense 是检索管线第一段：settings 开 + 有历史 → 改写后才检索；关 → 直通。"""
+    """condense is the first stage of the retrieval pipeline: settings on + history present →
+    retrieve only after the rewrite; off → pass through."""
     from porto_chatbot.query_transform import retrieve_with_transform
 
     store = MagicMock()
@@ -440,16 +452,16 @@ def test_retrieve_with_transform_condense_node_wiring():
     settings.rerank_enabled = False
     settings.condense_enabled = True
     llm = MagicMock()
-    llm.complete.return_value = "支付服务负责什么"  # 门控改写
+    llm.complete.return_value = "支付服务负责什么"  # the gate rewrites
 
     retrieve_with_transform(
         "它呢", QueryTransformStrategy.NONE, store, settings, llm, 3,
         history=[("支付服务是什么", "支付系统。")],
     )
-    # NONE 路径：检索查询是改写后的
+    # NONE path: the retrieval query is the rewritten one
     assert store.search.call_args.args[0] == "支付服务负责什么"
 
-    # 开关关闭：不调 LLM、检索原问题
+    # Switch off: no LLM call, the original question is retrieved
     store2 = MagicMock()
     store2.search.return_value = []
     settings_off = MagicMock()
@@ -466,7 +478,8 @@ def test_retrieve_with_transform_condense_node_wiring():
 
 
 def test_run_rag_multiturn_condense_via_production_node():
-    """多轮 runner 走生产门控节点：第二轮检索查询被改写并记录。"""
+    """The multi-turn runner goes through the production gate node: the second-turn retrieval
+    query is rewritten and recorded."""
     golden = RagGolden(
         question="它呢", reference_answer="A2", gold_doc_ids=["d2"],
         turns=[GoldenTurn("支付服务是什么", "支付系统。", ["d1"]),
@@ -475,21 +488,21 @@ def test_run_rag_multiturn_condense_via_production_node():
     eval_kb = MagicMock()
     eval_kb.settings = MagicMock()
     eval_kb.settings.rerank_enabled = False
-    eval_kb.settings.condense_enabled = True  # profile.condense_history 经 provision 注入
+    eval_kb.settings.condense_enabled = True  # profile.condense_history is injected by provision
     eval_kb.store.search.return_value = []
     llm3 = MagicMock()
-    # 调用序列：轮1 生成 →（轮2 有历史）门控改写 → 轮2 生成
+    # Call sequence: turn 1 generation → gate rewrite (turn 2 has history) → turn 2 generation
     llm3.complete.side_effect = [
-        "支付系统。",                 # 轮1 生成
-        "支付服务负责什么",           # 轮2 门控改写（非 PASS）
-        "负责支付。",                 # 轮2 生成
+        "支付系统。",                 # turn 1 generation
+        "支付服务负责什么",           # turn 2 gate rewrite (not PASS)
+        "负责支付。",                 # turn 2 generation
     ]
     mt = run_rag_multiturn(golden, eval_kb, llm3,
                            strategy=QueryTransformStrategy.NONE, top_k=3)
-    # 第二轮检索用的是改写查询（生产节点内完成）
+    # The second-turn retrieval uses the rewritten query (done inside the production node)
     assert eval_kb.store.search.call_args_list[-1].args[0] == "支付服务负责什么"
     assert mt.turns[1].condensed == "支付服务负责什么"
-    assert mt.turns[0].condensed == ""  # 首轮无历史，门控零成本直通
+    assert mt.turns[0].condensed == ""  # no history in the first turn, the gate passes through at zero cost
 
 
 def test_profiles_condense_variants():
@@ -497,7 +510,7 @@ def test_profiles_condense_variants():
 
     for name in ("condense", "condense_rerank", "semantic_embed"):
         assert name in PROFILES
-    # 干净 A/B：condense 与 baseline 仅 condense_history 不同
+    # Clean A/B: condense and baseline differ only in condense_history
     base = get_profile("baseline")
     cond = get_profile("condense")
     assert cond.condense_history is True and base.condense_history is False
@@ -506,7 +519,7 @@ def test_profiles_condense_variants():
     assert cond.strategy == base.strategy
 
 
-# ── 指标聚合 / 判定 ─────────────────────────────────────────────────────── #
+# ── Metric aggregation / verdicts ────────────────────────────────────── #
 
 
 def test_aggregate_means_per_metric():
@@ -529,7 +542,7 @@ def test_judge_passes_when_all_above_threshold():
 def test_judge_fails_when_any_below_threshold():
     key = next(iter(THRESHOLDS))
     mean = {k: v + 0.2 for k, v in THRESHOLDS.items()}
-    mean[key] = THRESHOLDS[key] - 0.1  # 拉低一个
+    mean[key] = THRESHOLDS[key] - 0.1  # pull one metric down
     passed, detail = judge(mean)
     assert not passed
     assert detail[key]["passed"] is False

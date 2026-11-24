@@ -1,14 +1,15 @@
-"""RAG 质量门禁（端到端轨）——``run_experiment(track="e2e")`` 的 pytest 薄封装。
+"""RAG quality gate (end-to-end track): a thin pytest wrapper around
+``run_experiment(track="e2e")``.
 
-默认跑 ``rerank`` profile；env 切换::
+Runs the ``rerank`` profile by default; switch through env::
 
-    RAG_EVAL_PROFILE=baseline pytest ...        # 换 profile
-    RAG_EVAL_DATASET=domainrag:multidoc pytest  # 换数据集
-    RAG_EVAL_MAX_CASES=5 pytest ...             # 减 case 数
-    RAG_EVAL_REPORT_ONLY=0 pytest ...           # 启用硬门禁（低分 fail）
+    RAG_EVAL_PROFILE=baseline pytest ...        # switch profile
+    RAG_EVAL_DATASET=domainrag:multidoc pytest  # switch dataset
+    RAG_EVAL_MAX_CASES=5 pytest ...             # fewer cases
+    RAG_EVAL_REPORT_ONLY=0 pytest ...           # enable the hard gate (low scores fail)
 
-检索轨硬门禁（零 LLM，PR 必跑）见 ``test_retrieval_gate.py``；
-拒答门禁见 ``test_refusal_gate.py``。
+The retrieval-track hard gate (zero LLM, run on every PR) is in
+``test_retrieval_gate.py``; the refusal gate is in ``test_refusal_gate.py``.
 """
 from __future__ import annotations
 
@@ -34,10 +35,12 @@ def test_rag_quality_gate(gate_env):
 
     report = run_experiment(profile, env=gate_env, dataset=dataset, track="e2e")
 
-    # 门禁报告写 .last_report.json（向后兼容），run_experiment 同时写 reports/<name>_<ts>.json
+    # The gate report goes to .last_report.json (for backward compatibility); run_experiment
+    # also writes reports/<name>_<ts>.json
     _LAST_REPORT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # errored / 无效实验始终 fail（真故障）；低分默认 report-only
+    # errored cases / an invalid experiment always fail (a real fault); low scores are
+    # report-only by default
     assert not report["errored"], f"有 case 出错（真故障）：{report['errored']}"
     assert not report["invalid"], (
         f"errored 率 {report['error_rate']:.0%} > 10%——实验无效（judge/环境故障），"

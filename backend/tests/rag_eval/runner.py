@@ -32,10 +32,11 @@ def run_rag(
     strategy: QueryTransformStrategy = QueryTransformStrategy.NONE,
     top_k: int = 6,
 ) -> tuple[LLMTestCase, TransformResult, dict]:
-    """检索（retrieve_with_transform）→ 生成（LLMClient.complete）→ 组装 LLMTestCase。
+    """Retrieval (retrieve_with_transform) → generation (LLMClient.complete) → assemble the
+    LLMTestCase.
 
-    返回 ``(test_case, transform_result, timing)``；``timing`` 含 ``retrieve_s`` /
-    ``generate_s`` / ``n_chunks``，用于瓶颈诊断。
+    Returns ``(test_case, transform_result, timing)``; ``timing`` holds ``retrieve_s`` /
+    ``generate_s`` / ``n_chunks`` for bottleneck diagnosis.
     """
     t0 = time.perf_counter()
     result = retrieve_with_transform(
@@ -68,29 +69,32 @@ def run_rag(
 
 
 # ────────────────────────────────────────────────────────────────────────── #
-# 多轮 runner：与生产 orchestrator 同族的「历史进 prompt」模式（近似实现——
-# 生产 ConversationMemory 的向量记忆/压缩/facts 链路不在本 harness 覆盖范围内，
-# 属 Phase 3「在线抽样复审」要补的缺口）。逐轮独立走 retrieve_with_transform，
-# 指代/省略问题在无历史改写下的真实检索表现因此被如实测量。
+# Multi-turn runner: the same "history goes into the prompt" family as the production
+# orchestrator (an approximation: the vector memory / compaction / facts chain of the
+# production ConversationMemory is outside this harness's scope, a gap Phase 3 "online sampled
+# review" is meant to close). Each turn goes through retrieve_with_transform on its own, so the
+# real retrieval behavior of coreference / ellipsis questions without history-based rewriting
+# is measured faithfully.
 # ────────────────────────────────────────────────────────────────────────── #
 
 
 @dataclass
 class TurnRecord:
-    """单轮的检索与生成原始记录（供确定性检索指标与归因消费）。"""
+    """Raw record of one turn's retrieval and generation (consumed by the deterministic retrieval
+    metrics and by attribution)."""
 
     question: str
     answer: str
     chunks: list = field(default_factory=list)
     timing: dict = field(default_factory=dict)
-    condensed: str = ""  # condense 改写后的实际检索查询（未改写时为空）
+    condensed: str = ""  # the actual retrieval query after the condense rewrite (empty when not rewritten)
 
 
 @dataclass
 class MultiturnResult:
     turns: list[TurnRecord] = field(default_factory=list)
-    test_case: LLMTestCase | None = None  # 末轮（被 judge 的对象）
-    transform_result: TransformResult | None = None  # 末轮
+    test_case: LLMTestCase | None = None  # last turn (the object the judge scores)
+    transform_result: TransformResult | None = None  # last turn
     timing: dict = field(default_factory=dict)
 
 
@@ -103,9 +107,10 @@ def run_rag_multiturn(
     top_k: int = 6,
     history_turns: int = 4,
 ) -> MultiturnResult:
-    """逐轮检索+生成，对话历史注入 prompt；**condense 门控走生产节点**——
-    ``eval_kb.settings.condense_enabled``（由 profile.condense_history 经
-    provision 注入）开启时，``retrieve_with_transform`` 内部先做指代消解判断。
+    """Retrieve + generate turn by turn with the conversation history injected into the prompt;
+    **condense gating goes through the production node**: when
+    ``eval_kb.settings.condense_enabled`` (injected from profile.condense_history by provision)
+    is on, ``retrieve_with_transform`` first decides whether coreference resolution is needed.
     """
     assert golden.turns, "多轮 runner 需要 golden.turns"
     history: list[tuple[str, str]] = []

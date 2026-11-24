@@ -8,7 +8,8 @@ from porto_chatbot import main
 
 
 def _wait_index_done(client: TestClient, timeout: float = 30.0) -> dict:
-    """异步 reindex 的同步等待 helper：轮询 /api/kb/stats 直到任务结束。"""
+    """Helper that waits synchronously for the async reindex: polls /api/kb/stats until the job
+    ends."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         stats = client.get("/api/kb/stats").json()
@@ -23,7 +24,7 @@ def test_api_chat_and_workflow(monkeypatch, sample_settings, sample_prd):
     with TestClient(main.app) as client:
         index_resp = client.post("/api/kb/index")
         assert index_resp.status_code == 200
-        assert index_resp.json()["status"] == "running"  # 异步：立即返回 running
+        assert index_resp.json()["status"] == "running"  # async: returns running at once
 
         stats = _wait_index_done(client)
         assert stats["documents"] == 1
@@ -92,15 +93,16 @@ def test_api_chat_greeting_skips_rag(monkeypatch, sample_settings):
 
 
 def test_chat_stream_native_streaming_when_llm_enabled(monkeypatch, sample_settings):
-    """LLM enabled + agent_stream_enabled 时走原生 token 流（多个 text-delta 分片）。"""
+    """With the LLM enabled + agent_stream_enabled, the native token stream is used (several
+    text-delta chunks)."""
     from porto_chatbot.agent import langchain_chat_stream as stream_mod
     from porto_chatbot.llm import LLMClient
 
     sample_settings.agent_api_key = "k"
     sample_settings.agent_stream_enabled = True
-    sample_settings.health_probe_timeout = 1  # 避免 lifespan 首次健康探测连外部 LLM 卡住
+    sample_settings.health_probe_timeout = 1  # keeps the lifespan's first health probe from hanging on the external LLM
     monkeypatch.setattr(main, "settings", sample_settings)
-    # intent router 固定返回 rag；stream 返回多个分片
+    # The intent router always returns rag; stream returns several chunks
     monkeypatch.setattr(LLMClient, "complete_structured", lambda self, *a, **k: {"intent": "rag", "reason": "领域问题"})
     monkeypatch.setattr(LLMClient, "stream", lambda self, *a, **k: iter(["流", "式", "回答"]))
     # The LLM is "enabled" with a fake key, so every LLM entry point on this path must be
@@ -127,11 +129,11 @@ def test_chat_stream_native_streaming_when_llm_enabled(monkeypatch, sample_setti
             text = "".join(response.iter_text())
 
     assert "流" in text and "式" in text and "回答" in text
-    assert text.count('"text-delta"') >= 3  # 原生流式：至少 3 个分片
+    assert text.count('"text-delta"') >= 3  # native streaming: at least 3 chunks
     assert "data: [DONE]" in text
 
 
-# ----------------------------- context 预算（Phase 4 P1）----------------------------- #
+# ---------------------------- Context budget (Phase 4 P1) ---------------------------- #
 
 
 def test_trim_to_budget_under_budget():
@@ -147,7 +149,7 @@ def test_trim_to_budget_trims_from_back():
     parts = ["问题", "摘要", "片段" * 100]
     result = _trim_to_budget(parts, 20)
     assert sum(len(p) for p in result) <= 20
-    assert "问题" in result[0]  # 前面优先保留
+    assert "问题" in result[0]  # earlier items are kept first
 
 
 def test_trim_to_budget_drops_empty_parts():
@@ -155,7 +157,7 @@ def test_trim_to_budget_drops_empty_parts():
 
     parts = ["a", "b", "c" * 200]
     result = _trim_to_budget(parts, 5)
-    assert all(p for p in result)  # 无空串残留
+    assert all(p for p in result)  # no empty strings left behind
     assert sum(len(p) for p in result) <= 5
 
 
@@ -166,15 +168,17 @@ def test_trim_to_budget_zero_budget_noop():
     assert _trim_to_budget(parts, 0) == ["a", "b"]
 
 
-# ----------------------------- /api/health 快照 ----------------------------- #
+# --------------------------- /api/health snapshot --------------------------- #
 
 
 def test_api_health_returns_dependency_and_feature_snapshot(monkeypatch, sample_settings):
-    """/api/health 必须返回 HealthMonitor 快照（含 dependencies/features）。
+    """/api/health must return the HealthMonitor snapshot (including dependencies / features).
 
-    回归：settings.py 曾遗留一个同名 GET /api/health（返回配置概览，无 dependencies），
-    因在 app.py 中先注册而覆盖了 knowledge.py 的 HealthMonitor 版本，导致前端
-    health.dependencies.map 崩溃。此测试锁住「/api/health 返回依赖级健康快照」契约。
+    Regression: settings.py used to keep a GET /api/health of the same name (returning a
+    config overview without dependencies); because it was registered first in app.py it
+    overrode the HealthMonitor version in knowledge.py, and the frontend crashed on
+    health.dependencies.map. This test locks in the contract "/api/health returns the
+    per-dependency health snapshot".
     """
     sample_settings.health_probe_timeout = 1
     monkeypatch.setattr(main, "settings", sample_settings)
@@ -190,21 +194,25 @@ def test_api_health_returns_dependency_and_feature_snapshot(monkeypatch, sample_
 
 
 def test_api_health_probes_db_rag_config_not_env(monkeypatch, sample_settings):
-    """/api/health 探测必须用 db 里的 effective 配置，而非 .env/current_settings。
+    """/api/health must probe with the effective config from the database, not .env /
+    current_settings.
 
-    回归：HealthMonitor 曾注入 settings_provider=current_settings（读 .env），导致用户
-    在 UI 改的 db 配置（embedding 模型、agent key）不生效，面板显示 .env 旧值的探测结果
-    （embedding down / agent unknown）。修复后 settings_provider 应合并 db 配置再探测。
+    Regression: HealthMonitor used to be given settings_provider=current_settings (which reads
+    .env), so db config changed by the user in the UI (embedding model, agent key) had no
+    effect and the panel showed probe results for the old .env values (embedding down / agent
+    unknown). After the fix settings_provider should merge the db config before probing.
     """
     from porto_chatbot.api.deps import get_config_store
     from porto_chatbot.models import RagSettingsPayload
 
     sample_settings.health_probe_timeout = 1
-    # .env 源（current_settings）配成连不上的 ollama —— 若 health 用它，探测必 down
+    # The .env source (current_settings) is configured with an unreachable ollama; if health
+    # used it, the probe would be down for sure
     sample_settings.embedding_provider = "ollama"
-    sample_settings.embedding_base_url = "http://127.0.0.1:1"  # 端口拒绝，快速失败
+    sample_settings.embedding_base_url = "http://127.0.0.1:1"  # the port refuses connections, failing fast
     monkeypatch.setattr(main, "settings", sample_settings)
-    # db 存 local（探测必 ok）—— 实际功能走 effective，应反映这条
+    # The db stores local (the probe is ok for sure); the real feature uses the effective
+    # config, so it should reflect this entry
     get_config_store().save_rag_settings(RagSettingsPayload(embedding_provider="local"))
 
     with TestClient(main.app) as client:

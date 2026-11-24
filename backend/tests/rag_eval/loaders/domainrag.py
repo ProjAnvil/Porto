@@ -1,20 +1,23 @@
-"""DomainRAG 数据集加载——7 个子集全覆盖 + 按名选择。
+"""DomainRAG dataset loading: all 7 subsets + selection by name.
 
-子集（``_repo/BCM/labeled_data/`` 下，corpus 共用 ``corpus/``）::
+Subsets (under ``_repo/BCM/labeled_data/``; the corpus is shared through ``corpus/``)::
 
-    extractive    extractive_qa/basic_qa.jsonl          单轮抽取式 QA（原有默认）
-    noisy         noisy_qa/noisy_qa_ver3.jsonl          噪声鲁棒（gold + 相似噪音页）
-    faithful      faithful_qa/faithful_qa.jsonl         忠实度（含 counterfact 陷阱）
-    multidoc      multi-doc_qa/multidoc_qa.jsonl        多文档整合
-    structured    structured_qa/structured_qa_twopositive.jsonl  表格结构化抽取
-    time          time-sensitive_qa/time_sensitive.jsonl 时间敏感（答案随时间变化）
-    conversation  conversation_qa/conversation_qa.jsonl 多轮（history_qa + 指代追问）
+    extractive    extractive_qa/basic_qa.jsonl          single-turn extractive QA (the original default)
+    noisy         noisy_qa/noisy_qa_ver3.jsonl          noise robustness (gold + similar noise pages)
+    faithful      faithful_qa/faithful_qa.jsonl         faithfulness (with counterfact traps)
+    multidoc      multi-doc_qa/multidoc_qa.jsonl        multi-document synthesis
+    structured    structured_qa/structured_qa_twopositive.jsonl  structured table extraction
+    time          time-sensitive_qa/time_sensitive.jsonl time-sensitive (the answer changes over time)
+    conversation  conversation_qa/conversation_qa.jsonl multi-turn (history_qa + coreference follow-ups)
 
-各子集 schema 差异在 ``_SUBSET_PARSERS`` 内归一化到 RagGolden：
-- ``positive_reference``（dict / list）与 ``positive_references``（复数）都产出 gold doc id；
-- 引用无 ``id``（structured / conversation）时按 title/url 对 corpus 反查；
-- conversation 记录是 pretty-printed 多行 JSON 拼接（非 jsonl），用 raw_decode 解析，
-  产出带 ``turns`` 的多轮 golden。
+Schema differences between subsets are normalized to RagGolden inside
+``_SUBSET_PARSERS``:
+- ``positive_reference`` (dict / list) and ``positive_references`` (plural) both yield gold
+doc ids;
+- references without an ``id`` (structured / conversation) are looked up in the corpus by
+  title / url;
+- conversation records are pretty-printed multi-line JSON objects concatenated together
+  (not jsonl) and parsed with raw_decode, yielding multi-turn goldens with ``turns``.
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ from ..schema import CorpusDoc, GoldenTurn, RagCorpus, RagGolden
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "domainrag"
 _LABELED = "_repo/BCM/labeled_data"
 
-# subset 名 → labeled_data 下的相对路径
+# subset name → path relative to labeled_data
 SUBSET_FILES: dict[str, str] = {
     "extractive": "extractive_qa/basic_qa.jsonl",
     "noisy": "noisy_qa/noisy_qa_ver3.jsonl",
@@ -46,7 +49,8 @@ def available_subsets() -> list[str]:
 
 
 def _join_answers(answers: Any) -> str:
-    """answers 形如 [["汉语","法语","英语"]]（list of list）；取首个变体拼接。"""
+    """answers looks like [["汉语","法语","英语"]] (a list of lists); the first variant is taken
+    and joined."""
     if not answers:
         return ""
     first = answers[0]
@@ -61,7 +65,7 @@ def _join_answers(answers: Any) -> str:
 
 
 def _load_corpus_records(corpus_root: Path) -> list[dict]:
-    """corpus/.../json_output/*.json（纯文本；跳过 html_output 重复）。"""
+    """corpus/.../json_output/*.json (plain text; the html_output duplicates are skipped)."""
     recs: list[dict] = []
     for f in sorted(corpus_root.rglob("json_output/*.json")):
         try:
@@ -72,7 +76,8 @@ def _load_corpus_records(corpus_root: Path) -> list[dict]:
 
 
 def build_corpus(corpus_recs: list[dict]) -> tuple[RagCorpus, dict[str, str], dict[str, str]]:
-    """corpus 记录 → RagCorpus，附带 title→id / url→id 反查表（无 id 引用用）。"""
+    """corpus records → RagCorpus, with title → id / url → id lookup tables (for references
+    without an id)."""
     docs: list[CorpusDoc] = []
     by_title: dict[str, str] = {}
     by_url: dict[str, str] = {}
@@ -90,7 +95,8 @@ def build_corpus(corpus_recs: list[dict]) -> tuple[RagCorpus, dict[str, str], di
 
 
 def _ref_ids(refs: Any, by_title: dict[str, str], by_url: dict[str, str]) -> list[str]:
-    """引用记录（dict 或 list[dict]）→ gold doc id 列表；无 id 按 title/url 反查。"""
+    """Reference records (dict or list[dict]) → list of gold doc ids; those without an id are
+    looked up by title / url."""
     if refs is None:
         return []
     items = refs if isinstance(refs, list) else [refs]
@@ -111,7 +117,7 @@ def _ref_ids(refs: Any, by_title: dict[str, str], by_url: dict[str, str]) -> lis
 
 
 # ────────────────────────────────────────────────────────────────────────── #
-# 各子集 QA 归一化
+# QA normalization for each subset
 # ────────────────────────────────────────────────────────────────────────── #
 
 
@@ -162,7 +168,7 @@ def _parse_time(q: dict, by_title: dict, by_url: dict) -> RagGolden:
 
 
 def _parse_conversation(q: dict, by_title: dict, by_url: dict) -> RagGolden:
-    """history_qa（≥0 轮历史）+ 末轮指代追问 → 多轮 RagGolden。"""
+    """history_qa (≥0 history turns) + a final coreference follow-up → multi-turn RagGolden."""
     turns: list[GoldenTurn] = []
     for h in q.get("history_qa") or []:
         turns.append(
@@ -200,20 +206,21 @@ _SUBSET_PARSERS = {
 
 
 # ────────────────────────────────────────────────────────────────────────── #
-# 读取与入口
+# Reading and entry point
 # ────────────────────────────────────────────────────────────────────────── #
 
 
 def _read_qa_records(path: Path, subset: str) -> list[dict]:
     if not path.exists():
-        # 兜底：按文件名 rglob（目录结构变动时仍可定位）
+        # Fallback: rglob by file name (still locates the file when the directory layout changes)
         candidates = list(path.parent.parent.rglob(path.name))
         if not candidates:
             raise FileNotFoundError(f"未找到 {path.name}（运行 make eval-dataset）")
         path = candidates[0]
     text = path.read_text(encoding="utf-8")
-    # 数据文件是「单行 jsonl + pretty-printed JSON 对象」混合拼接（basic_qa 实测
-    # 129 条单行 + 若干多行记录）——统一 raw_decode 逐对象解析，两种格式通吃。
+    # The data files are a mix of single-line jsonl records and pretty-printed JSON objects
+    # (basic_qa has 129 single-line + a few multi-line records in practice); everything is parsed
+    # object by object with raw_decode, which handles both formats.
     dec = json.JSONDecoder()
     recs, idx = [], 0
     while idx < len(text):
@@ -230,9 +237,10 @@ def load_domainrag(
     data_dir: Path | None = None,
     subset: str = DEFAULT_SUBSET,
 ) -> tuple[RagCorpus, list[RagGolden]]:
-    """加载 DomainRAG 指定子集：corpus/ + labeled_data/<subset> → (RagCorpus, [RagGolden])。
+    """Load a DomainRAG subset: corpus/ + labeled_data/<subset> → (RagCorpus, [RagGolden]).
 
-    缺失时抛 FileNotFoundError，由 conftest 捕获后 session fixture skip。
+    Raises FileNotFoundError when something is missing; conftest catches it and the session
+    fixture skips.
     """
     if subset not in SUBSET_FILES:
         raise KeyError(f"未知 DomainRAG 子集 '{subset}'，可用: {available_subsets()}")
@@ -251,7 +259,7 @@ def load_domainrag_from_records(
     qa_recs: list[dict],
     subset: str = DEFAULT_SUBSET,
 ) -> tuple[RagCorpus, list[RagGolden]]:
-    """纯归一化：raw 记录 → schema（确定性核心，被单测覆盖）。"""
+    """Pure normalization: raw record → schema (the deterministic core, covered by unit tests)."""
     corpus, by_title, by_url = build_corpus(corpus_recs)
     parser = _SUBSET_PARSERS.get(subset, _parse_basic)
     goldens = [parser(q, by_title, by_url) for q in qa_recs]

@@ -53,7 +53,7 @@ def test_chunk_markdown_attaches_heading_path(markdown_doc: str):
         overlap=0,
     )
     headings = {c.metadata.get("heading") for c in chunks}
-    # 每个 section 都应带上标题路径
+    # Every section should carry its heading path
     assert "Payment Platform > 风控模块 > 规则引擎" in headings
     assert "Payment Platform > 通知模块" in headings
 
@@ -65,16 +65,16 @@ def test_chunk_markdown_preserves_header_in_text(markdown_doc: str):
         max_chars=1400,
         overlap=0,
     )
-    # strip_headers=False：标题行应保留在 chunk 正文里，作为语义上下文
+    # strip_headers=False: the heading line should stay in the chunk body as semantic context
     assert any("风控模块" in c.text for c in chunks)
 
 
 def test_chunk_markdown_splits_oversized_section():
-    body = "规则说明内容。\n" * 200  # 远超单 chunk 上限
+    body = "规则说明内容。\n" * 200  # far above the single-chunk limit
     md = f"# Title\n\n## Section\n\n{body}"
     chunks = chunk_document(md, content_format="markdown", max_chars=300, overlap=20)
     assert len(chunks) > 1
-    # 二次切分后每个 chunk 仍归属同一标题
+    # After the second split every chunk still belongs to the same heading
     assert all(c.metadata.get("heading") == "Title > Section" for c in chunks)
 
 
@@ -113,8 +113,8 @@ def test_iter_documents_multi_root(tmp_path):
     roots = {r.name for r, _ in result}
     files = [p.name for _, p in result]
     assert roots == {"a", "b"}
-    assert files.count("x.md") == 2  # 两个同名文件都保留
-    assert "ignore.log" not in files  # 非支持扩展名过滤
+    assert files.count("x.md") == 2  # both same-named files are kept
+    assert "ignore.log" not in files  # unsupported extensions are filtered out
 
 
 def test_iter_documents_missing_root_skipped(tmp_path):

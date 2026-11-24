@@ -11,7 +11,7 @@ def test_list_facts_empty(tmp_path, monkeypatch):
     from porto_chatbot.settings import Settings
 
     settings = Settings(data_dir=tmp_path)
-    SessionStore(settings)  # 初始化 SQLite（含 session_facts 表）
+    SessionStore(settings)  # initialize SQLite (including the session_facts table)
     monkeypatch.setattr(sess_mod, "current_settings", lambda: settings)
 
     client = TestClient(app)
@@ -29,7 +29,7 @@ def test_list_facts_returns_active(tmp_path, monkeypatch):
     from porto_chatbot.settings import Settings
 
     settings = Settings(data_dir=tmp_path)
-    SessionStore(settings)  # 初始化 SQLite（含 session_facts 表）
+    SessionStore(settings)  # initialize SQLite (including the session_facts table)
     SessionFactsStore(settings).upsert(
         session_id="s1", category="user_decision",
         content="登录采用 OAuth", source_msg_id="m1",

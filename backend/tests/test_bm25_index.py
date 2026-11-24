@@ -20,7 +20,8 @@ def test_bm25_build_returns_relevant_ids_sorted():
     assert hits, "expected non-empty results"
     ids = [h[0] for h in hits]
     assert "c1" in ids
-    # 支付/退款/结算相关文档应排在风控/通知之前
+    # Payment / refund / settlement documents should rank ahead of risk-control /
+    # notification ones
     assert ids[0] == "c1"
 
 
@@ -34,22 +35,22 @@ def test_bm25_save_load_roundtrip(tmp_path: Path):
     hits_before = idx.query("风控 欺诈", top_k=2)
     hits_after = loaded.query("风控 欺诈", top_k=2)
     assert [h[0] for h in hits_before] == [h[0] for h in hits_after]
-    assert hits_after[0][0] == "c2"  # 风控文档最相关
+    assert hits_after[0][0] == "c2"  # the risk-control document is the most relevant
 
 
 def test_registry_build_get_invalidate(sample_settings, tmp_path: Path):
-    # sample_settings.data_dir 是 tmp 下的独立目录
+    # sample_settings.data_dir is a dedicated directory under tmp
     chunks = _sample_chunks()
     built = Bm25Registry.build_and_save(sample_settings, chunks)
     assert len(built) == 3
     assert (sample_settings.data_dir / "bm25s_index").exists()
 
-    # get 命中缓存
+    # get hits the cache
     got = Bm25Registry.get(sample_settings)
     assert got is not None
     assert [h[0] for h in got.query("通知 消息", top_k=1)] == ["c3"]
 
-    # invalidate 后重新从磁盘加载
+    # After invalidate it is loaded from disk again
     Bm25Registry.invalidate(sample_settings.data_dir)
     assert str(sample_settings.data_dir) not in Bm25Registry._cache
     reloaded = Bm25Registry.get(sample_settings)

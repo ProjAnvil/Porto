@@ -24,7 +24,7 @@ def _agent(truncated, turns=4, n_calls=11, max_turns=10, reason="tool_loop_trunc
         reason=reason if truncated else None,
     ))
     agent.settings.agent_max_tool_turns = max_turns
-    # 用真实 _step(只记 data)
+    # Use the real _step (it only records data)
     agent._step = lambda name, summary, data: {"steps": [AgentStep(
         name=name, status="completed", summary=summary, data=data)]}
     return agent
@@ -44,7 +44,8 @@ def test_understand_truncated_uses_notice_and_meta():
 
 
 def test_understand_max_tokens_truncated_uses_tokens_notice():
-    """reason=max_tokens_truncated → 输出长度上限文案(区别于工具超限),reason 透传 tool_meta。"""
+    """reason=max_tokens_truncated → the output-length-limit notice (distinct from the tool-turn
+    limit); reason is passed through in tool_meta."""
     agent = _agent(truncated=True, reason="max_tokens_truncated")
     state = {"workflow_id": "w1", "prd_text": "xxx", "sources": []}
     out = understand_prd(state, config={"configurable": {"agent": agent}})

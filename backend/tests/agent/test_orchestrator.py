@@ -1,5 +1,5 @@
 # backend/tests/agent/test_orchestrator.py
-"""ChatOrchestrator 测试——验证 DIRECT/RAG 路径的持久化行为。"""
+"""ChatOrchestrator tests: verify the persistence behavior of the DIRECT / RAG paths."""
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,7 +21,7 @@ def orch(sample_settings):
 
 
 def test_direct_path_persists_sqlite_not_vector(orch, sample_settings):
-    """DIRECT 路径：写 SQLite 不写向量库。"""
+    """DIRECT path: writes to SQLite but not to the vector store."""
     req = ChatRequest(message="你好", session_id="test-direct")
     with patch.object(orch, "_route_intent", return_value=MagicMock(
             intent=ChatIntent.DIRECT, reason="greeting")), \
@@ -33,7 +33,7 @@ def test_direct_path_persists_sqlite_not_vector(orch, sample_settings):
 
 
 def test_rag_path_persists_both(orch, sample_settings):
-    """RAG 路径：写 SQLite + 写向量库 + 回填 indexed flag。"""
+    """RAG path: writes to SQLite + the vector store and backfills the indexed flag."""
     req = ChatRequest(message="what is payment", session_id="test-rag")
     with patch.object(orch, "_route_intent", return_value=MagicMock(
             intent=ChatIntent.RAG, reason="keyword")), \
@@ -47,7 +47,7 @@ def test_rag_path_persists_both(orch, sample_settings):
 
 
 def test_chitchat_excluded_from_vector_search(orch, sample_settings):
-    """先 chitchat，再 RAG——chitchat 不出现在向量检索结果中。"""
+    """Chitchat first, then RAG: the chitchat does not show up in the vector search results."""
     # Turn 1: chitchat
     req1 = ChatRequest(message="你好", session_id="s1")
     with patch.object(orch, "_route_intent", return_value=MagicMock(
@@ -72,7 +72,8 @@ def test_chitchat_excluded_from_vector_search(orch, sample_settings):
 
 
 def test_route_intent_step_reports_engine_metadata(orch, sample_settings, monkeypatch):
-    """编排元数据：route_intent step 携带 engine/confidence/fallback（意图引擎可观测）。"""
+    """Orchestration metadata: the route_intent step carries engine / confidence / fallback
+    (making the intent engine observable)."""
     from porto_chatbot.agent import orchestrator as orch_mod
     from porto_chatbot.models import RagChatSettingsPayload
 
@@ -91,7 +92,8 @@ def test_route_intent_step_reports_engine_metadata(orch, sample_settings, monkey
 def test_route_intent_merges_db_typesafe_settings_into_runtime_settings(
     orch, monkeypatch,
 ):
-    """[回归] 设置页保存的 typesafe 键必须合入 route_chat_intent 收到的 Settings。"""
+    """[Regression] The typesafe key saved from the settings page must be merged into the Settings
+    that route_chat_intent receives."""
     from porto_chatbot.agent import orchestrator as orch_mod
     from porto_chatbot.intent import IntentDecision
     from porto_chatbot.models import ChatRequest, RagChatSettingsPayload

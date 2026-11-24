@@ -27,7 +27,7 @@ def test_loop_skips_critique_when_tool_truncated(monkeypatch):
     result = generate_spec_with_loop(ctx, Subsystem(name="x", responsibility="r"))
     assert result.tool_meta["truncated"] is True
     assert "超限" in result.final
-    ctx.critic_llm.complete_structured.assert_not_called()  # critique 被跳过
+    ctx.critic_llm.complete_structured.assert_not_called()  # critique was skipped
 
 
 def test_loop_normal_carries_tool_meta(monkeypatch):
@@ -37,7 +37,7 @@ def test_loop_normal_carries_tool_meta(monkeypatch):
     )
     ctx = MagicMock()
     ctx.llm.enabled = True
-    ctx.backend = None  # critique 走 backend；None → critique_spec 返回 None → 立即接受
+    ctx.backend = None  # critique goes through the backend; None → critique_spec returns None → accepted at once
     ctx.settings.spec_refine_enabled = True
     ctx.settings.spec_refine_max_iter = 3
     ctx.settings.spec_refine_pass_score = 10

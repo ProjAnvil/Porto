@@ -1,9 +1,10 @@
-"""chroma update_metadata 的 hnsw:space 剥离回归测试。
+"""Regression test for stripping hnsw:space in the chroma update_metadata.
 
-背景：chromadb 禁止 ``modify`` 携带 ``"hnsw:space"`` 键（即使值未变也 raise
-"Changing the distance function ..."）——非 LOCAL embedding 首次写入
-embedding_dimensions 时必触发（曾阻断 ollama semantic profile 的索引构建）。
-修复：payload 剥离该键（本仓库 chroma collection 恒 L2 == chromadb 默认）。
+Background: chromadb forbids ``modify`` to carry the ``"hnsw:space"`` key (it raises
+"Changing the distance function ..." even when the value is unchanged) — this always
+triggered the first time a non-LOCAL embedding wrote embedding_dimensions (it once
+blocked index building for the ollama semantic profile). Fix: the key is stripped from
+the payload (this repository's chroma collection is always L2, the chromadb default).
 """
 from __future__ import annotations
 
@@ -35,14 +36,15 @@ def test_update_metadata_strips_hnsw_space(tmp_path):
             metadata=store._expected_collection_metadata(),
         )
     )
-    # 修复前：merged 含 hnsw:space（来自既有 metadata）→ modify 必 raise
+    # Before the fix: merged contains hnsw:space (from the existing metadata) → modify
+    # always raised
     store._repo.update_metadata(name, {"embedding_dimensions": 999})
     after = store._repo.get_metadata(name)
     assert after.get("embedding_dimensions") == 999
 
 
 def test_update_metadata_noop_when_unchanged(tmp_path):
-    """值无变化时不触发 modify（守卫仍生效）。"""
+    """An unchanged value does not trigger modify (the guard still applies)."""
     store = _store(tmp_path, "reg_noop")
     name = store.settings.vector_collection
     dim = store.embeddings.probe_dimension()
@@ -50,6 +52,6 @@ def test_update_metadata_noop_when_unchanged(tmp_path):
     store._repo.ensure_collection(
         CollectionSpec(name=name, dimension=dim, metric=DistanceMetric.L2, metadata=meta)
     )
-    # 同值再 update：不抛错、值不变
+    # Update again with the same value: no exception, value unchanged
     store._repo.update_metadata(name, meta)
     assert store._repo.get_metadata(name).get("embedding_dimensions") == 128

@@ -1,9 +1,10 @@
-"""拒答门禁（negative rejection）——知识库无答案时必须明确拒答，不得编造。
+"""Refusal gate (negative rejection): when the knowledge base has no answer the system
+must refuse explicitly instead of making one up.
 
-判定为词面启发式（``refusal_detector.py``，零 judge LLM）：成本 = 每题一次
-生成调用。默认硬门禁（正确率 ≥ 0.6）；env::
+The verdict is a lexical heuristic (``refusal_detector.py``, no judge LLM): the cost is
+one generation call per question. Hard gate by default (accuracy ≥ 0.6); env::
 
-    RAG_EVAL_REFUSAL_REPORT_ONLY=1 pytest ...   # 只报告不拦截
+    RAG_EVAL_REFUSAL_REPORT_ONLY=1 pytest ...   # report only, do not block
 """
 from __future__ import annotations
 

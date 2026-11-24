@@ -1,15 +1,15 @@
-"""命名检索优化 profile 预设——覆盖 Porto 的策略矩阵。
+"""Named retrieval profile presets covering Porto's strategy matrix.
 
-用法::
+Usage::
 
     from tests.rag_eval.profiles import PROFILES
-    profile = PROFILES["rerank"]          # 取预设
+    profile = PROFILES["rerank"]          # pick a preset
 
 CLI::
 
-    python -m tests.rag_eval.experiment rerank           # 跑单个
-    python -m tests.rag_eval.experiment --sweep all      # 全扫
-    python -m tests.rag_eval.experiment --list            # 列出
+    python -m tests.rag_eval.experiment rerank           # run one
+    python -m tests.rag_eval.experiment --sweep all      # sweep all
+    python -m tests.rag_eval.experiment --list            # list profiles
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from porto_chatbot.models.enums import (
 
 from .schema import EvalProfile
 
-# ── 基线 ────────────────────────────────────────────────────────────────── #
+# ── Baseline ──────────────────────────────────────────────────────────── #
 
 PROFILES: dict[str, EvalProfile] = {
     "baseline": EvalProfile(
@@ -55,7 +55,8 @@ PROFILES: dict[str, EvalProfile] = {
         rerank_top_n=3,
         rerank_model="deepseek-v4-flash",
     ),
-    # 隔离变量：只换语义 embedding，chunk/rerank 与 baseline 完全一致
+    # Isolate one variable: only the semantic embedding changes; chunk / rerank are identical
+    # to baseline
     "semantic_embed": EvalProfile(
         name="semantic_embed",
         description="qwen3 语义 embedding（隔离变量：同 baseline chunk/无 rerank）",
@@ -64,7 +65,7 @@ PROFILES: dict[str, EvalProfile] = {
         embedding_base_url="http://127.0.0.1:11434",
         embedding_dimensions=1024,
     ),
-    # ── query transform 策略（搭配 rerank 基座）────────────────────────── #
+    # ── Query-transform strategies (on the rerank base) ─────────────────── #
     "hyde": EvalProfile(
         name="hyde",
         description="HyDE 假设文档 + 小 chunk + rerank",
@@ -101,8 +102,9 @@ PROFILES: dict[str, EvalProfile] = {
         rerank_model="deepseek-v4-flash",
         strategy=QueryTransformStrategy.STEP_BACK,
     ),
-    # ── 多轮指代消解（condense：检索前用历史改写独立查询）──────────────── #
-    # 干净 A/B：除 condense_history 外与 baseline 完全一致
+    # ── Multi-turn coreference resolution (condense) ───────────────────── #
+    # condense rewrites the current question into a standalone query from the history,
+    # before retrieval. Clean A/B: identical to baseline except condense_history
     "condense": EvalProfile(
         name="condense",
         description="多轮指代消解：baseline 基座 + 历史感知查询改写（condense_question）",
@@ -117,7 +119,8 @@ PROFILES: dict[str, EvalProfile] = {
         rerank_model="deepseek-v4-flash",
         condense_history=True,
     ),
-    # 指代消解 + 语义 embedding：分别对应多轮两大瓶颈（改写缺失 / hash embedding 太弱）
+    # Coreference resolution + semantic embedding: they target the two main multi-turn
+    # bottlenecks (missing rewriting / hash embedding being too weak)
     "condense_semantic": EvalProfile(
         name="condense_semantic",
         description="指代消解 + qwen3 语义 embedding（chunk/rerank 同 baseline）",
@@ -127,7 +130,8 @@ PROFILES: dict[str, EvalProfile] = {
         embedding_dimensions=1024,
         condense_history=True,
     ),
-    # ── 单变量 lever（四大优化手段消融；除 lever 本身与 baseline 完全一致）── #
+    # ── Single-variable levers (ablation of the four levers) ───────────── #
+    # identical to baseline except for the lever itself
     "bigchunk_rerank": EvalProfile(
         name="bigchunk_rerank",
         description="lever: rerank（1400 chunk + flash rerank top5，其余同 baseline）",
@@ -144,7 +148,7 @@ PROFILES: dict[str, EvalProfile] = {
 
 
 def get_profile(name: str) -> EvalProfile:
-    """取命名 profile；不存在时报错列出可用项。"""
+    """Look up a named profile; raise with the available names when it does not exist."""
     if name not in PROFILES:
         avail = ", ".join(sorted(PROFILES))
         raise KeyError(f"未知 profile '{name}'，可用: {avail}")

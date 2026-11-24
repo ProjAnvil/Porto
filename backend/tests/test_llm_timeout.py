@@ -18,15 +18,15 @@ def _settings(tmp_path, **over):
 
 
 def test_openai_client_uses_configured_timeout(tmp_path):
-    """ChatOpenAI 把 agent_request_timeout 落到 request_timeout 字段。"""
+    """ChatOpenAI maps agent_request_timeout onto the request_timeout field."""
     c = LLMClient(_settings(tmp_path, agent_provider="openai", agent_request_timeout=77))
-    # langchain_openai 把 timeout 存为 request_timeout（float）
+    # langchain_openai stores the timeout as request_timeout (a float)
     actual = getattr(c._client, "request_timeout", None) or getattr(c._client, "timeout", None)
     assert actual == 77
 
 
 def test_anthropic_client_uses_configured_timeout(tmp_path):
-    """ChatAnthropic 把 agent_request_timeout 落到 default_request_timeout 字段。"""
+    """ChatAnthropic maps agent_request_timeout onto the default_request_timeout field."""
     c = LLMClient(
         _settings(
             tmp_path,

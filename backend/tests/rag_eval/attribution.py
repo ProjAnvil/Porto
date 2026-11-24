@@ -1,14 +1,18 @@
-"""claim 级归因（RAGChecker 思路的轻量实现）——回答错在检索还是生成。
+"""Claim-level attribution (a lightweight take on RAGChecker): is a wrong answer a retrieval
+problem or a generation problem?
 
-把回答拆成原子句（claim），逐句判定是否被检索上下文支持（词面重叠，与
-``evaluation.py`` 的 faithfulness 启发式同族，零 LLM）。不支持的句子再按
-gold 文档是否已在检索结果中二分归因：
+Split the answer into atomic sentences (claims) and decide for each one whether the
+retrieved context supports it (lexical overlap, same family as the faithfulness heuristic
+in ``evaluation.py``, no LLM). Unsupported claims are then attributed by whether the gold
+document is already among the retrieved results:
 
-- ``retrieval_miss``  —— gold 文档没检回：先修检索（chunk/召回/rerank）
-- ``generation_error``—— gold 文档已在上下文里仍然答飞：修生成（prompt/模型）
+- ``retrieval_miss``: the gold document was not retrieved → fix retrieval first
+  (chunking / recall / rerank)
+- ``generation_error``: the gold document is already in the context and the answer is
+  still wrong → fix generation (prompt / model)
 
-输出进实验报告的 ``attribution`` 字段，让 sweep 对比能回答「提升来自检索
-还是生成」。
+The result goes into the ``attribution`` field of the experiment report so that a sweep
+comparison can answer "did the gain come from retrieval or from generation".
 """
 from __future__ import annotations
 
@@ -16,12 +20,12 @@ import re
 
 from porto_chatbot.embeddings import tokens
 
-_SUPPORT_THRESHOLD = 0.35  # 与 src evaluation._SENTENCE_SUPPORT_THRESHOLD 对齐
+_SUPPORT_THRESHOLD = 0.35  # matches src evaluation._SENTENCE_SUPPORT_THRESHOLD
 _CLAIM_SPLIT = re.compile(r"[。！？!?\n；;]+")
 
 
 def split_claims(answer: str) -> list[str]:
-    """回答 → 原子句列表（按中英文句读切分）。"""
+    """Answer → list of atomic sentences (split on Chinese and English sentence punctuation)."""
     return [s.strip() for s in _CLAIM_SPLIT.split(answer) if len(s.strip()) >= 4]
 
 
@@ -39,15 +43,16 @@ def attribute_answer(
     gold_doc_ids: list[str],
     retrieved_doc_ids: list[str],
 ) -> dict:
-    """对单条回答做 claim 级归因。
+    """Claim-level attribution for one answer.
 
     Returns
     -------
     dict
         ``n_claims / n_supported / n_unsupported / generation_errors /
-        retrieval_misses / per_claim: [{text, supported, attribution}]``。
-        无 gold 标注（gold_doc_ids 为空）时不支持句一律记 ``retrieval_miss``
-        的上界（``unknown_gold=True``），供参考不进门禁。
+        retrieval_misses / per_claim: [{text, supported, attribution}]``.
+        Without a gold annotation (gold_doc_ids is empty) every unsupported claim is counted
+        as ``retrieval_miss``, an upper bound (``unknown_gold=True``); for reference only, not
+        gated.
     """
     context = "\n".join(contexts)
     gold_in_context = bool(set(gold_doc_ids) & set(retrieved_doc_ids))
@@ -63,10 +68,10 @@ def attribute_answer(
             kind = "retrieval_miss"
             n_ret += 1
         elif gold_in_context:
-            kind = "generation_error"  # gold 已在手边，仍答了无支持的内容
+            kind = "generation_error"  # the gold is at hand, yet it answered with unsupported content
             n_gen += 1
         else:
-            kind = "retrieval_miss"  # gold 未检回
+            kind = "retrieval_miss"  # the gold was not retrieved
             n_ret += 1
         per_claim.append({"text": claim[:80], "supported": False, "attribution": kind})
 
@@ -86,7 +91,8 @@ def attribute_answer(
 
 
 def aggregate_attribution(per_case: list[dict]) -> dict:
-    """跨 case 聚合：两类错误率 + 不支持句率（rate = 计数 / 总 claim 数）。"""
+    """Aggregate across cases: the two error rates plus the unsupported-claim rate (rate =
+    count / total claims)."""
     tot = sum(c.get("n_claims", 0) for c in per_case)
     if tot == 0:
         return {

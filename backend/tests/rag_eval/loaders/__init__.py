@@ -1,7 +1,7 @@
-"""数据集注册表——按名加载，``experiment.py --dataset <name>`` 消费。
+"""Dataset registry: load by name, consumed by ``experiment.py --dataset <name>``.
 
-``domainrag`` 默认 extractive 子集（保持既有行为）；DomainRAG 其余子集
-以 ``domainrag:<subset>`` 或裸子集名引用。
+``domainrag`` is the extractive subset by default (existing behavior kept); the other
+DomainRAG subsets are referenced as ``domainrag:<subset>`` or by the bare subset name.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _load_domainrag_named(subset: str):
 DATASETS: dict[str, object] = {
     "synth": lambda _=None: load_synth(),
     "refusal": lambda _=None: load_refusal(),
-    # 默认数据集：DomainRAG extractive（与历史行为一致）
+    # Default dataset: DomainRAG extractive (same as the historical behavior)
     "domainrag": _load_domainrag_named(DEFAULT_SUBSET),
 }
 for _subset in SUBSET_FILES:
@@ -46,7 +46,7 @@ def available_datasets() -> list[str]:
 def load_dataset(
     name: str, data_dir: Path | None = None
 ) -> tuple[RagCorpus, list[RagGolden]]:
-    """按名加载数据集；未知名称报错并列出可用项。"""
+    """Load a dataset by name; an unknown name raises and lists the available ones."""
     if name not in DATASETS:
         raise KeyError(f"未知数据集 '{name}'，可用: {available_datasets()}")
     return DATASETS[name](data_dir)

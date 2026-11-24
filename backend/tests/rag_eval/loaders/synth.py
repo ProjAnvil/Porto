@@ -1,4 +1,5 @@
-"""synth 微型合成数据集（3 md + 2 golden）——零外部依赖的冒烟/单测数据。"""
+"""The tiny synthetic synth dataset (3 md files + 2 goldens): smoke / unit-test data with no
+external dependencies."""
 from __future__ import annotations
 
 import json

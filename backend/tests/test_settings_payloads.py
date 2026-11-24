@@ -1,4 +1,4 @@
-"""意图引擎与 typesafe 配置键（rag_chat namespace）的契约测试。"""
+"""Contract tests for the intent-engine and typesafe config keys (rag_chat namespace)."""
 
 from porto_chatbot.config_store import RAG_CHAT_SETTING_KEYS, SENSITIVE_SETTING_KEYS
 from porto_chatbot.models import RagChatSettingsPayload
@@ -24,7 +24,8 @@ def test_rag_chat_keys_cover_typesafe_settings_and_condense():
         "chat_typesafe_timeout_ms",
         "chat_typesafe_confidence_threshold",
         "chat_typesafe_low_confidence_fallback",
-        # 存量修复：condense_enabled 此前不在键集，保存后读不回
+        # Fix for existing data: condense_enabled was missing from the key set, so it could not be
+        # read back after saving
         "condense_enabled",
     } <= RAG_CHAT_SETTING_KEYS
     assert "chat_typesafe_api_key" in SENSITIVE_SETTING_KEYS

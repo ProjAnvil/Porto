@@ -1,4 +1,5 @@
-"""TypeSafe 意图引擎：置信度门控、回退与降级（不发真实网络请求）。"""
+"""TypeSafe intent engine: confidence gating, fallback and degraded mode (no real network
+requests)."""
 
 from __future__ import annotations
 
@@ -51,7 +52,7 @@ def test_typesafe_low_confidence_falls_back_to_builtin(monkeypatch, tmp_path):
     from porto_chatbot.llm import LLMClient
 
     s = _settings()
-    llm = LLMClient(s)  # 未启用 → builtin 流程落到规则
+    llm = LLMClient(s)  # not enabled → the builtin flow lands on the rule
     d = intent_mod.route_chat_intent(
         "帮我分析支付架构", s, llm, engine=IntentEngine.TYPESAFE,
     )
@@ -131,7 +132,8 @@ def test_typesafe_adaptive_mode_uses_three_labels(monkeypatch):
 
 
 def test_typesafe_call_uses_seconds_timeout_and_no_retry(monkeypatch):
-    """[回归] 调用级 timeout 单位是秒（ms/1000）；重试策略在 client 构造上且 max_retries=0。"""
+    """[Regression] The per-call timeout is in seconds (ms/1000); the retry policy sits on the
+    client constructor with max_retries=0."""
     import typesafe_sdk as ts_sdk
     from typesafe_sdk import RetryPolicy
 

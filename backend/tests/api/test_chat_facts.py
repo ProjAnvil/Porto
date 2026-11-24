@@ -7,12 +7,12 @@ import pytest
 
 
 def _mock_sessions(settings) -> MagicMock:
-    """返回一个像 SessionStore 的 mock:get_compacted_history 会读它的 settings。
+    """Return a mock that behaves like a SessionStore: get_compacted_history reads its settings.
 
-    必须把 memory_recent_keep / memory_compact_threshold 设成真数字,
-    否则 `len(records) <= thresh` 会因 `int <= MagicMock()` 抛 TypeError。
-    title 设成非 None 以阻止 maybe_generate_title 启动 daemon 线程(避免
-    daemon 线程的 LLM 调用污染 captured 字典)。
+    memory_recent_keep / memory_compact_threshold must be real numbers, otherwise
+    `len(records) <= thresh` raises TypeError on `int <= MagicMock()`. title is set to a non-None
+    value so maybe_generate_title does not start a daemon thread (its LLM call would pollute
+    the captured dict).
     """
     sessions = MagicMock()
     sessions.settings = settings
@@ -25,7 +25,7 @@ def _mock_sessions(settings) -> MagicMock:
 
 
 def _mock_conv_memory() -> MagicMock:
-    """返回一个像 ConversationMemory 的 mock。"""
+    """Return a mock that behaves like a ConversationMemory."""
     mem = MagicMock()
     mem.search.return_value = []
     mem.index.return_value = None
@@ -34,7 +34,8 @@ def _mock_conv_memory() -> MagicMock:
 
 
 def test_chat_injects_facts_into_prompt(monkeypatch, tmp_path):
-    """非流式 chat:facts 被注入 prompt_parts(LLM 收到的 user 文本中)。"""
+    """Non-streaming chat: facts are injected into prompt_parts (inside the user text the LLM
+    receives)."""
     from porto_chatbot import main
     from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.agent import orchestrator as orchestrator_mod
@@ -44,9 +45,9 @@ def test_chat_injects_facts_into_prompt(monkeypatch, tmp_path):
     from porto_chatbot.settings import Settings
 
     settings = Settings(data_dir=tmp_path)
-    # chat() 内 apply_rag_settings 通过 current_settings() 读 main.settings
+    # Inside chat(), apply_rag_settings reads main.settings through current_settings()
     monkeypatch.setattr(main, "settings", settings)
-    SessionStore(settings)  # 初始化 messages + session_facts 表 schema
+    SessionStore(settings)  # creates the messages + session_facts table schema
 
     fs = SessionFactsStore(settings)
     fs.upsert(
@@ -82,11 +83,11 @@ def test_chat_injects_facts_into_prompt(monkeypatch, tmp_path):
         req = chat_mod.ChatRequest(message="用 OAuth 吧", session_id="s1")
         chat_mod.chat(req)
 
-    # facts_block 注入到了 LLM 收到的 user prompt
+    # The facts_block was injected into the user prompt the LLM received
     assert "登录采用 OAuth" in captured["user"]
     assert "关键事实" in captured["user"]
 
-    # 异步提取也被触发(参数对)
+    # Async extraction was triggered too (with the right arguments)
     trig_sync.assert_called_once()
     kw = trig_sync.call_args.kwargs
     assert kw["session_id"] == "s1"
@@ -94,7 +95,8 @@ def test_chat_injects_facts_into_prompt(monkeypatch, tmp_path):
 
 
 def test_chat_stream_triggers_async_extraction(monkeypatch, tmp_path):
-    """流式 chat_stream:每轮 user msg 后触发异步提取(不阻塞 SSE)。"""
+    """Streaming chat_stream: async extraction is triggered after each user message (without
+    blocking the SSE stream)."""
     from porto_chatbot import main
     from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.agent import langchain_chat_stream as stream_mod
@@ -105,12 +107,12 @@ def test_chat_stream_triggers_async_extraction(monkeypatch, tmp_path):
 
     settings = Settings(data_dir=tmp_path)
     monkeypatch.setattr(main, "settings", settings)
-    SessionStore(settings)  # 初始化 messages + session_facts 表 schema
+    SessionStore(settings)  # creates the messages + session_facts table schema
 
     triggered: dict = {}
 
-    # 真实 trigger_facts_extraction_async 是 sync function(内部 create_task),
-    # chat_stream 不会 await 它。所以 mock 也必须是 sync function。
+    # The real trigger_facts_extraction_async is a sync function (it calls create_task inside)
+    # and chat_stream does not await it, so the mock has to be a sync function too.
     def fake_trigger(**kw):
         triggered.update(kw)
 
@@ -137,7 +139,7 @@ def test_chat_stream_triggers_async_extraction(monkeypatch, tmp_path):
         body = {"message": "用 OAuth 吧", "session_id": "s1"}
 
         async def _drain() -> None:
-            # chat_stream 返回 StreamingResponse,内部 events() 才是 async iterator
+            # chat_stream returns a StreamingResponse; its inner events() is the async iterator
             response = await chat_mod.chat_stream(body)
             async for _ in response.body_iterator:
                 pass
@@ -149,10 +151,11 @@ def test_chat_stream_triggers_async_extraction(monkeypatch, tmp_path):
 
 
 def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
-    """facts_store.by_category 抛 OperationalError 时 chat 不报错(fail-open)。
+    """When facts_store.by_category raises OperationalError, chat does not fail (fail-open).
 
-    主 chat 链路读 facts 任何环节失败都不得阻塞响应。这里 monkeypatch by_category
-    抛 sqlite3.OperationalError("db locked"),验证 chat() 不抛 + facts_block 为空。
+    A failure anywhere in the facts read must never block the main chat path from responding.
+    Here by_category is monkeypatched to raise sqlite3.OperationalError("db locked"); check that
+    chat() does not raise and the facts_block is empty.
     """
     import sqlite3
 
@@ -166,7 +169,7 @@ def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
 
     settings = Settings(data_dir=tmp_path, facts_enabled=True)
     monkeypatch.setattr(main, "settings", settings)
-    SessionStore(settings)  # 初始化 messages + session_facts 表 schema
+    SessionStore(settings)  # creates the messages + session_facts table schema
 
     captured: dict = {}
 
@@ -176,7 +179,8 @@ def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
         captured.update(system=system, user=user) or "回答"
     )
 
-    # 让 by_category 抛 db 锁异常(模拟磁盘满 / db locked / 老 db 缺 migration)
+    # Make by_category raise a db lock error (simulating a full disk / db locked / an old db
+    # missing the migration)
     def _raise(self, sid):
         raise sqlite3.OperationalError("database is locked")
 
@@ -198,20 +202,23 @@ def test_chat_facts_load_fail_open(monkeypatch, tmp_path):
         ri.return_value = MagicMock(intent="rag", reason="x")
 
         req = chat_mod.ChatRequest(message="用 OAuth 吧", session_id="s1")
-        resp = chat_mod.chat(req)  # 不抛即通过
+        resp = chat_mod.chat(req)  # passing means it did not raise
 
     assert resp.answer == "回答"
-    # facts_block 为空,facts 头 "关键事实" 不应出现在注入给 LLM 的 user 文本里
+    # The facts_block is empty, so the facts header "关键事实" must not appear in the user
+    # text injected for the LLM
     assert "关键事实" not in captured["user"]
-    # 用户原消息仍然在
+    # The user's original message is still there
     assert "用 OAuth 吧" in captured["user"]
-    # trigger 仍被调(内部按 settings.facts_enabled 走,不依赖 facts_block)
+    # The trigger is still called (it follows settings.facts_enabled internally and does not
+    # depend on the facts_block)
     trig_sync.assert_called_once()
 
 
 @pytest.mark.parametrize("facts_enabled", [True, False])
 def test_chat_facts_fail_open_when_empty(monkeypatch, tmp_path, facts_enabled):
-    """facts 为空或关闭时 chat 行为不破坏(注入空串,trigger 跳过)。"""
+    """With empty or disabled facts the chat behavior stays intact (an empty string is injected
+    and the trigger is skipped)."""
     from porto_chatbot import main
     from porto_chatbot.agent import langchain_chat as langchain_chat_mod
     from porto_chatbot.agent import orchestrator as orchestrator_mod
@@ -249,22 +256,24 @@ def test_chat_facts_fail_open_when_empty(monkeypatch, tmp_path, facts_enabled):
         req = chat_mod.ChatRequest(message="普通问题", session_id="empty-session")
         chat_mod.chat(req)
 
-    # 不管 facts_enabled,fail-open:不报错,LLM 收到 user 文本
+    # Regardless of facts_enabled it fails open: no error, and the LLM receives the user text
     assert "普通问题" in captured["user"]
-    # facts_enabled=False 时 prompt 不应注入 facts 头("关键事实")
+    # With facts_enabled=False the prompt must not get the facts header ("关键事实")
     if not facts_enabled:
         assert "关键事实" not in captured["user"]
-    # trigger 无论 facts_enabled 都被调一次(内部按 settings.facts_enabled fail-open,
-    # Task 7 已覆盖)
+    # The trigger is called exactly once regardless of facts_enabled (it fails open internally
+    # based on settings.facts_enabled, covered by Task 7)
     trig_sync.assert_called_once()
 
 
 def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
-    """流式 chat_stream:facts_store.by_category 抛 OperationalError 时不报错(fail-open)。
+    """Streaming chat_stream: when facts_store.by_category raises OperationalError there is no
+    error (fail-open).
 
-    镜像 test_chat_facts_load_fail_open 的流式版本。chat_stream 与 chat 的 facts
-    读取代码同源(同 try/except + logger.exception 模式),此测试锁住流式路径也遵守
-    fail-open 铁律,防止后续重构流式 prompt 拼装时悄悄破坏 fail-open。
+    Streaming mirror of test_chat_facts_load_fail_open. chat_stream and chat share the facts
+    read code (same try/except + logger.exception pattern); this test locks in that the
+    streaming path also follows the fail-open rule, so a later refactor of the streaming prompt
+    assembly cannot quietly break it.
     """
     import sqlite3
 
@@ -285,7 +294,8 @@ def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
 
     fake_llm = MagicMock()
     fake_llm.enabled = True
-    # 流式路径按 agent_stream_enabled 走 stream 或 complete;两个都 mock 以覆盖任一分支
+    # The streaming path uses stream or complete depending on agent_stream_enabled; both are
+    # mocked to cover either branch
     fake_llm.stream = MagicMock(
         side_effect=lambda system, user, **kw: (
             captured.update(system=system, user=user) or iter(["回答"])
@@ -297,7 +307,8 @@ def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
         )
     )
 
-    # 让 by_category 抛 db 锁异常(模拟磁盘满 / db locked / 老 db 缺 migration)
+    # Make by_category raise a db lock error (simulating a full disk / db locked / an old db
+    # missing the migration)
     def _raise(self, sid):
         raise sqlite3.OperationalError("database is locked")
 
@@ -321,27 +332,31 @@ def test_chat_stream_facts_load_fail_open(monkeypatch, tmp_path):
         body = {"message": "用 OAuth 吧", "session_id": "s1"}
 
         async def _drain() -> None:
-            # chat_stream 返回 StreamingResponse,内部 events() 才是 async iterator
+            # chat_stream returns a StreamingResponse; its inner events() is the async iterator
             response = await chat_mod.chat_stream(body)
             async for _ in response.body_iterator:
                 pass
 
-        asyncio.run(_drain())  # 不抛即通过
+        asyncio.run(_drain())  # passing means it did not raise
 
-    # facts_block 为空,"关键事实" 头不应出现在注入给 LLM 的 user 文本里
+    # The facts_block is empty, so the facts header "关键事实" must not appear in the user
+    # text injected for the LLM
     assert "关键事实" not in captured["user"]
-    # 用户原消息仍然在
+    # The user's original message is still there
     assert "用 OAuth 吧" in captured["user"]
-    # trigger 仍被调(内部按 settings.facts_enabled 走,不依赖 facts_block)
+    # The trigger is still called (it follows settings.facts_enabled internally and does not
+    # depend on the facts_block)
     trig_async.assert_called_once()
 
 
 def test_chat_propagates_transform_degraded(monkeypatch, tmp_path):
-    """Task 8: retrieve_with_transform 返回 degraded 时 ChatResponse.transform_degraded 非空。
+    """Task 8: when retrieve_with_transform returns degraded, ChatResponse.transform_degraded is
+    non-empty.
 
-    默认 binary+none 路径走 retrieve_with_transform(NONE) → store.search，degraded=False
-    （transform_degraded=None，保持向后兼容）。本测试 monkeypatch retrieve_with_transform
-    强制返回 degraded=True，断言 ChatResponse.transform_degraded 透传降级原因。
+    The default binary+none path goes retrieve_with_transform(NONE) → store.search with
+    degraded=False (transform_degraded=None, for backward compatibility). This test
+    monkeypatches retrieve_with_transform to force degraded=True and asserts that
+    ChatResponse.transform_degraded passes the degradation reason through.
     """
     from porto_chatbot import main
     from porto_chatbot.agent import langchain_chat as langchain_chat_mod
@@ -353,7 +368,7 @@ def test_chat_propagates_transform_degraded(monkeypatch, tmp_path):
 
     settings = Settings(data_dir=tmp_path)
     monkeypatch.setattr(main, "settings", settings)
-    SessionStore(settings)  # 初始化 schema
+    SessionStore(settings)  # creates the schema
 
     fake_llm = MagicMock()
     fake_llm.enabled = True
@@ -382,17 +397,20 @@ def test_chat_propagates_transform_degraded(monkeypatch, tmp_path):
         req = chat_mod.ChatRequest(message="查知识库", session_id="s1")
         resp = chat_mod.chat(req)
 
-    # transform_degraded 透传降级原因字符串
+    # transform_degraded passes the degradation reason string through
     assert resp.transform_degraded == "llm_call_failed"
-    # retrieve_with_transform 被调（默认 binary + rag intent 走 transform 分支）
+    # retrieve_with_transform was called (the default binary + rag intent takes the transform
+    # branch)
     grt.assert_called_once()
 
 
 def test_chat_transform_degraded_none_when_normal(monkeypatch, tmp_path):
-    """Task 8: 默认 binary+none + 正常检索 → transform_degraded=None（向后兼容锁）。
+    """Task 8: default binary+none + normal retrieval → transform_degraded=None (locks in
+    backward compatibility).
 
-    不 mock retrieve_with_transform，走真的 retrieve_with_transform(NONE) → store.search
-    原路径；degraded 恒为 False，ChatResponse.transform_degraded 必须为 None。
+    retrieve_with_transform is not mocked: the real retrieve_with_transform(NONE) →
+    store.search path runs, degraded is always False, and ChatResponse.transform_degraded must
+    be None.
     """
     from porto_chatbot import main
     from porto_chatbot.agent import langchain_chat as langchain_chat_mod
@@ -427,5 +445,5 @@ def test_chat_transform_degraded_none_when_normal(monkeypatch, tmp_path):
         req = chat_mod.ChatRequest(message="普通问题", session_id="s1")
         resp = chat_mod.chat(req)
 
-    # 默认 binary+none 路径 transform_degraded 必须为 None（向后兼容）
+    # On the default binary+none path transform_degraded must be None (backward compatibility)
     assert resp.transform_degraded is None

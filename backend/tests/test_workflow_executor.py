@@ -1,7 +1,9 @@
-"""WorkflowExecutor —— 后台线程用 langgraph graph 推进 + per-workflow 锁防并发 advance。
+"""WorkflowExecutor: a background thread drives the langgraph graph, with a per-workflow
+lock that prevents concurrent advance.
 
-测试用 trivial graph(stand-in 节点 + 临时 SqliteSaver)注入 executor,验证:
-start/advance/failed/并发 guard/投影保 produced_by。不跑真节点逻辑。
+The tests inject a trivial graph (stand-in nodes + a temporary SqliteSaver) into the
+executor and verify start / advance / failed / the concurrency guard / projection keeping
+produced_by. No real node logic runs.
 """
 
 from __future__ import annotations
@@ -27,8 +29,8 @@ def _saver(tmp_path):
     return sv
 
 
-#: stand-in 节点每个 step 写的产出(注意 specs/spec_results 必须是 dict ——
-#: PortoAgentState 上它们带 dict-merge reducer,传字符串会让 reducer 崩)。
+#: Output written by the stand-in node for each step (note that specs / spec_results must be
+#: dicts: on PortoAgentState they carry a dict-merge reducer, and a string would crash it).
 _OUT_VALS = {
     "retrieve": {"sources": "retrieve-val"},
     "understand": {"understanding": "understand-val"},
@@ -38,11 +40,13 @@ _OUT_VALS = {
 
 
 def _trivial_graph(tmp_path, *, fail_on=None, slow_step=None, slow_event=None):
-    """与真图同拓扑 + interrupt_after 的 stand-in 图;每节点写产出键 + current_step。
+    """A stand-in graph with the same topology and interrupt_after points as the real one; each
+    node writes its output key + current_step.
 
-    fail_on: 命中该 step 时抛异常(测 failed 路径)。
-    slow_step + slow_event: 仅当运行到 slow_step 时 set(enter) 并阻塞于 release.wait
-        (测 guard:让 worker 进入该节点后持续持 guard;其余节点不阻塞)。
+    fail_on: raise when this step is reached (exercises the failed path).
+    slow_step + slow_event: only when slow_step is reached, set (enter) and block on
+    release.wait (exercises the guard: the worker keeps holding it inside that node; other
+    nodes do not block).
     """
     from porto_chatbot.agent.state import PortoAgentState
 
@@ -111,7 +115,7 @@ def test_advance_to_completed(tmp_path):
     wid = _create(store)
     ex.start_workflow(wid)
     ex.wait(wid, timeout=5)
-    for _ in range(3):  # understand→identify→generate→END(generate 是最后步)
+    for _ in range(3):  # understand → identify → generate → END (generate is the last step)
         assert ex.advance(wid) is True
         ex.wait(wid, timeout=5)
     assert store.get(wid)["status"] == "completed"
@@ -119,7 +123,8 @@ def test_advance_to_completed(tmp_path):
 
 
 def test_advance_returns_false_when_running(tmp_path):
-    """advance 时 worker 进入 slow 节点(identify)持续持 guard:再 advance 必 False。"""
+    """During advance the worker enters the slow node (identify) and keeps holding the guard:
+    another advance must return False."""
     enter, release = threading.Event(), threading.Event()
     settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
     store = WorkflowStore(settings)
@@ -130,10 +135,10 @@ def test_advance_returns_false_when_running(tmp_path):
     )
     wid = _create(store)
     ex.start_workflow(wid)
-    ex.wait(wid, timeout=5)  # 停 understand;identify 未触发,不阻塞
-    assert ex.advance(wid) is True  # worker 进 identify → 阻塞、持 guard
+    ex.wait(wid, timeout=5)  # stops at understand; identify is not reached, so nothing blocks
+    assert ex.advance(wid) is True  # the worker enters identify → blocks, holding the guard
     assert enter.wait(timeout=2.0)
-    assert ex.advance(wid) is False  # guard 被持 → 409 语义
+    assert ex.advance(wid) is False  # the guard is held → the 409 case
     release.set()
     ex.wait(wid, timeout=5)
 
@@ -149,29 +154,32 @@ def test_failed_records_error(tmp_path):
 
 
 def test_persist_preserves_user_produced_by(tmp_path):
-    """advance 后,更早的(用户编辑过)步 produced_by 保持 user;新步为 ai。
+    """After advance, earlier (user-edited) steps keep produced_by=user; new steps are ai.
 
-    模拟 understand 已是 produced_by=user(store 直接造),advance 跑 identify。
-    投影:understand 内容来自 graph state(stand-in 的 "understand-val",与 store 的
-    "user-edited" 不同 → 视为变化 → 重写,但 produced_by 取既有 "user" 保留);identify 新步为 ai。
+    Simulate understand already being produced_by=user (written straight into the store),
+    then advance runs identify. Projection: the understand content comes from the graph state
+    (the stand-in's "understand-val", which differs from the store's "user-edited" → treated as
+    changed → rewritten, but produced_by keeps the existing "user"); identify is a new step, so
+    ai.
     """
     ex, store = _make(tmp_path)
     wid = _create(store)
     ex.start_workflow(wid)
-    ex.wait(wid, timeout=5)  # 停 understand
+    ex.wait(wid, timeout=5)  # stops at understand
     store.save_output(wid, "understand", {"understanding": "user-edited"}, "user")
 
     assert ex.advance(wid) is True
     ex.wait(wid, timeout=5)  # → identify
 
     outs = store.get_outputs(wid)
-    assert outs["understand"]["produced_by"] == "user"  # 未被覆盖为 ai
+    assert outs["understand"]["produced_by"] == "user"  # not overwritten with ai
     assert outs["identify"]["produced_by"] == "ai"
 
 
 def test_two_rapid_advances_first_wins(tmp_path):
-    """回归:两次 rapid advance 同一 workflow,第一次 True(advance 自己拿 guard 起worker),
-    第二次 False(guard 被 worker 持有)。单图、slow_step=identify,不换图不换 saver。"""
+    """Regression: two rapid advances on the same workflow, the first True (advance takes the
+    guard itself and starts the worker), the second False (the guard is held by the worker).
+    Single graph with slow_step=identify; neither the graph nor the saver is swapped."""
     enter, release = threading.Event(), threading.Event()
     settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
     store = WorkflowStore(settings)
@@ -182,13 +190,13 @@ def test_two_rapid_advances_first_wins(tmp_path):
     )
     wid = _create(store)
     ex.start_workflow(wid)
-    ex.wait(wid, timeout=5)  # 停 understand,guard 空闲
+    ex.wait(wid, timeout=5)  # stops at understand, the guard is free
 
     r1 = ex.advance(wid)
-    assert r1 is True  # advance 自己拿 guard 起 worker
-    assert enter.wait(timeout=2.0)  # worker 已进 identify、持 guard
+    assert r1 is True  # advance takes the guard itself and starts the worker
+    assert enter.wait(timeout=2.0)  # the worker has entered identify and holds the guard
     r2 = ex.advance(wid)
-    assert r2 is False  # guard 被持
+    assert r2 is False  # the guard is held
     release.set()
     ex.wait(wid, timeout=5)
     assert store.get(wid)["current_step"] == "identify"
@@ -213,47 +221,52 @@ def test_update_step_rewinds_and_marks_user(tmp_path):
     outs = store.get_outputs(wid)
     assert outs["understand"]["produced_by"] == "user"
     assert outs["understand"]["output"]["understanding"] == "edited"
-    assert "identify" not in outs  # 下游被清
+    assert "identify" not in outs  # downstream cleared
 
 
 def test_update_step_then_advance_preserves_user_edit(tmp_path):
-    """Important #1: PUT 编辑后 advance,用户编辑的内容必须存活(而非被节点原始产出覆盖)。
+    """Important #1: after a PUT edit and an advance, the user's edit must survive (rather than
+    being overwritten by the node's original output).
 
-    机制:update_step 的 graph.update_state(as_node=understand) 把 edited 内容写进
-    graph checkpoint;advance 时 understand 节点不重跑(已位于其下游),_project_state
-    读到 graph-state 的 understanding == store 的 edited → skip-if-equal → 保留。
-    断言:advance 到 identify 后,store 里 understand.output.understanding 仍是用户编辑值。
+    Mechanism: the graph.update_state(as_node=understand) in update_step writes the edited
+    content into the graph checkpoint; on advance the understand node does not run again (we
+    are already downstream of it) and _project_state sees the graph-state understanding ==
+    the store's edited value → skip-if-equal → preserved.
+    Assertion: after advancing to identify, understand.output.understanding in the store is still
+    the user's edited value.
     """
     ex, store = _make(tmp_path)
     wid = _create(store)
-    ex.start_workflow(wid)  # 停 understand(原始 "understand-val")
+    ex.start_workflow(wid)  # stops at understand (the original "understand-val")
     ex.wait(wid, timeout=5)
-    ex.advance(wid)  # → identify(原始 "identify-val")
+    ex.advance(wid)  # → identify (the original "identify-val")
     ex.wait(wid, timeout=5)
 
-    # 用户编辑 understand(覆盖原始 "understand-val" → "user-edited")
+    # The user edits understand (overwriting the original "understand-val" → "user-edited")
     ex.update_step(wid, "understand", {"understanding": "user-edited"})
     outs = store.get_outputs(wid)
     assert outs["understand"]["output"]["understanding"] == "user-edited"
     assert outs["understand"]["produced_by"] == "user"
 
-    # advance:identify 节点会重跑(下游被 update_step 清掉);understand 不重跑
+    # advance: the identify node runs again (update_step cleared the downstream); understand
+    # does not run again
     assert ex.advance(wid) is True
     ex.wait(wid, timeout=5)
 
-    # 关键断言:understand 内容仍是用户的 edited 值(未被节点原始 "understand-val" 覆盖)
+    # Key assertion: the understand content is still the user's edited value (not overwritten
+    # by the node's original "understand-val")
     outs = store.get_outputs(wid)
     assert outs["understand"]["output"]["understanding"] == "user-edited", (
         "user-edited content lost after advance!"
     )
-    assert outs["understand"]["produced_by"] == "user"  # 审计字段也保留
-    assert "identify" in outs  # identify 重跑后回来
+    assert outs["understand"]["produced_by"] == "user"  # the audit field is kept too
+    assert "identify" in outs  # identify is back after rerunning
 
 
 def test_update_spec_updates_store_and_graph(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
-    # 跑到 generate checkpoint(trivial 图 generate 写 specs={"default": ...})
+    # Run to the generate checkpoint (in the trivial graph generate writes specs={"default": ...})
     ex.start_workflow(wid)
     ex.wait(wid, timeout=5)
     for _ in range(2):  # → identify → generate
@@ -261,12 +274,12 @@ def test_update_spec_updates_store_and_graph(tmp_path):
         ex.wait(wid, timeout=5)
     assert store.get(wid)["current_step"] == "generate"
 
-    ok = ex.update_spec(wid, "default", "new body")  # 改 specs 里的 "default" key
+    ok = ex.update_spec(wid, "default", "new body")  # changes the "default" key in specs
     assert ok is True
     outs = store.get_outputs(wid)
-    assert outs["generate"]["produced_by"] == "ai"  # 审计不动
+    assert outs["generate"]["produced_by"] == "ai"  # the audit field is untouched
     assert outs["generate"]["output"]["specs"]["default"] == "new body"
-    # graph state 已 dict-merge(specs 是 dict-merge reducer)
+    # The graph state has been dict-merged (specs is a dict-merge reducer)
     cfg = {"configurable": {"thread_id": wid}}
     assert ex.graph.get_state(cfg).values["specs"]["default"] == "new body"
 
@@ -274,81 +287,87 @@ def test_update_spec_updates_store_and_graph(tmp_path):
 def test_update_spec_missing_returns_false(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
-    assert ex.update_spec(wid, "nope", "x") is False  # 无 generate output
+    assert ex.update_spec(wid, "nope", "x") is False  # no generate output
 
 
 def test_recover_at_interrupt_marks_awaiting(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
-    ex.start_workflow(wid)  # understand(checkpoint 在)
+    ex.start_workflow(wid)  # understand (the checkpoint exists)
     ex.wait(wid, timeout=5)
-    store.update_status(wid, "running")  # 模拟崩溃时 status=running
+    store.update_status(wid, "running")  # simulate a crash leaving status=running
     n = ex.recover_on_startup()
     assert n == 1
-    assert store.get(wid)["status"] == "awaiting_input"  # checkpoint 在 interrupt → 可续
+    assert store.get(wid)["status"] == "awaiting_input"  # a checkpoint sits at the interrupt → resumable
 
 
 def test_recover_no_checkpoint_marks_interrupted(tmp_path):
     ex, store = _make(tmp_path)
     wid = _create(store)
-    store.update_status(wid, "running", current_step="understand")  # 从未跑过 graph
+    store.update_status(wid, "running", current_step="understand")  # the graph never ran
     n = ex.recover_on_startup()
     assert n == 1
     row = store.get(wid)
     assert row["status"] == "interrupted"
-    assert row["current_step"] == "understand"  # 无 checkpoint → 保既有
+    assert row["current_step"] == "understand"  # no checkpoint → keeps the existing value
 
 
 def test_recover_awaiting_input_without_checkpoint_marks_interrupted(tmp_path):
-    """Important #1:pre-L2 留下的 awaiting_input 孤儿无 checkpoint → 标 interrupted。
+    """Important #1: an awaiting_input orphan left behind pre-L2 has no checkpoint → marked
+    interrupted.
 
-    否则用户首次 /advance 时 graph.stream(None, config) 会收到
-    "Received no input for __start__" → worker catch → status=failed,体验糟糕。
+    Otherwise the user's first /advance makes graph.stream(None, config) receive
+    "Received no input for __start__" → caught by the worker → status=failed, a poor
+    experience.
     """
     ex, store = _make(tmp_path)
     wid = _create(store)
-    store.update_status(wid, "awaiting_input", current_step="understand")  # 无 checkpoint
+    store.update_status(wid, "awaiting_input", current_step="understand")  # no checkpoint
     n = ex.recover_on_startup()
     assert n == 1
     row = store.get(wid)
-    assert row["status"] == "interrupted"  # 提示用户无法简单续跑
-    assert row["current_step"] == "understand"  # 保既有
+    assert row["status"] == "interrupted"  # tells the user it cannot simply be resumed
+    assert row["current_step"] == "understand"  # keeps the existing value
 
 
 def test_recover_awaiting_input_with_checkpoint_left_untouched(tmp_path):
-    """正常 L2 awaiting_input(checkpoint 在 interrupt 处)恢复时不动。
+    """A normal L2 awaiting_input (checkpoint at the interrupt) is left alone by recovery.
 
-    回归:recover 不能把跑到一半、停在 understand interrupt 的 L2 workflow 误改。
+    Regression: recover must not mislabel an L2 workflow that is halfway through and paused
+    at the understand interrupt.
     """
     ex, store = _make(tmp_path)
     wid = _create(store)
-    ex.start_workflow(wid)  # 停 understand,checkpoint 在
+    ex.start_workflow(wid)  # stops at understand, the checkpoint exists
     ex.wait(wid, timeout=5)
     assert store.get(wid)["status"] == "awaiting_input"
 
     n = ex.recover_on_startup()
     assert n == 1
     row = store.get(wid)
-    assert row["status"] == "awaiting_input"  # 未被触碰
+    assert row["status"] == "awaiting_input"  # not touched
     assert row["current_step"] == "understand"
 
 
 def test_recover_completed_graph_marks_completed(tmp_path):
-    """Minor #2:checkpoint 已到 END(next 空)但 status 被重置为 running → recover 标 completed。
+    """Minor #2: the checkpoint has reached END (next is empty) but the status was reset to
+    running → recover marks it completed.
 
-    场景:worker 崩在 graph.stream 返回与 _sync_status 之间,checkpoint 显示图已跑完,
-    库里 status 仍为 running。recover 应识别为 completed(而非 interrupted)。
+    Scenario: the worker crashes between the return of graph.stream and _sync_status, the
+    checkpoint shows the graph has finished, but the status in the database is still running.
+    recover should recognize this as completed (not interrupted).
     """
     ex, store = _make(tmp_path)
     wid = _create(store)
     ex.start_workflow(wid)
     ex.wait(wid, timeout=5)
-    for _ in range(3):  # understand→identify→generate→END(generate 是最后步)
+    for _ in range(3):  # understand → identify → generate → END (generate is the last step)
         assert ex.advance(wid) is True
         ex.wait(wid, timeout=5)
     assert store.get(wid)["status"] == "completed"
 
-    # 模拟 worker 崩在 sync_status 之前:status 回退为 running,但 checkpoint 已到 END
+    # Simulate the worker crashing before sync_status: the status goes back to running, but
+    # the checkpoint has already reached END
     store.update_status(wid, "running")
     n = ex.recover_on_startup()
     assert n == 1
@@ -358,22 +377,26 @@ def test_recover_completed_graph_marks_completed(tmp_path):
 
 
 def test_step_output_keys_match_steps():
-    """F2: _STEP_OUTPUT_KEYS 的 keys 与 agent.graph.STEPS 单一来源一致(防漂移)。
+    """F2: the keys of _STEP_OUTPUT_KEYS match agent.graph.STEPS, the single source of truth
+    (guards against drift).
 
-    executor 模块级 assert 也 always-on 保护此处;测试显式记录意图。
+    The module-level assert in the executor protects this always-on as well; the test
+    records the intent explicitly.
     """
     from porto_chatbot.workflow_executor import _STEP_OUTPUT_KEYS
 
     assert list(_STEP_OUTPUT_KEYS.keys()) == STEPS
 
 
-# ---------------------------------------------------------------- F3: PUT/PATCH 并发 guard
+# ---------------------------------------------------------------- F3: PUT/PATCH concurrency guard
 
 
 def test_update_step_rejects_while_running(tmp_path):
-    """F3: advance 进行中(worker 持 guard)时 update_step 必须 raise WorkflowRunning
-    (路由 → 409),而非默默与 graph.stream 并发丢更新(spike 确认 PUT 的 update_state
-    会被 worker 完成 identify 时的 checkpoint 写覆盖,edited 内容完全丢失)。"""
+    """F3: while an advance is in progress (the worker holds the guard), update_step must raise
+    WorkflowRunning (the route maps it to 409) instead of silently racing graph.stream and
+    losing the update (the spike confirmed that the PUT's update_state gets overwritten by the
+    checkpoint write when the worker finishes identify, and the edited content is lost
+    entirely)."""
     enter, release = threading.Event(), threading.Event()
     settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
     store = WorkflowStore(settings)
@@ -384,8 +407,8 @@ def test_update_step_rejects_while_running(tmp_path):
     )
     wid = _create(store)
     ex.start_workflow(wid)
-    ex.wait(wid, timeout=5)  # 停 understand
-    ex.advance(wid)  # worker 进 identify(slow,持 guard)
+    ex.wait(wid, timeout=5)  # stops at understand
+    ex.advance(wid)  # the worker enters identify (slow, holding the guard)
     assert enter.wait(timeout=2)
 
     with pytest.raises(WorkflowRunning):
@@ -396,8 +419,9 @@ def test_update_step_rejects_while_running(tmp_path):
 
 
 def test_update_spec_rejects_while_running(tmp_path):
-    """F3: advance 进行中 update_spec 同样必须 raise WorkflowRunning(路由 → 409)。
-    acquire 在 store 查询前,故即使 spec 不存在也先以 running 拒绝。"""
+    """F3: while an advance is in progress, update_spec must likewise raise WorkflowRunning (the
+    route maps it to 409). acquire happens before the store lookup, so the request is rejected
+    as running even when the spec does not exist."""
     enter, release = threading.Event(), threading.Event()
     settings = Settings(data_dir=tmp_path, log_dir=tmp_path / "logs", embedding_provider="local")
     store = WorkflowStore(settings)
@@ -419,7 +443,7 @@ def test_update_spec_rejects_while_running(tmp_path):
     ex.wait(wid, timeout=5)
 
 
-# ---------------------------------------------------------------- Task 6: tool_meta 投影
+# ---------------------------------------------------------------- Task 6: tool_meta projection
 
 
 def test_project_state_attaches_tool_meta_single_step(tmp_path):
@@ -470,7 +494,7 @@ def test_project_state_attaches_tool_meta_generate(tmp_path):
         },
         "steps": [],
     }
-    snap.next = ()  # generate 是最后步,完成后 next 空(=END)
+    snap.next = ()  # generate is the last step; once done, next is empty (= END)
     executor.graph.get_state = MagicMock(return_value=snap)
     executor._project_state(wid, {"configurable": {"thread_id": wid}})
     out = store.get_outputs(wid)["generate"]["output"]
@@ -478,9 +502,10 @@ def test_project_state_attaches_tool_meta_generate(tmp_path):
 
 
 def test_project_state_tool_meta_isolated_per_step(tmp_path):
-    """跨步隔离:state.steps 同时含 understand_prd(带 tool_meta)与
-    identify_subsystems(无 tool_meta)时,understand 投到 tool_meta,
-    identify 不应误投 understand 的 tool_meta(回归 _tool_meta_for 曾缺 name 过滤)。
+    """Cross-step isolation: when state.steps contains both understand_prd (with tool_meta) and
+    identify_subsystems (without tool_meta), understand is projected into tool_meta and
+    identify must not be given understand's tool_meta by mistake (regression: _tool_meta_for
+    once lacked the name filter).
     """
     from unittest.mock import MagicMock
 
@@ -504,7 +529,7 @@ def test_project_state_tool_meta_isolated_per_step(tmp_path):
             AgentStep(
                 name="identify_subsystems",
                 status="completed",
-                data={"subsystems": [{"name": "wallet"}]},  # 无 tool_meta
+                data={"subsystems": [{"name": "wallet"}]},  # no tool_meta
             ),
         ],
         "spec_results": {},
@@ -513,11 +538,11 @@ def test_project_state_tool_meta_isolated_per_step(tmp_path):
     executor.graph.get_state = MagicMock(return_value=snap)
     executor._project_state(wid, {"configurable": {"thread_id": wid}})
     outs = store.get_outputs(wid)
-    # understand 拿到自己的 tool_meta
+    # understand gets its own tool_meta
     understand_out = outs["understand"]["output"]
     assert understand_out["tool_meta"]["truncated"] is True
     assert understand_out["tool_meta"]["turns"] == 4
-    # identify 不应被误投 understand 的 tool_meta
+    # identify must not be given understand's tool_meta by mistake
     identify_out = outs["identify"]["output"]
     assert "tool_meta" not in identify_out
 
@@ -528,7 +553,8 @@ def test_project_state_tool_meta_isolated_per_step(tmp_path):
 def test_rerun_step_scales_max_turns_and_persists(tmp_path):
     store = WorkflowStore(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"))
     wid = store.create("s", "p", "prd", 6, {}, {"agent_max_tool_turns": 10})
-    # trivial graph + 真 agent 重建受 snapshot 驱动;此处直接验证 new_max 算法 + 持久化
+    # Rebuilding the trivial graph + the real agent is driven by the snapshot; here the new_max
+    # algorithm + persistence are verified directly
     import json
     from unittest.mock import MagicMock
     executor = WorkflowExecutor(Settings(data_dir=tmp_path, log_dir=tmp_path / "logs"), store, graph=MagicMock())
@@ -566,7 +592,7 @@ def test_rerun_step_at_cap_raises(tmp_path):
 #: ``rag_snapshot`` — ``effective_rag_workflow_settings`` was never snapshotted, so the
 #: field stayed at the ``Settings`` class default ``NONE`` on every workflow run.  Users
 #: saved ``multi_query``/``decomposition`` in the UI → persisted to SQLite → never read.
-#: The fix (方案 A) captures rag_workflow settings into the snapshot at creation time;
+#: The fix (option A) captures rag_workflow settings into the snapshot at creation time;
 #: ``rag_workflow_overrides()`` maps ``query_transform_strategy`` (payload name) to
 #: ``workflow_query_transform_strategy`` (Settings name) so model_copy applies it.
 

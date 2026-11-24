@@ -17,7 +17,8 @@ from porto_chatbot.specs import (
 
 
 def _settings(tmp_path, **overrides) -> Settings:
-    # agent_api_key 有 validation_alias，init 传字段名无效，故构造后用 setattr
+    # agent_api_key has a validation_alias, so passing the field name to the constructor does
+    # nothing; set it with setattr after construction
     s = Settings(
         kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
@@ -25,7 +26,7 @@ def _settings(tmp_path, **overrides) -> Settings:
         agent_provider="openai",
         agent_model="m",
     )
-    s.agent_api_key = "k"  # 默认 enabled；测试可传 agent_api_key=None 覆盖
+    s.agent_api_key = "k"  # enabled by default; a test can pass agent_api_key=None to override
     for key, value in overrides.items():
         setattr(s, key, value)
     return s
@@ -63,7 +64,7 @@ def _crit(verdict: str, score: int, feedback: str = "fix") -> dict:
     return {"verdict": verdict, "score": score, "feedback": feedback, "per_dimension": {}}
 
 
-# ----------------------------- 降级路径 ----------------------------- #
+# ----------------------------- Fallback path ----------------------------- #
 
 
 def test_loop_disabled_uses_template(tmp_path):
@@ -71,7 +72,7 @@ def test_loop_disabled_uses_template(tmp_path):
     assert ctx.llm.enabled is False
     result = generate_spec_with_loop(ctx, _sub())
     assert result.used_llm is False
-    assert "系统需求" in result.final  # 模板内容
+    assert "系统需求" in result.final  # template content
     assert "API 需求" in result.final
 
 
@@ -83,14 +84,15 @@ def test_loop_refine_disabled_uses_template(tmp_path):
 
 
 def test_loop_generate_empty_falls_back_to_template(tmp_path):
-    # LLM 生成返回空 → 用模板，再 critic（critic 也不可用 → 接受模板）
+    # LLM generation returns empty → the template is used, then the critic (the critic is
+    # unavailable too → the template is accepted)
     ctx = _make_ctx(tmp_path, cwt_texts=[""], critiques=[], refine_texts=[])
     result = generate_spec_with_loop(ctx, _sub())
     assert result.used_llm is True
-    assert "系统需求" in result.final  # 模板兜底
+    assert "系统需求" in result.final  # template fallback
 
 
-# ----------------------------- 四重终止 ----------------------------- #
+# --------------------------- Four stop conditions --------------------------- #
 
 
 def test_loop_pass_on_first_critique(tmp_path):
@@ -122,7 +124,7 @@ def test_loop_refines_until_pass(tmp_path):
 
 
 def test_loop_truncated_at_max_iter(tmp_path):
-    # 分数持续上升但不达标 → 到 max_iter 截断
+    # Scores keep rising but never reach the bar → stops at max_iter
     ctx = _make_ctx(
         tmp_path,
         cwt_texts=["V0"],
@@ -132,11 +134,11 @@ def test_loop_truncated_at_max_iter(tmp_path):
     result = generate_spec_with_loop(ctx, _sub(), max_iter=3)
     assert result.truncated is True
     assert result.iterations == 3
-    assert result.final == "V2"  # 最高分版本
+    assert result.final == "V2"  # the highest-scoring version
 
 
 def test_loop_score_not_increasing_stops_and_keeps_best(tmp_path):
-    # 第二次分数下降 → 停，保留 best（第一次的版本）
+    # The score drops on the second round → stop and keep best (the first version)
     ctx = _make_ctx(
         tmp_path,
         cwt_texts=["V0"],
@@ -146,14 +148,14 @@ def test_loop_score_not_increasing_stops_and_keeps_best(tmp_path):
     result = generate_spec_with_loop(ctx, _sub(), max_iter=3)
     assert result.iterations == 2
     assert result.truncated is False
-    assert result.final == "V0"  # 回退到 best（score 8 那版），不是 V1
+    assert result.final == "V0"  # falls back to best (the score-8 version), not V1
 
 
 def test_loop_critic_none_accepts_current(tmp_path):
     ctx = _make_ctx(
         tmp_path,
         cwt_texts=["V0"],
-        critiques=[None],  # critic 解析失败
+        critiques=[None],  # the critic failed to parse
     )
     result = generate_spec_with_loop(ctx, _sub())
     assert result.final == "V0"
@@ -174,13 +176,13 @@ def test_loop_records_attempts_with_versions(tmp_path):
 
 
 def test_loop_budget_truncation(tmp_path):
-    # 极小预算 → 第一次 critique 后即触发预算截断
+    # Tiny budget → the budget truncation fires right after the first critique
     ctx = _make_ctx(
         tmp_path,
         cwt_texts=["V0"],
         critiques=[_crit("NEEDS_IMPROVEMENT", 5, "x" * 5000)],
         refine_texts=["V1"],
-        spec_refine_budget_tokens=1,  # 4 字符预算，立刻超
+        spec_refine_budget_tokens=1,  # a budget of 4 characters, exceeded at once
     )
     result = generate_spec_with_loop(ctx, _sub(), max_iter=3)
     assert result.truncated is True
@@ -213,28 +215,29 @@ def test_render_template_spec_contains_required_sections(tmp_path):
     assert "billing-service" in out
 
 
-# ----------------------------- critic 独立模型（Phase 2 P1）----------------------------- #
+# ---------------------- Independent critic model (Phase 2 P1) ---------------------- #
 
 
 def test_critique_falls_back_to_generator_when_no_critic(tmp_path):
     ctx = _make_ctx(tmp_path, cwt_texts=["V0"], critiques=[_crit("PASS", 10)])
     assert ctx.critic_llm is None
     result = generate_spec_with_loop(ctx, _sub())
-    assert result.used_llm is True  # 用 generator 作 critic 正常完成
+    assert result.used_llm is True  # completes normally with the generator as critic
     assert result.attempts[0].verdict == "PASS"
 
 
 def test_critique_uses_backend_not_independent_critic_llm(tmp_path):
-    # critique 走 ctx.backend（LangchainBackend → 主 llm.complete_structured），
-    # 不再用独立的 critic_llm——避免跨 provider 混搭。
+    # critique goes through ctx.backend (LangchainBackend → the main llm.complete_structured)
+    # and no longer uses a separate critic_llm, which avoids mixing providers.
     ctx = _make_ctx(tmp_path, cwt_texts=["V0"], critiques=[_crit("PASS", 12, "from-backend")])
-    # 即使配了独立 critic_llm 返回 FAIL，critique 也不受影响
+    # Even with a separate critic_llm configured to return FAIL, critique is unaffected
     critic_llm = LLMClient(_settings(tmp_path))
     critic_llm.complete_structured = lambda *a, **k: {
         "verdict": "FAIL", "score": 0, "feedback": "should-not-be-used", "per_dimension": {},
     }
     ctx.critic_llm = critic_llm
     result = generate_spec_with_loop(ctx, _sub())
-    # critique 走 backend（主 llm mock 返回 PASS）→ loop 首轮即停
+    # critique goes through the backend (the main llm mock returns PASS) → the loop stops on
+    # the first round
     assert result.attempts[0].verdict == "PASS"
     assert result.attempts[0].score == 12

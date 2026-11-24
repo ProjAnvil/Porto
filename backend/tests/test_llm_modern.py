@@ -10,11 +10,12 @@ from porto_chatbot.settings import Settings
 
 
 class ScriptedModel:
-    """按脚本返回 invoke/stream 结果的最小 ChatModel 替身。
+    """A minimal scripted ChatModel stand-in that returns invoke / stream results from a
+    script.
 
-    - invoke 序列：每轮弹一个 AIMessage（可带 tool_calls）
-    - stream 序列：弹 AIMessageChunk 列表
-    - bind_tools 返回自身（LLMClient 在 bound 上 invoke）
+    - invoke sequence: pops one AIMessage per round (tool_calls allowed)
+    - stream sequence: pops a list of AIMessageChunks
+    - bind_tools returns self (LLMClient invokes on the bound object)
     """
 
     def __init__(self, invoke_script=None, stream_script=None):
@@ -66,7 +67,7 @@ def _wire(client: LLMClient, invoke_script, stream_script=None) -> ScriptedModel
     return m
 
 
-# ----------------------------- 降级路径 ----------------------------- #
+# ----------------------------- Fallback path ----------------------------- #
 
 
 def test_disabled_client_returns_none(tmp_path):
@@ -74,7 +75,7 @@ def test_disabled_client_returns_none(tmp_path):
         kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
-    )  # 无 api_key
+    )  # no api_key
     c = LLMClient(s)
     assert c.enabled is False
     assert c.complete("sys", "u") is None
@@ -104,7 +105,7 @@ def test_try_parse_json_invalid():
 
 
 def test_try_parse_json_array_returns_none():
-    """约定：只接受对象，数组不算结构化对象。"""
+    """Contract: only objects are accepted; an array does not count as a structured object."""
     assert _try_parse_json("[1, 2, 3]") is None
 
 
@@ -130,7 +131,8 @@ def test_complete_accepts_messages(client):
     )
     assert result == "ok"
     sent = client._client.invoke_calls[0]
-    # 消息列表已由 _to_lc_messages 转为 BaseMessage；最后一条应为 HumanMessage("u2")
+    # The message list was already converted to BaseMessage by _to_lc_messages; the last one
+    # should be HumanMessage("u2")
     assert isinstance(sent[-1], HumanMessage)
     assert sent[-1].content == "u2"
     assert len(sent) == 4
@@ -165,8 +167,8 @@ def test_structured_retries_then_succeeds(client):
     _wire(
         client,
         [
-            AIMessage(content="I think the answer is..."),  # 首次坏
-            AIMessage(content='{"score": 9}'),  # 重试好
+            AIMessage(content="I think the answer is..."),  # first one is bad
+            AIMessage(content='{"score": 9}'),  # the retry is good
         ],
     )
     assert client.complete_structured("sys", "u", {"type": "object"}) == {"score": 9}
@@ -269,8 +271,9 @@ def test_tool_loop_handler_exception_does_not_crash(client):
 
 
 def test_tool_loop_truncated_at_max_turns(client, enabled_settings):
-    """LLM 一直调 tool 不收尾，到 max_turns 必须截断。"""
-    # 每轮都调 tool；max_turns=2 → 2 轮 tool，然后截断:清空 text(B 方案,不做收尾 invoke)
+    """The LLM keeps calling tools and never wraps up; it must be truncated at max_turns."""
+    # Calls a tool every round; max_turns=2 → 2 tool rounds, then truncation: text is cleared
+    # (option B, no wrap-up invoke)
     _wire(
         client,
         [
@@ -299,7 +302,7 @@ def test_tool_loop_no_tools_falls_back_to_complete(client):
 
 
 def test_tool_loop_carries_history_across_turns(client):
-    """第二轮 LLM 应能看到第一轮 tool 结果（ToolMessage 进 convo）。"""
+    """The LLM must see the round-1 tool result in round 2 (the ToolMessage enters the convo)."""
     _wire(
         client,
         [
@@ -311,7 +314,8 @@ def test_tool_loop_carries_history_across_turns(client):
         ],
     )
     client.complete_with_tools("sys", "u", [_tool("echo", lambda a: "ECHO")])
-    # 第二次 invoke 的 messages 应包含 ToolMessage（tool 结果回填进 convo）
+    # The messages of the second invoke should contain the ToolMessage (the tool result is
+    # backfilled into the convo)
     second_msgs = client._client.invoke_calls[1]
     assert any(isinstance(m, ToolMessage) for m in second_msgs)
 
@@ -323,4 +327,4 @@ def test_stream_yields_deltas(client):
     _wire(client, [], stream_script=[AIMessage(content="hello world")])
     chunks = list(client.stream("sys", "u"))
     assert "".join(chunks) == "hello world"
-    assert len(chunks) >= 2  # 确实分片
+    assert len(chunks) >= 2  # really streamed in chunks

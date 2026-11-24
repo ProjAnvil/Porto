@@ -1,6 +1,8 @@
-"""L2 spike: langgraph 编排原语(interrupt / resume / update_state rewind / config 注入 / Pydantic 往返 / 并发)。
+"""L2 spike: langgraph orchestration primitives (interrupt / resume / update_state rewind /
+config injection / Pydantic round-trip / concurrency).
 
-结论见 plan §Spike Conclusions。这些行为是 Task 3–5(graph + executor)的实现依据。
+Conclusions are in the plan under Spike Conclusions. These behaviors are what the
+implementation of Tasks 3-5 (graph + executor) relies on.
 """
 
 from __future__ import annotations
@@ -38,18 +40,19 @@ def _saver(tmp_path):
     return sv
 
 
-# ---- ① interrupt_after 暂停 + stream(None) 续跑 + ② Pydantic 过 checkpoint 往返 ----
+# ---- 1) interrupt_after pause + stream(None) resume + 2) Pydantic across a checkpoint round-trip ----
 def test_interrupt_then_resume_and_pydantic_roundtrip(tmp_path):
     consumed = {}
 
     def node_a(state):
-        # append a Pydantic model (跨 checkpoint 后须仍是 _Widget,不能降级成 dict)
+        # append a Pydantic model (must still be a _Widget after the checkpoint, not degrade to a
+        # dict)
         return {"widgets": [_Widget(name="a", qty=1)], "current_step": "a"}
 
     def node_b(state):
         w = state["widgets"][0]
         consumed["type"] = type(w).__name__
-        consumed["name"] = w.name  # 属性访问 —— 仅当重建为 _Widget 才成立
+        consumed["name"] = w.name  # attribute access, which only works if it was rebuilt as a _Widget
         return {"specs": {"x": "b"}, "current_step": "b"}
 
     g = StateGraph(_S)
@@ -63,19 +66,19 @@ def test_interrupt_then_resume_and_pydantic_roundtrip(tmp_path):
 
     graph.invoke({"widgets": [], "specs": {}}, cfg)
     st = graph.get_state(cfg)
-    assert list(st.next) == ["b"]  # 暂停在 a 之后
+    assert list(st.next) == ["b"]  # paused after a
     assert st.values["current_step"] == "a"
     assert [type(w).__name__ for w in st.values["widgets"]] == ["_Widget"]
 
-    list(graph.stream(None, cfg))  # 续跑 a 之后 → b → END
+    list(graph.stream(None, cfg))  # resume after a → b → END
     st2 = graph.get_state(cfg)
-    assert list(st2.next) == []  # 到 END
-    assert consumed["type"] == "_Widget"  # Pydantic 过 checkpoint 往返成功
+    assert list(st2.next) == []  # reached END
+    assert consumed["type"] == "_Widget"  # the Pydantic model survived the checkpoint round-trip
     assert consumed["name"] == "a"
     assert st2.values["specs"] == {"x": "b"}
 
 
-# ---- ③ update_state(as_node=) 回退并重算下游 ----
+# ---- 3) update_state(as_node=) rewinds and recomputes downstream ----
 def test_update_state_rewinds_and_reruns_downstream(tmp_path):
     order: list[str] = []
 
@@ -96,19 +99,19 @@ def test_update_state_rewinds_and_reruns_downstream(tmp_path):
     graph = g.compile(checkpointer=_saver(tmp_path), interrupt_after=["a", "b"])
     cfg = {"configurable": {"thread_id": "t2"}}
 
-    graph.invoke({}, cfg)  # 跑 a,停在 a 后
+    graph.invoke({}, cfg)  # runs a, stops after a
     assert order == ["a"]
-    list(graph.stream(None, cfg))  # 跑 b,停在 b 后
+    list(graph.stream(None, cfg))  # runs b, stops after b
     assert order == ["a", "b"]
 
-    graph.update_state(cfg, {"current_step": "a"}, as_node="a")  # 回退到 a 之后
+    graph.update_state(cfg, {"current_step": "a"}, as_node="a")  # rewind to just after a
     assert list(graph.get_state(cfg).next) == ["b"]
     order.clear()
-    list(graph.stream(None, cfg))  # 必须重跑 b(下游重算)
+    list(graph.stream(None, cfg))  # b must run again (downstream recomputation)
     assert order == ["b"], f"回退后应重跑 b,实际 {order}"
 
 
-# ---- ④ configurable 注入 agent(节点从 config 取对象)----
+# ---- 4) configurable injects the agent (nodes take the object from config) ----
 def test_configurable_agent_injection(tmp_path):
     def node(state, *, config):  # langgraph 1.x: (state, config)
         return {"seen_agent": config["configurable"]["agent"]}
@@ -123,7 +126,7 @@ def test_configurable_agent_injection(tmp_path):
     assert graph.get_state(cfg).values["seen_agent"] == "AGENT_OBJ"
 
 
-# ---- ⑤ 多 workflow(不同 thread_id)在共享 SqliteSaver 上并发不冲突 ----
+# ---- 5) several workflows (different thread_id) run concurrently on a shared SqliteSaver without conflicts ----
 def test_shared_saver_concurrent_threads(tmp_path):
     def node(state):
         return {"specs": {"k": "v"}}
@@ -132,7 +135,7 @@ def test_shared_saver_concurrent_threads(tmp_path):
     g.add_node("n", node)
     g.add_edge(START, "n")
     g.add_edge("n", END)
-    saver = _saver(tmp_path)  # 单 saver,多 thread_id
+    saver = _saver(tmp_path)  # one saver, several thread_ids
     graph = g.compile(checkpointer=saver)
 
     errors: list[BaseException] = []

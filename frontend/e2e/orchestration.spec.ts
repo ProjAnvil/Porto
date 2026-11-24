@@ -1,12 +1,14 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-// 编排设置页 E2E：分组 sidebar、意图引擎持久化、TypeSafe 面板校验、
-// 决策测试按钮、agent_sdk 锁定态。backend 运行在隔离 data dir（见
-// playwright.config.ts），rule 引擎路径零外部依赖。
+// Orchestration settings page E2E: grouped sidebar, intent engine persistence, TypeSafe
+// panel validation, the decision test button, and the agent_sdk locked state. The backend
+// runs with an isolated data dir (see playwright.config.ts); the rule engine path has no
+// external dependencies.
 
 async function openSettings(page: Page) {
   await page.goto("/");
-  // Next dev 水合竞态：过早点击不生效，断言失败时重试一次
+  // Next dev hydration race: a click that lands too early does nothing, so retry
+  // once when the assertion fails
   await page.getByRole("button", { name: "Settings" }).click();
   try {
     await expect(page.getByText("通用", { exact: true })).toBeVisible({
@@ -27,7 +29,7 @@ async function openOrchestration(page: Page) {
 }
 
 async function saveAgentSettings(page: Page) {
-  // AgentSettingsForm 的 SettingsCard 用默认 saveLabel "Save"
+  // AgentSettingsForm's SettingsCard uses the default saveLabel "Save"
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Agent settings saved")).toBeVisible({
     timeout: 10_000,
@@ -37,8 +39,9 @@ async function saveAgentSettings(page: Page) {
 async function selectChatbotEngine(page: Page, engine: RegExp) {
   await openSettings(page);
   await page.getByRole("button", { name: "Agent", exact: true }).click();
-  // “知识库问答所使用的后端”是 Chatbot 引擎分组独有的描述文案；
-  // 取其父容器（分组根 div）作为作用域，避免匹配到外层大容器
+  // "知识库问答所使用的后端" is the description text unique to the Chatbot engine
+  // group; scope to its parent container (the group's root div) to avoid matching the
+  // outer wrapper
   const group = page
     .getByText("知识库问答所使用的后端")
     .locator("..");
@@ -50,7 +53,8 @@ test("sidebar shows four grouped sections and navigates to orchestration", async
   page,
 }) => {
   await openOrchestration(page);
-  // text-transform:uppercase 只改渲染不改 DOM 文本，getByText 匹配原始大小写
+  // text-transform:uppercase only changes the rendering, not the DOM text; getByText
+  // matches the original case
   for (const group of ["通用", "Chat · 对话调优", "Workflow · 流程调优"]) {
     await expect(page.getByText(group, { exact: true })).toBeVisible();
   }
@@ -76,8 +80,8 @@ test("intent engine persists as rule after save and reload", async ({ page }) =>
 
 test("typesafe panel expands and validates empty api key", async ({ page }) => {
   await openOrchestration(page);
-  // 面板常驻挂载（0fr 折叠动画）：断言打在高度真正为 0 的裁切容器上——
-  // 被裁切的子元素对 Playwright 仍算 visible
+  // The panel stays mounted (0fr collapse animation): assert on the clip container whose
+  // height is really 0 — clipped children still count as visible to Playwright
   const clip = page.getByTestId("typesafe-panel-clip");
   await expect(clip).toBeHidden();
   await page.getByRole("button", { name: /TypeSafe 外部引擎/ }).click();
@@ -118,20 +122,21 @@ test("inspector hides on settings page and pin keeps it visible", async ({
   page,
 }) => {
   await openSettings(page);
-  // 未固定：进入 settings 后 Inspector 收起
+  // Not pinned: the Inspector collapses once settings opens
   await expect(page.getByRole("complementary", { name: "Inspector" })).toBeHidden();
-  // Settings 按钮非 toggle：经「问答」回工作台，Inspector 恢复显示
+  // The Settings button is not a toggle: going back to the workbench via "问答" brings the
+  // Inspector back
   await page.getByRole("button", { name: "问答" }).click();
   await expect(
     page.getByRole("complementary", { name: "Inspector" }).getByText("Agent Steps"),
   ).toBeVisible();
-  // 固定后再进 settings，Inspector 保持显示
+  // Pinned: the Inspector stays visible when entering settings again
   await page.getByTestId("inspector-pin").click();
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(
     page.getByRole("complementary", { name: "Inspector" }).getByText("Agent Steps"),
   ).toBeVisible();
-  // 还原：取消固定（避免影响其他用例与本地持久化状态）
+  // Restore: unpin (so other test cases and the locally persisted state are unaffected)
   await page.getByTestId("inspector-pin").click();
 });
 

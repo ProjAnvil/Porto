@@ -16,16 +16,17 @@ def _client(mock_chat, max_turns=3, max_tokens=2000, recovery=2):
         agent_request_timeout=10,
         agent_max_tokens=max_tokens,
         max_output_recovery_attempts=recovery,
-        agent_retry_attempts=1,  # 截断逻辑单测：关掉 .with_retry 包装，直接打到 mock
+        agent_retry_attempts=1,  # disable .with_retry so truncation calls reach the mock directly
     )
     return c
 
 
 def _resp(tool_calls=None, content="", finish_reason="stop"):
-    """模拟 langchain AIMessage:tool_calls / content / response_metadata.finish_reason。
+    """Stand-in for a langchain AIMessage: tool_calls / content / response_metadata.finish_reason.
 
-    finish_reason 默认 "stop"(自然结束);"length" = 被 max_tokens 硬切;
-    传 falsy 值则 response_metadata 缺失(模拟旧版/异常响应,应被当成无 length)。
+    finish_reason defaults to "stop" (a natural end); "length" = hard-cut by max_tokens;
+    a falsy value leaves response_metadata absent (mimics old / abnormal responses, which must
+    be treated as no length).
     """
     r = MagicMock()
     r.tool_calls = tool_calls or []
@@ -65,16 +66,21 @@ def test_normal_convergence_returns_final_text():
     assert len(result.tool_calls) == 1
 
 
-# ────────────────── finish_reason="length" 治理(检测 + 升级 + 续写 + 兜底)──────────────────
-# 场景:LLM 收敛轮(不再调 tool)直接生成长报告,被 agent_max_tokens 硬切。
-# 对齐 Qwen Code「adaptive output token escalation」三层:升级重发 → 续写拼接 → 兜底截断标记。
+# ────────────────── finish_reason="length" handling ──────────────────
+# Four layers: detect + escalate + continue + fall back.
+# Scenario: in the converging round (no more tool calls) the LLM generates a long report
+# outright and gets hard-cut by agent_max_tokens. Mirrors the three layers of Qwen Code's
+# "adaptive output token escalation": escalate and resend → continue and concatenate → fall
+# back to the truncation flag.
 
 
 def test_length_escalates_then_converges():
-    """首次 finish_reason=length → 升级 max_tokens 重发同一 convo → 第二次 stop → 取完整 text。
+    """First response has finish_reason=length → escalate max_tokens and resend the same convo →
+    the second one stops → take the complete text.
 
-    升级是「丢弃本轮残缺输出、用更大 max_tokens 重发同一上下文」(Qwen 第 1 层),
-    因此第二次的完整响应应直接取代第一次的半截文本。
+    Escalation means "discard this round's truncated output and resend the same context with a
+    larger max_tokens" (Qwen layer 1), so the complete second response should simply replace
+    the first half-cut text.
     """
     chat = MagicMock()
     chat.bind_tools.return_value = chat
@@ -87,22 +93,25 @@ def test_length_escalates_then_converges():
     assert result.truncated is False
     assert result.text == "完整报告正文"
     assert result.reason is None
-    # 升级后 max_tokens 应为 agent_max_tokens*4=8000,并作为 kwarg 传给第二次 invoke
+    # After escalation max_tokens should be agent_max_tokens*4=8000 and be passed as a kwarg to
+    # the second invoke
     assert chat.invoke.call_args_list[1].kwargs.get("max_tokens") == 8000
 
 
 def test_length_escalate_then_continue_concat():
-    """升级后仍 length → 注入「请继续 + 尾部」续写 → 拼接收敛。
+    """Still length after escalation → inject "please continue + the tail" to continue → the
+    pieces concatenate into a converged answer.
 
-    升级重发仍 length 时,把部分输出作 assistant 消息 + 「请继续,不要重复:尾部 200 字」
-    续写(火山引擎方案),多段拼接成完整文本。
+    When the escalated resend is still length, the partial output goes in as an assistant
+    message followed by "please continue, do not repeat: the last 200 characters" (the Volcano
+    Engine approach), and several pieces are concatenated into the complete text.
     """
     chat = MagicMock()
     chat.bind_tools.return_value = chat
     chat.invoke.side_effect = [
-        _resp([], "报告第一部分", finish_reason="length"),   # turn1 触发升级
-        _resp([], "报告第一部分", finish_reason="length"),   # 升级重发仍 length
-        _resp([], "续写第二部分", finish_reason="stop"),      # 续写收敛
+        _resp([], "报告第一部分", finish_reason="length"),   # turn 1 triggers escalation
+        _resp([], "报告第一部分", finish_reason="length"),   # the escalated resend is still length
+        _resp([], "续写第二部分", finish_reason="stop"),      # the continuation converges
     ]
     c = _client(chat, max_turns=4, max_tokens=2000, recovery=2)
     result = c.complete_with_tools("sys", "user", [ToolDef("search", "d", {}, lambda a: "r")])
@@ -112,17 +121,20 @@ def test_length_escalate_then_continue_concat():
 
 
 def test_length_exhausts_recovery_to_truncated():
-    """升级 + 续写 max_rounds 后仍 length → 兜底:truncated=True, text='', reason=max_tokens_truncated。
+    """Still length after escalation + max_rounds of continuation → fallback: truncated=True,
+    text='', reason=max_tokens_truncated.
 
-    续写次数用尽仍无法收敛时,清空 text(残缺产出不暴露)、置 truncated,走节点层固定提示 + 重跑按钮。
+    When the continuation rounds run out without converging, the text is cleared (truncated
+    output is never exposed) and truncated is set, so the node layer shows its fixed notice +
+    the rerun button.
     """
     chat = MagicMock()
     chat.bind_tools.return_value = chat
     chat.invoke.side_effect = [
-        _resp([], "A", finish_reason="length"),  # turn1 升级
-        _resp([], "A", finish_reason="length"),  # 升级重发仍 length → 进续写
-        _resp([], "B", finish_reason="length"),  # 续写 round1 仍 length
-        _resp([], "C", finish_reason="length"),  # 续写 round2 仍 length → max_rounds 用尽
+        _resp([], "A", finish_reason="length"),  # turn 1: escalate
+        _resp([], "A", finish_reason="length"),  # the escalated resend is still length → continue
+        _resp([], "B", finish_reason="length"),  # continuation round 1 is still length
+        _resp([], "C", finish_reason="length"),  # continuation round 2 is still length → max_rounds used up
     ]
     c = _client(chat, max_turns=4, max_tokens=2000, recovery=2)
     result = c.complete_with_tools("sys", "user", [ToolDef("search", "d", {}, lambda a: "r")])
@@ -132,9 +144,11 @@ def test_length_exhausts_recovery_to_truncated():
 
 
 def test_tool_call_length_does_not_execute_partial():
-    """tool_calls 非空但 finish_reason=length(工具调用被中段切)→ 升级重发,不执行残帧。
+    """tool_calls is non-empty but finish_reason=length (the tool call was cut mid-way) →
+    escalate and resend; the broken frame is not executed.
 
-    Anthropic 官方:截断点落在 tool_use 块时该调用不完整、不可直接使用,必须重发。
+    Per Anthropic: when the truncation point falls inside a tool_use block, that call is
+    incomplete and must not be used as is; it has to be resent.
     """
     chat = MagicMock()
     chat.bind_tools.return_value = chat
@@ -153,23 +167,25 @@ def test_tool_call_length_does_not_execute_partial():
     result = c.complete_with_tools("sys", "user", [ToolDef("search", "d", {}, handler)])
     assert result.truncated is False
     assert result.text == "最终报告"
-    # 第一次的残帧 tool_call 未执行,只执行了升级后的完整 tool_call
+    # The first, broken tool_call was not executed; only the complete one after escalation was
     assert len(executed) == 1
     assert executed[0] == {"q": "完整"}
 
 
 def test_anthropic_stop_reason_max_tokens_normalized():
-    """ChatAnthropic 的 stop_reason='max_tokens' 归一化为 'length',同样触发升级重发。
+    """ChatAnthropic's stop_reason='max_tokens' is normalized to 'length' and likewise triggers the
+    escalated resend.
 
-    不同 provider 的截断字段名不同(OpenAI finish_reason / Anthropic stop_reason),
-    归一化后上层检测分支对两家通用,避免换 provider 复发同一 bug。
+    Providers name the truncation field differently (OpenAI finish_reason / Anthropic
+    stop_reason); after normalization the upstream detection branch works for both, so
+    switching provider does not bring the same bug back.
     """
     chat = MagicMock()
     chat.bind_tools.return_value = chat
     r1 = MagicMock()
     r1.tool_calls = []
     r1.content = "半截报告"
-    r1.response_metadata = {"stop_reason": "max_tokens"}  # Anthropic 风格
+    r1.response_metadata = {"stop_reason": "max_tokens"}  # Anthropic style
     chat.invoke.side_effect = [r1, _resp([], "完整报告正文", finish_reason="stop")]
     c = _client(chat, max_turns=4, max_tokens=2000)
     result = c.complete_with_tools("sys", "user", [ToolDef("search", "d", {}, lambda a: "r")])

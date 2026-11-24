@@ -1,7 +1,9 @@
-"""spec 基线门禁——``scripts/spec_baseline_eval.py`` 的 pytest 薄封装。
+"""spec baseline gate: a thin pytest wrapper around ``scripts/spec_baseline_eval.py``.
 
-默认 report-only（产出报告不拦截）；``SPEC_EVAL_REPORT_ONLY=0`` 启用硬门禁
-（loop 独立 judge 均分须超过模板基线）。无 LLM key 时 skip（环境问题非回归）。
+Report-only by default (produces the report without blocking);
+``SPEC_EVAL_REPORT_ONLY=0`` turns on the hard gate (the loop's mean independent-judge
+score must beat the template baseline). Skips without an LLM key (an environment
+issue, not a regression).
 """
 from __future__ import annotations
 
@@ -32,8 +34,8 @@ def test_spec_baseline_gate(monkeypatch, process_llm_env):
     # them here, otherwise Settings() never sees the key and this gate skips forever.
     for key, value in process_llm_env.items():
         monkeypatch.setenv(key, value)
-    # 先按脚本同款方式加载 .env/.env.test 到 os.environ（pytest conftest 会隔离
-    # LANGCHAIN_* 并禁用 env_file，直接 Settings() 会误判「无 LLM」而永久 skip）
+    # Then load .env/.env.test the way the script does (conftest disabled the Settings
+    # env_file, so a bare Settings() would wrongly report "no LLM" and skip for good).
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("spec_baseline_eval", _SCRIPT)
@@ -47,7 +49,7 @@ def test_spec_baseline_gate(monkeypatch, process_llm_env):
         pytest.skip("无 LLM 配置 —— 跳过 spec 基线门禁")
 
     sys.argv = [str(_SCRIPT), "--max-prds", os.environ.get("SPEC_EVAL_MAX_PRDS", "1")]
-    mod.main()  # 打印表格 + 写报告（runpy 会重复 exec，改调 main）
+    mod.main()  # prints the table + writes the report (runpy would exec twice, so call main() directly)
 
     reports = sorted(_REPORT_DIR.glob("spec_baseline_*.json"))
     assert reports, "脚本未产出报告"

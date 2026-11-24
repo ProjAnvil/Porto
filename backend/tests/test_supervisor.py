@@ -1,4 +1,4 @@
-"""IndexSupervisor / DbLockStore / HealthMonitor 单元测试。"""
+"""Unit tests for IndexSupervisor / DbLockStore / HealthMonitor."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from porto_chatbot.locking import RAG_INDEX_LOCK, DbLockStore
 from porto_chatbot.models import IndexStats
 from porto_chatbot.vector_store import LocalVectorStore
 
-# ----------------------------- DbLockStore 状态机 ----------------------------- #
+# ---------------------------- DbLockStore state machine ---------------------------- #
 
 
 def test_lock_initial_idle(sample_settings):
@@ -52,16 +52,16 @@ def test_lock_mark_failed_records_error(sample_settings):
 
 def test_lock_mark_interrupted_only_clears_running(sample_settings):
     lock = DbLockStore(sample_settings)
-    # succeeded 状态不应被 interrupt 清理
+    # A succeeded run must not be cleaned up by interrupt
     stats = IndexStats(kb_path="x", documents=1, chunks=1, embedding_provider="local")
     lock.mark_running(RAG_INDEX_LOCK, source="manual", reset=True, total=1)
     lock.mark_succeeded(RAG_INDEX_LOCK, stats=stats)
 
     affected = lock.mark_interrupted(RAG_INDEX_LOCK, error="x")
-    assert affected == 0  # 当前非 running，不清理
+    assert affected == 0  # not running, nothing cleaned up
     assert lock.get_status().status == "succeeded"
 
-    # running 才会被清理
+    # Only running is cleaned up
     lock.mark_running(RAG_INDEX_LOCK, source="manual", reset=True, total=1)
     affected = lock.mark_interrupted(RAG_INDEX_LOCK, error="crashed")
     assert affected == 1
@@ -126,10 +126,11 @@ def test_supervisor_rejects_when_busy(sample_settings):
     try:
         first = sup.submit(sample_settings, source="first")
         assert first.status == "running"
-        # worker 在 _BlockingStore.build 中阻塞，_current 未清空 → 第二次 submit 被拒
+        # The worker blocks inside _BlockingStore.build and _current is not cleared → the second
+        # submit is rejected
         second = sup.submit(sample_settings, source="second")
         assert second.status == "running"
-        assert second.source == "first"  # 仍是首个任务
+        assert second.source == "first"  # still the first job
 
         release.set()
         assert _wait_status(sup).status == "succeeded"
@@ -148,7 +149,7 @@ def test_supervisor_clears_stale_running_on_start(sample_settings):
         store_factory=lambda s: LocalVectorStore(s),
         settings_provider=lambda: sample_settings,
     )
-    sup.start()  # start() 内清理残留 running → interrupted（不重建）
+    sup.start()  # start() cleans leftover running → interrupted (no rebuild)
     try:
         assert sup.get_status().status == "interrupted"
     finally:
@@ -177,11 +178,13 @@ def test_rag_available_reflects_index_state(sample_settings):
 
 
 def test_supervisor_stop_joins_worker(sample_settings):
-    """F4: stop() 必须 join worker —— teardown 时后台 reindex 须结束,否则 worker
-    继续操作 collection(reset 重建),与下个测试的 collection 操作竞争 → chromadb
-    TOCTOU NotFoundError(test_list_and_delete ~20% flake)。
+    """F4: stop() must join the worker — the background reindex has to be finished by
+    teardown, otherwise the worker keeps operating on the collection (reset rebuild) and
+    races the next test's collection operations → chromadb TOCTOU NotFoundError
+    (test_list_and_delete flaked ~20%).
 
-    worker 卡在 build 时,stop() 应阻塞直到 worker 退出(而非立即返回)。
+    While the worker is stuck in build, stop() must block until the worker exits (not return
+    at once).
     """
     release = threading.Event()
 
@@ -204,11 +207,12 @@ def test_supervisor_stop_joins_worker(sample_settings):
     sup.start()
     try:
         sup.submit(sample_settings, source="test")
-        time.sleep(0.1)  # 等 worker 进入 build
+        time.sleep(0.1)  # give the worker time to enter build
         stopper = threading.Thread(target=sup.stop, daemon=True)
         stopper.start()
         time.sleep(0.2)
-        # worker 仍卡在 build(release 未 set)→ stop 若 join 必仍阻塞
+        # The worker is still stuck in build (release not set) → stop must still be blocking if
+        # it joins
         assert stopper.is_alive(), (
             "stop() 未阻塞等待 worker —— 后台 reindex 会在 stop 返回后继续操作 collection"
         )
@@ -236,10 +240,10 @@ def test_health_local_embedding_ok_and_no_key_unknown(sample_settings):
     )
     snap = hm.probe_all()
     deps = {d.name: d for d in snap.dependencies}
-    assert deps["embedding"].status == "ok"  # local 始终 ok
-    assert deps["agent_llm"].status == "unknown"  # 无 api key
+    assert deps["embedding"].status == "ok"  # local is always ok
+    assert deps["agent_llm"].status == "unknown"  # no api key
 
-    # 无索引 → rag_search 不可用
+    # No index → rag_search unavailable
     feats = {f.name: f for f in snap.features}
     assert feats["rag_search"].available is False
     assert feats["rag_search"].reason == "index_unavailable"
@@ -272,7 +276,7 @@ def test_health_marks_rag_unavailable_while_reindexing(sample_settings):
     )
     try:
         sup.submit(sample_settings, source="manual")
-        # worker 正在跑
+        # The worker is running
         snap = hm.probe_all()
         assert snap.rag_index.status == "running"
         feats = {f.name: f for f in snap.features}

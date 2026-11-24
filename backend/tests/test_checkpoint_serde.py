@@ -1,8 +1,9 @@
-"""F1: langgraph SqliteSaver 的 serde 注册 porto_chatbot.models.* 的 Pydantic 类型。
+"""F1: the langgraph SqliteSaver serde registers the Pydantic types of porto_chatbot.models.*.
 
-未注册时,Pydantic 模型过 checkpoint 序列化会发 deprecation warning
-("Deserializing unregistered type ...")——当前仅警告,未来 langgraph 版本会
-硬阻断(LANGGRAPH_STRICT_MSGPACK=true 即可现在阻断)。注册后往返不发 warning。
+Without the registration, Pydantic models going through checkpoint serialization emit a
+deprecation warning ("Deserializing unregistered type ..."). Today it is only a warning; a
+future langgraph version will block hard (LANGGRAPH_STRICT_MSGPACK=true blocks now).
+With the registration the round-trip emits no warning.
 """
 
 from __future__ import annotations
@@ -14,14 +15,16 @@ from porto_chatbot.models.common import SourceChunk
 from porto_chatbot.models.spec import SpecAttempt, SpecResult
 from porto_chatbot.models.workflow import AgentStep, Subsystem
 
-#: workflow graph state 经 checkpoint 往返的所有 porto Pydantic 模型。
+#: All porto Pydantic models that travel through the workflow graph state across a
+#: checkpoint round-trip.
 _PORTO_MODELS = (AgentStep, Subsystem, SourceChunk, SpecAttempt, SpecResult)
 
 
 def test_checkpoint_serde_registers_porto_models():
-    """F1: checkpointer serde 必须把 porto_chatbot.models.* 的 Pydantic 类型
-    加入 allowed_msgpack_modules(白盒断言配置契约 —— warning 机制非 warnings.warn,
-    catch_warnings 抓不到,故直接断言注册列表)。"""
+    """F1: the checkpointer serde must add the Pydantic types of porto_chatbot.models.* to
+    allowed_msgpack_modules (a white-box assertion of the configuration contract: the warning
+    mechanism is not warnings.warn, so catch_warnings cannot capture it, hence asserting on
+    the registration list directly)."""
     serde = _build_checkpoint_serde()
     allowed = serde._allowed_msgpack_modules
     for cls in _PORTO_MODELS:
@@ -31,7 +34,8 @@ def test_checkpoint_serde_registers_porto_models():
 
 
 def test_checkpoint_serde_roundtrips_porto_models():
-    """F1: 注册后的 serde 往返 5 个 Pydantic 模型,仍是同类型实例(spike ④ 行为不变)。"""
+    """F1: after the registration the serde round-trips 5 Pydantic models and they are still
+    instances of the same type (spike 4 behavior unchanged)."""
     serde = _build_checkpoint_serde()
     samples = [
         AgentStep(name="retrieve", status="completed", summary="ok"),
@@ -40,7 +44,8 @@ def test_checkpoint_serde_roundtrips_porto_models():
         SpecAttempt(version=1, score=10, verdict="PASS"),
         SpecResult(final="spec body", iterations=2),
     ]
-    # 注册不影响序列化正确性;simplefilter ignore 仅屏蔽或msgpack C 层偶发告警。
+    # The registration does not affect serialization correctness; simplefilter("ignore") only
+    # silences occasional warnings from the msgpack C layer.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for obj in samples:

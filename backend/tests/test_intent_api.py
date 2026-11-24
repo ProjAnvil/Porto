@@ -1,4 +1,4 @@
-"""POST /api/intent/test 决策探测端点。"""
+"""The POST /api/intent/test decision probe endpoint."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from porto_chatbot.settings import Settings
 
 
 def _make_client(monkeypatch, tmp_path):
-    """test_settings_api.py 的文件局部 client 模式（settings 绑定 tmp_path 隔离实例）。"""
+    """File-local client pattern from test_settings_api.py (settings bound to the instance
+    isolated under tmp_path)."""
     s = Settings(
         kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l",
     )

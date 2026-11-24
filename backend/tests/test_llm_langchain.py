@@ -12,7 +12,7 @@ from porto_chatbot.settings import Settings
 
 
 class _StubModel:
-    """最小 ChatModel 替身，记录 invoke 入参。"""
+    """A minimal ChatModel stand-in that records the invoke arguments."""
 
     def __init__(self, invoke_returns=None, stream_chunks=None):
         self.invoke_returns = invoke_returns
@@ -31,9 +31,9 @@ class _StubModel:
 
 
 def _settings(tmp_path, **over):
-    """Settings 构造助手：validation_alias 字段不能通过字段名 kwargs 直接传
-    （Settings 未启用 populate_by_name），故走 model_copy(update=...)。
-    与 tests/test_llm_modern.py 同模式。"""
+    """Settings builder: fields with a validation_alias cannot be passed as field-name kwargs
+    (Settings does not enable populate_by_name), so this goes through model_copy(update=...).
+    Same pattern as tests/test_llm_modern.py."""
     base = Settings(
         kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
@@ -168,7 +168,7 @@ def test_with_tools_unknown_tool_records_error(tmp_path):
     assert r.tool_calls[0].result.startswith("错误：未知工具 ghost")
 
 
-# ----------------------------- complete_document (方案 B: 原生 SDK) ----- #
+# ------------------------ complete_document (option B: native SDK) ------------------------ #
 
 
 class _FakeOpenAICompletions:
@@ -182,7 +182,8 @@ class _FakeOpenAICompletions:
 
 
 class _FakeOpenAINative:
-    """原生 openai.OpenAI 替身：只暴露 complete_document 用到的 chat.completions。"""
+    """Stand-in for the native openai.OpenAI: exposes only the chat.completions that
+    complete_document uses."""
 
     def __init__(self, response):
         self.chat = SimpleNamespace(completions=_FakeOpenAICompletions(response))
@@ -199,16 +200,18 @@ class _FakeAnthropicMessages:
 
 
 class _FakeAnthropicNative:
-    """原生 anthropic.Anthropic 替身：只暴露 complete_document 用到的 messages。"""
+    """Stand-in for the native anthropic.Anthropic: exposes only the messages that
+    complete_document uses."""
 
     def __init__(self, response):
         self.messages = _FakeAnthropicMessages(response)
 
 
 def test_complete_document_openai_native_sends_file_block(tmp_path):
-    """openai 路径:_native_client 收到 file block(file_data 为 data: URL),返回文本。"""
+    """openai path: _native_client receives a file block (file_data as a data: URL) and returns
+    the text."""
     c = LLMClient(_settings(tmp_path, agent_provider="openai", agent_model="gpt-4.1-mini"))
-    # 模拟原生 SDK chat.completions.create 的返回结构
+    # Mimic the return structure of the native SDK's chat.completions.create
     fake_resp = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="# Parsed PRD"))]
     )
@@ -227,7 +230,8 @@ def test_complete_document_openai_native_sends_file_block(tmp_path):
 
 
 def test_complete_document_anthropic_native_sends_document_block(tmp_path):
-    """anthropic 路径:_native_client 收到 document block(base64 source),返回文本。"""
+    """anthropic path: _native_client receives a document block (base64 source) and returns the
+    text."""
     c = LLMClient(
         _settings(
             tmp_path,
@@ -249,12 +253,12 @@ def test_complete_document_anthropic_native_sends_document_block(tmp_path):
     assert content[0]["type"] == "document"
     assert content[0]["source"]["type"] == "base64"
     assert content[0]["source"]["media_type"] == "application/pdf"
-    assert content[0]["source"]["data"]  # base64 非空
+    assert content[0]["source"]["data"]  # base64 is non-empty
     assert content[1] == {"type": "text", "text": "parse"}
 
 
 def test_complete_document_returns_none_when_native_client_disabled(tmp_path):
-    """_native_client 为 None(缺 api_key)时 complete_document 直接返回 None。"""
+    """When _native_client is None (api_key missing), complete_document returns None outright."""
     s = Settings(
         kb_dirs=[tmp_path / "kb"],
         data_dir=tmp_path / "data",
@@ -263,10 +267,10 @@ def test_complete_document_returns_none_when_native_client_disabled(tmp_path):
         update={
             "agent_provider": "openai",
             "agent_model": "gpt-4.1-mini",
-        }  # 无 agent_api_key
+        }  # no agent_api_key
     )
     c = LLMClient(s)
-    # enabled 也是 False → document_capabilities.native_pdf 为 False,先短路
-    # 强行开启 native_pdf 验证 native_client 短路
+    # enabled is also False → document_capabilities.native_pdf is False and short-circuits
+    # first; force native_pdf on to verify the native_client short-circuit
     assert c._native_client is None
     assert c.complete_document("prd.pdf", b"%PDF", "application/pdf", "parse") is None

@@ -39,25 +39,25 @@ def test_registry_has_all_types():
 # ── LLMReranker ──
 
 def test_llm_reranker_no_llm_returns_original():
-    """缺 api_key 时 _build_rerank_llm 返回 None，LLMReranker._llm 为 None。"""
+    """Without an api_key, _build_rerank_llm returns None and LLMReranker._llm is None."""
     settings = _make_settings(agent_api_key=None)
     reranker = LLMReranker(settings)
     assert reranker._llm is None
 
 
 def test_llm_reranker_passthrough_when_no_llm():
-    """LLM 不可用时 reranker.rerank() 原样返回 chunks。"""
+    """When the LLM is unavailable, reranker.rerank() returns the chunks unchanged."""
     settings = _make_settings(agent_api_key=None)
     reranker = LLMReranker(settings)
     chunks = _make_chunks()
     result = reranker.rerank(chunks, "test query")
-    assert result is chunks  # 原样返回
+    assert result is chunks  # returned unchanged
 
 
 # ── CrossEncoderReranker ──
 
 def test_cross_encoder_rerank_success():
-    """mock httpx.post，验证 rerank 正常排序。"""
+    """Mock httpx.post and check that rerank sorts as expected."""
     settings = _make_settings(
         rerank_type="cross_encoder",
         rerank_model="jina-reranker-v2-base-multilingual",
@@ -81,14 +81,14 @@ def test_cross_encoder_rerank_success():
         result = reranker.rerank(chunks, "test query")
 
     assert len(result) == 2
-    assert result[0].id == "c2"  # relevance 0.95 排第一
-    assert result[1].id == "c0"  # relevance 0.80 排第二
+    assert result[0].id == "c2"  # relevance 0.95 ranks first
+    assert result[1].id == "c0"  # relevance 0.80 ranks second
     assert result[0].score == 0.95
     assert result[1].score == 0.8
 
 
 def test_cross_encoder_rerank_voyage_response_format():
-    """Voyage API 用 data 而非 results 作为响应 key。"""
+    """The Voyage API uses data instead of results as the response key."""
     settings = _make_settings(
         rerank_type="cross_encoder",
         rerank_model="rerank-2",
@@ -114,7 +114,7 @@ def test_cross_encoder_rerank_voyage_response_format():
 
 
 def test_cross_encoder_rerank_fail_open():
-    """httpx 异常时原样返回 chunks（fail-open）。"""
+    """On an httpx exception the chunks are returned unchanged (fail-open)."""
     settings = _make_settings(
         rerank_type="cross_encoder",
         rerank_model="jina-reranker-v2-base-multilingual",
@@ -128,14 +128,14 @@ def test_cross_encoder_rerank_fail_open():
     with patch("porto_chatbot.rerankers.httpx.post", side_effect=Exception("network error")):
         result = reranker.rerank(chunks, "query")
 
-    assert result is chunks  # 原样返回
+    assert result is chunks  # returned unchanged
 
 
 def test_cross_encoder_rerank_missing_config():
-    """base_url 或 api_key 缺失时原样返回。"""
+    """Returned unchanged when base_url or api_key is missing."""
     settings = _make_settings(
         rerank_type="cross_encoder",
-        rerank_base_url=None,  # 缺失
+        rerank_base_url=None,  # missing
         rerank_api_key="key",
     )
     reranker = CrossEncoderReranker(settings)
@@ -147,7 +147,7 @@ def test_cross_encoder_rerank_missing_config():
 # ── rerank_chunks dispatch ──
 
 def test_rerank_chunks_disabled_returns_original():
-    """rerank_enabled=False 时原样返回。"""
+    """Returned unchanged when rerank_enabled=False."""
     settings = _make_settings(rerank_enabled=False)
     chunks = _make_chunks(3)
     result = rerank_chunks(chunks, "query", settings)
@@ -160,7 +160,7 @@ def test_rerank_chunks_empty_returns_empty():
 
 
 def test_rerank_chunks_cross_encoder_dispatch():
-    """rerank_type=cross_encoder 时走 CrossEncoderReranker（mock 验证）。"""
+    """rerank_type=cross_encoder goes through CrossEncoderReranker (verified with a mock)."""
     settings = _make_settings(
         rerank_type="cross_encoder",
         rerank_model="jina-reranker-v2",
@@ -183,9 +183,9 @@ def test_rerank_chunks_cross_encoder_dispatch():
 
 
 def test_rerank_chunks_unknown_type():
-    """未知的 rerank_type 时原样返回。"""
-    settings = _make_settings(rerank_type=RerankType.LLM)  # 使用已知类型，实际测试注册表查找逻辑
+    """Returned unchanged for an unknown rerank_type."""
+    settings = _make_settings(rerank_type=RerankType.LLM)  # a known type; the test targets the registry lookup logic itself
     chunks = _make_chunks(3)
     result = rerank_chunks(chunks, "query", settings)
-    # 正常情况下 LLM reranker 应该返回 chunks（即使没有 llm 也会原样返回）
+    # Normally the LLM reranker returns the chunks (unchanged even without an llm)
     assert isinstance(result, list)

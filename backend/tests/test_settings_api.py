@@ -8,11 +8,11 @@ from porto_chatbot import main
 
 @pytest.fixture()
 def client(monkeypatch, sample_settings):
-    """共享的 FastAPI TestClient：绑定到 tmp_path 隔离的 sample_settings。
+    """Shared FastAPI TestClient, bound to the sample_settings isolated under tmp_path.
 
-    沿用 test_api.py / test_workflow_api.py 的既有模式 ——
-    ``monkeypatch.setattr(main, "settings", sample_settings)`` 让所有通过
-    ``current_settings()`` 读 settings 的代码路径都看到 tmp_path 隔离实例。
+    Follows the existing pattern in test_api.py / test_workflow_api.py:
+    ``monkeypatch.setattr(main, "settings", sample_settings)`` makes every code path that
+    reads settings through ``current_settings()`` see the instance isolated under tmp_path.
     """
     monkeypatch.setattr(main, "settings", sample_settings)
     return TestClient(main.app)
@@ -22,7 +22,7 @@ def test_settings_include_rag_optimization(client):
     resp = client.get("/api/settings")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["rag_chat"]["intent_routing_mode"] == "binary"  # 默认值
+    assert body["rag_chat"]["intent_routing_mode"] == "binary"  # default value
     assert body["rag_chat"]["query_transform_strategy"] == "none"
     assert body["rag_workflow"]["query_transform_strategy"] == "none"
 
@@ -39,7 +39,7 @@ def test_settings_save_rag_chat(client):
     )
     assert resp.status_code == 200
     assert resp.json()["rag_chat"]["intent_routing_mode"] == "adaptive"
-    # 持久化
+    # Persistence
     assert client.get("/api/settings").json()["rag_chat"]["query_transform_strategy"] == "hyde"
 
 
@@ -62,6 +62,6 @@ def test_settings_save_rag_with_new_fields(client):
     assert rag["embedding_api_key"] == "sk-test-123"
     assert rag["rerank_type"] == "cross_encoder"
     assert rag["rerank_base_url"] == "https://api.jina.ai/v1"
-    # 持久化验证
+    # Verify persistence
     persisted = client.get("/api/settings").json()["rag"]
     assert persisted["rerank_type"] == "cross_encoder"

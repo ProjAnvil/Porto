@@ -10,7 +10,33 @@ for their commit history.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- The `eval` workflow had never passed. The `unit` job could not collect
+  `tests/rag_eval` because it did not install the `eval` extra, and the
+  `nightly` job crashed at import time because missing secrets were exported as
+  empty strings (`LANGCHAIN_AGENT_PROVIDER=''` fails `Settings` validation).
+  The nightly job is now skipped until the `LANGCHAIN_API_KEY` secret is set,
+  and secrets that are not set are left unset so `Settings` keeps its defaults.
+- `test_chat_stream_native_streaming_when_llm_enabled` left a title-generation
+  thread running that called the real OpenAI endpoint with a fake key and was
+  still alive in later tests, which made the retry-count assertions in
+  `test_llm_governance` fail.
+- The spec baseline gate always skipped in CI. The per-test environment
+  isolation in `tests/conftest.py` removes `LANGCHAIN_*` from the process
+  environment, and the test only restored them from `.env` files, which CI
+  does not have.
+- `test_advance_past_first_checkpoint_reaches_identify` was flaky on slow CI
+  runners. `advance` answers before its worker thread marks the workflow as
+  running, so the test could read the pre-advance `awaiting_input` snapshot
+  and assert that the run had stopped at `understand`. It now waits until the
+  resumed run settles past that checkpoint.
+
+### Tests
+
+- Comments and docstrings in the test suites are now written in English
+  (`backend/tests`, `frontend/e2e`, `frontend/playwright.config.ts`). String
+  literals such as test data and assertion messages are unchanged.
 
 ## [0.12.0] — 2026-10-19
 

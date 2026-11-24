@@ -32,7 +32,7 @@ def test_groups_by_category_with_headers():
 def test_skips_empty_categories():
     prompt = build_facts_prompt({
         "user_decision": [_fact("user_decision", "X")],
-        "open_question": [],  # 空
+        "open_question": [],  # empty
     })
     assert "[决策]" in prompt
     assert "[待澄清]" not in prompt
@@ -102,9 +102,9 @@ def test_extract_facts_parse_failure_fail_open(tmp_path):
     store, settings = _make_store(tmp_path)
     llm = MagicMock()
     llm.enabled = True
-    llm.complete_structured.return_value = None  # 解析失败
+    llm.complete_structured.return_value = None  # parse failure
     n = _call_extract(store, llm, settings, "用 OAuth 吧")
-    assert n == 0  # fail-open,不抛
+    assert n == 0  # fail-open, no exception
     assert store.list_active("s1") == []
 
 
@@ -123,11 +123,11 @@ def test_extract_facts_retract_action(tmp_path):
     }
     n = _call_extract(store, llm, settings, "不用 OAuth 了")
     assert n == 1
-    assert store.list_active("s1") == []  # 被 retract
+    assert store.list_active("s1") == []  # retracted
 
 
 def test_extract_facts_llm_exception_fail_open(tmp_path):
-    """complete_structured 抛异常时 fail-open 返回 0,不向上抛。"""
+    """When complete_structured raises, fail open: return 0 instead of propagating."""
     store, settings = _make_store(tmp_path)
     llm = MagicMock()
     llm.enabled = True
@@ -159,7 +159,8 @@ def test_trigger_sync_runs_in_thread(tmp_path):
         store=store, llm=llm, session_id="s", new_message="x",
         recent_turns=recent, settings=settings,
     )
-    # daemon 线程 fire-and-forget,轮询等待写入完成(避免与线程调度竞争)
+    # The daemon thread is fire-and-forget: poll until the write lands (avoids racing the
+    # thread scheduler)
     import time
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline and not store.list_active("s"):
@@ -185,7 +186,7 @@ def test_trigger_async_fire_and_forget(tmp_path):
             recent_turns=recent, settings=settings,
         )
         assert task is not None
-        await task  # 等异步完成
+        await task  # wait for the async run
         assert len(store.list_active("s")) == 1
 
     asyncio.run(main())
@@ -200,4 +201,4 @@ def test_trigger_async_disabled_returns_none(tmp_path):
         store=store, llm=MagicMock(), session_id="s", new_message="y",
         recent_turns=[], settings=settings,
     )
-    assert task is None  # 直接返回,不创建任务
+    assert task is None  # returns immediately, no task created

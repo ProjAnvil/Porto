@@ -1,14 +1,17 @@
-"""检索轨硬门禁——确定性检索指标（recall@k / MRR / hit@k）+ 检索延迟 p95。
+"""Retrieval-track hard gate: deterministic retrieval metrics (recall@k / MRR / hit@k)
+plus retrieval latency p95.
 
-双轨评估的 PR 门禁：零 judge LLM；baseline profile（local embedding、NONE
-策略、无 rerank）下**完全零 LLM**，无密钥也必须能跑——检索回归在此拦截。
+The PR gate of the dual-track evaluation: no judge LLM; with the baseline profile (local
+embedding, NONE strategy, no rerank) it is **entirely LLM-free** and must run without any
+key. Retrieval regressions are caught here.
 
-数据集：默认 DomainRAG extractive（缺数据时自动回退 synth 冒烟集并降级为
-report-only，避免 CI 无缓存时假绿/假红）。env::
+Dataset: DomainRAG extractive by default (when the data is missing it falls back to the
+synth smoke set and degrades to report-only, so a CI run without the cache is neither
+falsely green nor falsely red). env::
 
-    RAG_EVAL_RETRIEVAL_PROFILE=smallchunk pytest ...  # 默认 baseline（零 LLM）
+    RAG_EVAL_RETRIEVAL_PROFILE=smallchunk pytest ...  # default: baseline (zero LLM)
     RAG_EVAL_RETRIEVAL_DATASET=domainrag:multidoc pytest
-    RAG_EVAL_RECALL_MIN=0.5 pytest ...                # 覆盖阈值（metrics/retrieval_metrics 读取）
+    RAG_EVAL_RECALL_MIN=0.5 pytest ...                # override a threshold (metrics / retrieval_metrics read it)
 """
 from __future__ import annotations
 
@@ -32,7 +35,8 @@ def test_retrieval_gate():
 
     report_only = False
     if not (DATA_DIR / "corpus").exists():
-        # 数据集未下载（如无 cache 的 fork PR）：回退 synth 冒烟，仅报告
+        # Dataset not downloaded (e.g. a fork PR without the cache): fall back to the synth smoke
+        # set, report only
         dataset = "synth"
         report_only = True
         print(f"\n[retrieval-gate] DomainRAG 数据缺失 → 回退 {dataset}（report-only）")
@@ -44,7 +48,7 @@ def test_retrieval_gate():
     assert not report["errored"], f"检索 case 出错：{report['errored']}"
     assert report["latency_passed"], f"检索延迟超限：{report['latency_detail']}"
     if report_only:
-        return  # 冒烟回退只验证链路，不拦回归
+        return  # the smoke fallback only checks the pipeline, it does not catch regressions
     assert report["retrieval"]["passed"], (
         f"检索轨门禁未达标（recall/MRR/hit 任一低于阈值）：{report['retrieval']['detail']}"
     )

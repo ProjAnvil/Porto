@@ -34,7 +34,7 @@ def test_intent_disabled_llm_falls_back_to_rules(tmp_path):
 
 
 def test_intent_llm_overrides_rules(tmp_path, monkeypatch):
-    # "你好" 规则判 direct，但 LLM 判 rag → 采用 LLM 结果
+    # "你好" is classified as direct by the rule, but the LLM says rag → the LLM result wins
     llm = _enabled_llm(tmp_path)
     monkeypatch.setattr(llm, "complete_structured", lambda *a, **k: {"intent": "rag", "reason": "需要查库"})
     d = route_chat_intent("你好", None, llm)
@@ -46,8 +46,8 @@ def test_intent_invalid_llm_output_falls_back(tmp_path, monkeypatch):
     llm = _enabled_llm(tmp_path)
     monkeypatch.setattr(llm, "complete_structured", lambda *a, **k: None)
     d = route_chat_intent("帮我分析支付风控架构", None, llm)
-    assert d.intent == "rag"  # 规则也判 rag（含 支付/风控/架构）
-    assert not d.reason.startswith("llm:")  # 用的是规则 reason
+    assert d.intent == "rag"  # the rule also says rag (contains 支付 / 风控 / 架构)
+    assert not d.reason.startswith("llm:")  # the rule reason is used
 
 
 def test_intent_empty_message_is_direct():
@@ -57,9 +57,10 @@ def test_intent_empty_message_is_direct():
 
 
 def test_routing_mode_off_skips_routing():
-    """off 模式语义上由调用方直接检索，route_chat_intent 仍可调用但行为=返回 RAG。"""
+    """In off mode the caller is supposed to retrieve directly; route_chat_intent can still be
+    called but then behaves as "return RAG"."""
     d = route_chat_intent("你好", routing_mode=IntentRoutingMode.OFF)
-    # off 不做 direct 分流，规则不判 greeting
+    # off does no direct routing; the rule does not classify greetings
     assert d.intent in (ChatIntent.RAG, ChatIntent.QUICK_RAG, ChatIntent.DEEP_RAG)
 
 
@@ -77,7 +78,8 @@ def test_adaptive_llm_classifies_three_way(tmp_path, monkeypatch):
 
 
 def test_adaptive_rule_fallback(tmp_path):
-    """LLM 不可用时规则降级也应能产出 quick_rag/deep_rag（按复杂度关键词）。"""
+    """When the LLM is unavailable, the rule fallback should still produce quick_rag / deep_rag
+    (by complexity keywords)."""
     s = Settings(kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l")
     llm = LLMClient(s)
     assert llm.enabled is False
@@ -85,11 +87,12 @@ def test_adaptive_rule_fallback(tmp_path):
         "分析支付风控架构", None, llm,
         routing_mode=IntentRoutingMode.ADAPTIVE,
     )
-    assert d.intent in ("quick_rag", "deep_rag")  # 含 分析/架构 → deep_rag
+    assert d.intent in ("quick_rag", "deep_rag")  # contains 分析 / 架构 → deep_rag
 
 
 def test_adaptive_rule_fallback_quick_rag(tmp_path):
-    """adaptive 模式下，无 deep 关键词的领域问题应判 quick_rag。"""
+    """In adaptive mode, a domain question without deep keywords should be classified as
+    quick_rag."""
     s = Settings(kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l")
     llm = LLMClient(s)
     assert llm.enabled is False
@@ -101,7 +104,8 @@ def test_adaptive_rule_fallback_quick_rag(tmp_path):
 
 
 def test_binary_mode_llm_schema_excludes_adaptive_labels(tmp_path, monkeypatch):
-    """binary 模式下 LLM schema 只允许 direct/rag，杜绝 quick_rag/deep_rag 渗漏（T1 观察）。"""
+    """In binary mode the LLM schema only allows direct / rag, ruling out quick_rag / deep_rag
+    leaking in (observed in T1)."""
     captured: dict = {}
 
     def fake_complete(prompt, user_msg, schema):
@@ -116,7 +120,7 @@ def test_binary_mode_llm_schema_excludes_adaptive_labels(tmp_path, monkeypatch):
 
 
 def test_adaptive_mode_llm_schema_includes_three_labels(tmp_path, monkeypatch):
-    """adaptive 模式下 LLM schema 暴露 direct/quick_rag/deep_rag。"""
+    """In adaptive mode the LLM schema exposes direct / quick_rag / deep_rag."""
     captured: dict = {}
 
     def fake_complete(prompt, user_msg, schema):
@@ -130,7 +134,7 @@ def test_adaptive_mode_llm_schema_includes_three_labels(tmp_path, monkeypatch):
     assert d.intent == "quick_rag"
 
 
-# ── 意图引擎（builtin_llm / rule / typesafe）──
+# ── Intent engines (builtin_llm / rule / typesafe) ──
 
 
 def test_rule_engine_skips_llm_entirely(tmp_path):
@@ -139,20 +143,20 @@ def test_rule_engine_skips_llm_entirely(tmp_path):
     s = Settings(kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l")
     llm = _enabled_llm(tmp_path)
     called = {"n": 0}
-    monkey = llm.complete_structured  # noqa: F841 — 保证引用存在
+    monkey = llm.complete_structured  # noqa: F841 — make sure the reference exists
     llm.complete_structured = lambda *a, **k: called.update(n=called["n"] + 1)
     d = route_chat_intent("你好", s, llm, engine=IntentEngine.RULE)
     assert d.intent == ChatIntent.DIRECT
     assert d.engine == "rule"
     assert d.confidence is None
-    assert called["n"] == 0  # 规则引擎不碰 LLM
+    assert called["n"] == 0  # the rule engine never touches the LLM
 
 
 def test_default_engine_is_builtin_llm(tmp_path):
     s = Settings(kb_dirs=[tmp_path / "kb"], data_dir=tmp_path / "d", log_dir=tmp_path / "l")
-    llm = LLMClient(s)  # 未启用 → builtin 流程内部降级 rule
+    llm = LLMClient(s)  # not enabled → the builtin flow falls back to the rule internally
     d = route_chat_intent("帮我查知识库里的支付文档", s, llm)
-    assert d.engine == "rule"  # llm.enabled=False → 规则胜出
+    assert d.engine == "rule"  # llm.enabled=False → the rule wins
 
 
 def test_off_mode_reports_empty_engine():
