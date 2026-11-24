@@ -44,6 +44,28 @@ def _wait_status(client: TestClient, wid: str, target: set[str], timeout: float 
     raise AssertionError(f"never reached {target}, last={last}")
 
 
+def _wait_past_checkpoint(
+    client: TestClient, wid: str, stale_step: str, timeout: float = 20.0
+) -> dict:
+    """Poll the workflow detail until a resumed run settles past ``stale_step``.
+
+    ``advance`` answers 200 before its worker thread flips the status to running, so a
+    poll that lands in that window still sees the pre-advance awaiting_input snapshot. On
+    a slow CI runner the window is long enough for that snapshot to be read as the result.
+    """
+    end = time.time() + timeout
+    last = None
+    while time.time() < end:
+        last = client.get(f"/api/porto/workflows/{wid}").json()
+        settled = last["status"] in {"completed", "failed"} or (
+            last["status"] == "awaiting_input" and last["current_step"] != stale_step
+        )
+        if settled:
+            return last
+        time.sleep(0.1)
+    raise AssertionError(f"never moved past {stale_step}, last={last}")
+
+
 def test_workflow_checkpoint_flow(monkeypatch, sample_settings, sample_prd):
     sample_settings.health_probe_timeout = 1
     monkeypatch.setattr(main, "settings", sample_settings)
@@ -180,7 +202,8 @@ def test_advance_past_first_checkpoint_reaches_identify(monkeypatch, sample_sett
         adv = client.post(f"/api/porto/workflows/{wid}/advance")
         assert adv.status_code == 200, f"advance 应被接受,实际 {adv.status_code}: {adv.text}"
 
-        second = _wait_status(client, wid, {"awaiting_input", "completed", "failed"}, timeout=20.0)
+        # Must not match the pre-advance awaiting_input/understand snapshot (see helper)
+        second = _wait_past_checkpoint(client, wid, stale_step="understand")
         # 关键断言:不允许 failed(pre-fix 会因 s.text AttributeError 落到 failed)
         assert second["status"] != "failed", (
             f"advance 跨 checkpoint 崩溃: status=failed "
