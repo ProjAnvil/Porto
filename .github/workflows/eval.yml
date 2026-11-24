@@ -63,6 +63,10 @@ jobs:
     name: Nightly secrets 预检
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # 本 job 不 checkout，需覆盖 workflow 级 working-directory（backend/ 不存在时 shell 无法启动）
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     outputs:
       configured: ${{ steps.check.outputs.configured }}
     steps:
